@@ -1,0 +1,66 @@
+meta:
+  hunter: Knox
+  level: 0
+
+stats:
+  hp: 0
+  power: 0
+  regen: 0
+  damage_reduction: 0
+  block_chance: 0
+  effect_chance: 0
+  charge_chance: 0
+  charge_gained: 0
+  reload_time: 0
+  projectiles_per_salvo: 0
+
+talents:
+  death_is_my_companion: 0
+  calypsos_advantage: 0
+  unfair_advantage: 0
+  ghost_bullets: 0
+  omen_of_defeat: 0
+  call_me_lucky_loot: 0
+  presence_of_god: 0
+  finishing_move: 0
+
+attributes:
+  release_the_kraken: 0
+  space_pirate_armory: 0
+  soul_amplification: 0
+  serious_efficiency: 0
+  fortification_elixir: 0
+  a_pirates_life_for_knox: 0
+  dead_men_tell_no_tales: 0
+  passive_charge_tank: 0
+  shield_of_poseidon: 0
+  timeless_mastery: 0
+
+inscryptions:
+  i_knox_hp: 0
+  i_knox_power: 0
+  i_knox_block: 0
+  i_knox_charge: 0
+  i_knox_reload: 0
+
+mods: {}
+
+relics:
+  disk_of_dawn: 0
+
+gems:
+  attraction_gem: 0
+  attraction_catch-up: 0
+  attraction_node_#3: 0
+  innovation_node_#3: 0
+gadgets:
+  wrench_of_gore: 0
+  zaptron_533: 0
+  anchor_of_ages: 0
+
+bonuses:
+  shard_milestone: 0
+  iap_travpack: false
+  diamond_loot: 0
+  diamond_revive: 0
+  ultima_multiplier: 1.0

@@ -2570,28 +2570,43 @@ class MultiHunterGUI:
         self.arena_width = 350
         self.arena_height = 450
         
-        # Hunter data with CIFI-like stats
-        # Borge: Slow, tanky, lifesteal - melee fighter
-        # Knox: Fast attacks, ranged, squishy
-        # Ozzy: Medium speed, regeneration, poison damage over time
+        # Bench positions (bottom of arena) - where hunters rest
+        self.bench_y = self.arena_height - 60  # Bench is near bottom
+        self.bench_positions = {
+            "Borge": {"x": 80, "y": self.bench_y},
+            "Knox": {"x": 175, "y": self.bench_y},
+            "Ozzy": {"x": 270, "y": self.bench_y},
+        }
+        
+        # Battle field area (where fighting happens)
+        self.field_top = 60  # Below stage header
+        self.field_bottom = self.arena_height - 100  # Above bench
+        
+        # Hunter data with CIFI-like stats - start on bench
         self.arena_hunters = {
-            "Borge": {"x": 175, "y": 100, "dx": 2, "dy": 1.5, "icon": "🛡", "color": "#DC3545", 
+            "Borge": {"x": 80, "y": self.bench_y, "dx": 2, "dy": 1.5, "icon": "🛡", "color": "#DC3545", 
                       "hp": 150, "max_hp": 150, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0, 
                       "damage": 3, "base_damage": 3, "lifesteal": 0.15,
                       "attack_timer": 0, "attack_speed": 3.5, "attack_cooldown": 0,
-                      "crit_chance": 0.15, "crit_damage": 1.8, "dr": 0.10},
-            "Knox": {"x": 175, "y": 225, "dx": 2.5, "dy": -1, "icon": "🔫", "color": "#0D6EFD", 
+                      "crit_chance": 0.15, "crit_damage": 1.8, "dr": 0.10,
+                      "on_field": False, "returning_to_bench": False,
+                      "field_position": {"x": 100, "y": 150}},  # Where they fight from
+            "Knox": {"x": 175, "y": self.bench_y, "dx": 2.5, "dy": -1, "icon": "🔫", "color": "#0D6EFD", 
                      "hp": 80, "max_hp": 80, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0,
                      "damage": 2, "base_damage": 2, "lifesteal": 0,
                      "attack_timer": 0, "attack_speed": 1.2, "attack_cooldown": 0,
                      "crit_chance": 0.25, "crit_damage": 2.0, "dr": 0.0,
-                     "attack_range": 120},  # Knox has ranged attacks
-            "Ozzy": {"x": 175, "y": 350, "dx": 1.5, "dy": 2, "icon": "🐙", "color": "#198754", 
+                     "attack_range": 120,
+                     "on_field": False, "returning_to_bench": False,
+                     "field_position": {"x": 175, "y": 200}},
+            "Ozzy": {"x": 270, "y": self.bench_y, "dx": 1.5, "dy": 2, "icon": "🐙", "color": "#198754", 
                      "hp": 100, "max_hp": 100, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0,
                      "damage": 2, "base_damage": 2, "lifesteal": 0, "regen": 0.5,
                      "attack_timer": 0, "attack_speed": 2.0, "attack_cooldown": 0,
                      "crit_chance": 0.20, "crit_damage": 1.5, "dr": 0.05,
-                     "poison_chance": 0.30, "poison_damage": 1},
+                     "poison_chance": 0.30, "poison_damage": 1,
+                     "on_field": False, "returning_to_bench": False,
+                     "field_position": {"x": 250, "y": 250}},
         }
         
         # Enemies: list of {x, y, dx, dy, icon, hp, max_hp, id, is_boss, power, speed, poison_stacks}
@@ -2626,6 +2641,9 @@ class MultiHunterGUI:
         self.was_running = False
         self.arena_tick = 0  # For timing regen/poison
         
+        # Track which hunters were running last frame (for detecting start/stop)
+        self.prev_running = {"Borge": False, "Knox": False, "Ozzy": False}
+        
         # Spawn initial enemies (fewer - they're stationary targets)
         for _ in range(4):
             self._spawn_enemy()
@@ -2658,15 +2676,27 @@ class MultiHunterGUI:
         """Spawn a new enemy with CIFI-accurate stat scaling."""
         import random
         
-        # Spawn enemies spread horizontally across the top with proper spacing
+        # Spawn enemies from all four edges of the field
         existing_positions = [(e["x"], e["y"]) for e in self.arena_enemies]
         
         # Try to find a good spawn position
         attempts = 0
         while attempts < 20:
-            # Distribute across the width
-            x = random.randint(50, self.arena_width - 50)
-            y = random.randint(60, 140)  # Top area
+            # Choose a random edge: 0=top, 1=right, 2=bottom, 3=left
+            edge = random.randint(0, 3)
+            
+            if edge == 0:  # Top
+                x = random.randint(50, self.arena_width - 50)
+                y = random.randint(self.field_top, self.field_top + 50)
+            elif edge == 1:  # Right
+                x = random.randint(self.arena_width - 80, self.arena_width - 30)
+                y = random.randint(self.field_top + 30, self.field_bottom - 30)
+            elif edge == 2:  # Bottom (but above bench)
+                x = random.randint(50, self.arena_width - 50)
+                y = random.randint(self.field_bottom - 60, self.field_bottom - 20)
+            else:  # Left
+                x = random.randint(30, 80)
+                y = random.randint(self.field_top + 30, self.field_bottom - 30)
             
             # Check if position is far enough from all other enemies
             min_dist = 70  # Minimum distance between enemies
@@ -2681,10 +2711,10 @@ class MultiHunterGUI:
                 break
             attempts += 1
         
-        # If we couldn't find a spot, just place it somewhere random
+        # If we couldn't find a spot, just place it somewhere random in the field
         if attempts >= 20:
             x = random.randint(50, self.arena_width - 50)
-            y = random.randint(60, 140)
+            y = random.randint(self.field_top + 20, self.field_bottom - 20)
         
         # CIFI-style scaling: base stats * stage multiplier
         stage = self.arena_stage
@@ -2711,9 +2741,9 @@ class MultiHunterGUI:
             enemy_color = "#8B00FF"  # Purple
         
         if is_boss:
-            # Boss spawns in center with CIFI multipliers
+            # Boss spawns in center of the field
             x = self.arena_width // 2
-            y = 100  # Top-center area
+            y = (self.field_top + self.field_bottom) // 2  # Center of field
             # Boss HP = 90x enemy (Borge-style), Power = 3.63x
             boss_hp = base_hp * 90
             boss_power = base_power * 3.63
@@ -2799,16 +2829,57 @@ class MultiHunterGUI:
         canvas.delete("all")
         
         # Detect when optimization just completed (was running, now stopped)
-        if self.was_running and not any_running and self.arena_total_kills > 0:
-            self.victory_mode = True
-            self.victory_timer = 100  # ~5 seconds of celebration
+        # Victory mode is now triggered per-hunter in the loop below
         self.was_running = any_running
+        
+        # Check which hunters just started or stopped running
+        for name, hunter in self.arena_hunters.items():
+            tab = self.hunter_tabs[name]
+            was_running = self.prev_running.get(name, False)
+            is_running = tab.is_running
+            
+            if is_running and not was_running:
+                # Hunter just started - walk onto field
+                hunter["on_field"] = True
+                hunter["returning_to_bench"] = False
+                # Assign a good field position for this hunter
+                if name == "Borge":
+                    hunter["field_position"] = {"x": 100, "y": (self.field_top + self.field_bottom) // 2 - 40}
+                elif name == "Knox":
+                    hunter["field_position"] = {"x": 175, "y": (self.field_top + self.field_bottom) // 2}
+                else:  # Ozzy
+                    hunter["field_position"] = {"x": 250, "y": (self.field_top + self.field_bottom) // 2 + 40}
+            elif not is_running and was_running:
+                # Hunter just finished - trigger victory and walk back to bench
+                hunter["returning_to_bench"] = True
+                # Trigger victory mode for this hunter's completion
+                if hunter["kills"] > 0:
+                    self.victory_mode = True
+                    self.victory_timer = 60  # ~3 seconds of celebration
+            
+            self.prev_running[name] = is_running
         
         # Draw background grid
         for i in range(0, self.arena_width, 30):
             canvas.create_line(i, 0, i, self.arena_height, fill='#2a2a4a', width=1)
         for i in range(0, self.arena_height, 30):
             canvas.create_line(0, i, self.arena_width, i, fill='#2a2a4a', width=1)
+        
+        # Draw the bench at the bottom
+        bench_y_top = self.bench_y - 25
+        canvas.create_rectangle(20, bench_y_top, self.arena_width - 20, self.bench_y + 25,
+                               fill='#3d2b1f', outline='#5c4033', width=3)
+        canvas.create_text(self.arena_width // 2, bench_y_top - 10, text="🪑 BENCH 🪑",
+                          fill='#8B4513', font=('Arial', 9, 'bold'))
+        
+        # Draw bench seat lines
+        for bx in [80, 175, 270]:
+            canvas.create_oval(bx-12, self.bench_y-8, bx+12, self.bench_y+8,
+                              fill='#5c4033', outline='#3d2b1f')
+        
+        # Draw field boundary
+        canvas.create_rectangle(15, self.field_top - 5, self.arena_width - 15, self.field_bottom + 5,
+                               outline='#4a4a6a', width=2, dash=(5, 3))
         
         # Draw title and stage
         if self.victory_mode:
@@ -3034,14 +3105,10 @@ class MultiHunterGUI:
                             "x": h["x"], "y": h["y"],
                             "icon": "💀", "ttl": 20, "is_text": False
                         })
-                        # Respawn at home with reduced HP
+                        # Respawn at field position with reduced HP
                         h["hp"] = h["max_hp"] * 0.5
-                        if hname == "Borge":
-                            h["x"], h["y"] = 80, 120
-                        elif hname == "Knox":
-                            h["x"], h["y"] = 175, 225
-                        else:
-                            h["x"], h["y"] = 280, 330
+                        field_pos = h.get("field_position", {"x": 175, "y": 200})
+                        h["x"], h["y"] = field_pos["x"], field_pos["y"]
             
             # Decrease attack cooldown
             if enemy.get("attack_cooldown", 0) > 0:
@@ -3095,10 +3162,43 @@ class MultiHunterGUI:
                     # Get power for damage
                     actual_power = getattr(tab.hunter, 'power', 10)
                     hunter["damage"] = max(1, int(actual_power / 10))  # Scale down for arena
+                    # Track optimization progress for scaling
+                    hunter["opt_progress"] = getattr(tab, 'progress_var', tk.DoubleVar()).get() / 100.0
                 except:
                     pass
             
-            if (tab.is_running or self.victory_mode) and not self.victory_mode:
+            # Get bench position for this hunter
+            bench_pos = self.bench_positions[name]
+            field_pos = hunter["field_position"]
+            
+            # Scale field position based on progress (hunters move deeper into field as progress increases)
+            if hunter.get("on_field", False) and not hunter.get("returning_to_bench", False):
+                progress = hunter.get("opt_progress", 0)
+                # As progress increases, hunters fight closer to the top (enemy territory)
+                base_y = field_pos["y"]
+                min_y = self.field_top + 30
+                # Interpolate: at 0% progress, stay at field_pos; at 100%, push toward top
+                field_pos["y"] = int(base_y - (base_y - min_y) * progress * 0.5)
+            
+            # Handle hunter state: on bench, walking to field, fighting, or returning to bench
+            if hunter.get("returning_to_bench", False):
+                # Walk back to bench
+                dx = bench_pos["x"] - hunter["x"]
+                dy = bench_pos["y"] - hunter["y"]
+                dist = math.sqrt(dx*dx + dy*dy)
+                if dist > 5:
+                    move_speed = 4.0  # Walk speed
+                    hunter["x"] += (dx / dist) * move_speed
+                    hunter["y"] += (dy / dist) * move_speed
+                else:
+                    # Arrived at bench
+                    hunter["x"] = bench_pos["x"]
+                    hunter["y"] = bench_pos["y"]
+                    hunter["returning_to_bench"] = False
+                    hunter["on_field"] = False
+                    
+            elif tab.is_running and hunter.get("on_field", False):
+                # Hunter is on field and fighting
                 # Calculate speed with boost
                 speed_mult = 1.5 if hunter["speed_boost"] > 0 else 1.0
                 hunter["speed_boost"] = max(0, hunter["speed_boost"] - 1)
@@ -3120,7 +3220,6 @@ class MultiHunterGUI:
                         best_powerup = powerup
                 
                 # Find nearest enemy - but prefer enemies that OTHER hunters aren't targeting
-                # Each hunter has a preferred zone based on their y position
                 nearest_enemy = None
                 nearest_enemy_dist = float('inf')
                 
@@ -3176,9 +3275,9 @@ class MultiHunterGUI:
                         hunter["x"] += (dx / dist) * move_speed
                         hunter["y"] += (dy / dist) * move_speed
                 else:
-                    # No target - idle at home position (spread out across arena)
-                    home_x = 80 if name == "Borge" else (175 if name == "Knox" else 280)
-                    home_y = 120 if name == "Borge" else (225 if name == "Knox" else 330)
+                    # No target - idle at field position
+                    home_x = field_pos["x"]
+                    home_y = field_pos["y"]
                     dx = home_x - hunter["x"]
                     dy = home_y - hunter["y"]
                     dist = math.sqrt(dx*dx + dy*dy)
@@ -3186,9 +3285,9 @@ class MultiHunterGUI:
                         hunter["x"] += dx * 0.05
                         hunter["y"] += dy * 0.05
                 
-                # Keep hunters in bounds
+                # Keep hunters in field bounds
                 hunter["x"] = max(30, min(self.arena_width - 30, hunter["x"]))
-                hunter["y"] = max(55, min(self.arena_height - 40, hunter["y"]))
+                hunter["y"] = max(self.field_top + 20, min(self.field_bottom - 20, hunter["y"]))
                 
                 # Check for power-up collisions
                 for powerup in self.arena_powerups[:]:
@@ -3372,53 +3471,85 @@ class MultiHunterGUI:
                             })
             
             # Draw hunter with effects
-            if tab.is_running or self.victory_mode:
-                # Glow (bigger if speed boosted) - centered on icon position
+            is_active = tab.is_running or self.victory_mode or hunter.get("returning_to_bench", False)
+            is_on_bench = not hunter.get("on_field", False) and not hunter.get("returning_to_bench", False)
+            
+            if is_active and not is_on_bench:
+                # Active hunter - glow effect
                 glow_size = 22 if hunter["speed_boost"] > 0 else 18
                 canvas.create_oval(hunter["x"]-glow_size, hunter["y"]-glow_size, 
                                   hunter["x"]+glow_size, hunter["y"]+glow_size,
                                   fill=hunter["color"], outline='', stipple='gray50')
             
             # Draw hunter icon - use text icons to ensure proper centering
-            # Use simple characters that render consistently
             icon_map = {"Borge": "B", "Knox": "K", "Ozzy": "O"}
             icon_char = icon_map.get(name, "?")
             
+            # Smaller icon if on bench, larger if active
+            icon_size = 10 if is_on_bench else 14
+            circle_size = 10 if is_on_bench else 14
+            
             # Draw circle background for icon
-            canvas.create_oval(hunter["x"]-14, hunter["y"]-14, hunter["x"]+14, hunter["y"]+14,
-                              fill=hunter["color"], outline='#FFFFFF', width=2)
+            canvas.create_oval(hunter["x"]-circle_size, hunter["y"]-circle_size, 
+                              hunter["x"]+circle_size, hunter["y"]+circle_size,
+                              fill=hunter["color"] if not is_on_bench else '#444444', 
+                              outline='#FFFFFF' if not is_on_bench else '#888888', width=2)
             # Draw letter
             canvas.create_text(hunter["x"], hunter["y"], text=icon_char, 
-                              font=('Arial', 14, 'bold'), fill='#FFFFFF', anchor='center')
+                              font=('Arial', icon_size, 'bold'), 
+                              fill='#FFFFFF' if not is_on_bench else '#CCCCCC', anchor='center')
             
-            # Draw emoji next to the circle
-            emoji_x = hunter["x"] + 20
-            canvas.create_text(emoji_x, hunter["y"] - 10, text=hunter["icon"], 
-                              font=('Segoe UI Emoji', 12), anchor='w')
+            # Draw emoji next to the circle (only if not on bench)
+            if not is_on_bench:
+                emoji_x = hunter["x"] + 20
+                canvas.create_text(emoji_x, hunter["y"] - 10, text=hunter["icon"], 
+                                  font=('Segoe UI Emoji', 12), anchor='w')
             
-            # Draw level badge
-            if hunter["level"] > 1:
-                canvas.create_oval(hunter["x"]+12, hunter["y"]-18, hunter["x"]+24, hunter["y"]-6,
-                                  fill='#FFD700', outline='#000000')
-                canvas.create_text(hunter["x"]+18, hunter["y"]-12, text=str(hunter["level"]),
-                                  fill='#000000', font=('Arial', 7, 'bold'))
-            
-            # Draw HP bar
-            bar_width = 30
-            hp_pct = hunter["hp"] / hunter["max_hp"]
-            bar_y = hunter["y"] + 18
-            canvas.create_rectangle(hunter["x"]-bar_width//2, bar_y, 
-                                    hunter["x"]+bar_width//2, bar_y+4,
-                                    outline='#333333', fill='#1a1a1a')
-            hp_color = '#00FF00' if hp_pct > 0.5 else '#FFFF00' if hp_pct > 0.25 else '#FF0000'
-            canvas.create_rectangle(hunter["x"]-bar_width//2, bar_y, 
-                                    hunter["x"]-bar_width//2 + bar_width*hp_pct, bar_y+4,
-                                    outline='', fill=hp_color)
-            
-            # Draw kill count
-            canvas.create_text(hunter["x"], hunter["y"] + 30, 
-                              text=f"💀{hunter['kills']}", 
-                              fill=hunter["color"], font=('Arial', 8, 'bold'))
+                # Draw level badge
+                if hunter["level"] > 1:
+                    canvas.create_oval(hunter["x"]+12, hunter["y"]-18, hunter["x"]+24, hunter["y"]-6,
+                                      fill='#FFD700', outline='#000000')
+                    canvas.create_text(hunter["x"]+18, hunter["y"]-12, text=str(hunter["level"]),
+                                      fill='#000000', font=('Arial', 7, 'bold'))
+                
+                # Draw HP bar
+                bar_width = 30
+                hp_pct = hunter["hp"] / hunter["max_hp"]
+                bar_y = hunter["y"] + 18
+                canvas.create_rectangle(hunter["x"]-bar_width//2, bar_y, 
+                                        hunter["x"]+bar_width//2, bar_y+4,
+                                        outline='#333333', fill='#1a1a1a')
+                hp_color = '#00FF00' if hp_pct > 0.5 else '#FFFF00' if hp_pct > 0.25 else '#FF0000'
+                canvas.create_rectangle(hunter["x"]-bar_width//2, bar_y, 
+                                        hunter["x"]-bar_width//2 + bar_width*hp_pct, bar_y+4,
+                                        outline='', fill=hp_color)
+                
+                # Draw kill count
+                canvas.create_text(hunter["x"], hunter["y"] + 30, 
+                                  text=f"💀{hunter['kills']}", 
+                                  fill=hunter["color"], font=('Arial', 8, 'bold'))
+                
+                # Draw optimization progress bar if running
+                if tab.is_running:
+                    opt_progress = hunter.get("opt_progress", 0)
+                    prog_bar_width = 40
+                    prog_bar_y = hunter["y"] + 42
+                    canvas.create_rectangle(hunter["x"]-prog_bar_width//2, prog_bar_y, 
+                                            hunter["x"]+prog_bar_width//2, prog_bar_y+3,
+                                            outline='#333333', fill='#1a1a1a')
+                    canvas.create_rectangle(hunter["x"]-prog_bar_width//2, prog_bar_y, 
+                                            hunter["x"]-prog_bar_width//2 + prog_bar_width*opt_progress, prog_bar_y+3,
+                                            outline='', fill='#00BFFF')
+                    canvas.create_text(hunter["x"], prog_bar_y + 10, 
+                                      text=f"{int(opt_progress*100)}%",
+                                      fill='#00BFFF', font=('Arial', 7, 'bold'))
+            else:
+                # On bench - show "💤" sleeping indicator
+                canvas.create_text(hunter["x"], hunter["y"] - 18, text="💤",
+                                  font=('Segoe UI Emoji', 10))
+                # Show name label below
+                canvas.create_text(hunter["x"], hunter["y"] + 18, text=name,
+                                  fill='#888888', font=('Arial', 7))
         
         # Draw and update effects
         for effect in self.arena_effects[:]:
@@ -3636,12 +3767,30 @@ class MultiHunterGUI:
         # Check if any hunter is still running
         running = [name for name, tab in self.hunter_tabs.items() if tab.is_running]
         
+        # Also check if any hunter is still returning to bench
+        returning = [name for name, hunter in self.arena_hunters.items() 
+                     if hunter.get("returning_to_bench", False)]
+        
         if running:
             # Still running, check again
             self.root.after(1000, self._check_sequential_complete)
+        elif returning:
+            # Hunter finished but still walking back to bench - wait
+            self.all_status.configure(text="⏳ Hunter returning to bench...")
+            self.root.after(200, self._check_sequential_complete)
+        elif self.victory_mode and self.victory_timer > 0:
+            # Victory celebration still playing - wait
+            self.all_status.configure(text="🎉 Celebrating victory...")
+            self.root.after(200, self._check_sequential_complete)
         else:
-            # Current hunter finished, run next
-            self._run_next_sequential()
+            # Current hunter finished AND back on bench, add 3 second cooldown before next
+            if hasattr(self, 'sequential_queue') and self.sequential_queue:
+                self._log("   ⏳ 3 second cooldown before next hunter...")
+                self.all_status.configure(text="⏳ Cooldown before next hunter...")
+                self.root.after(3000, self._run_next_sequential)
+            else:
+                # All done
+                self._run_next_sequential()
     
     def _stop_all_hunters(self):
         """Stop all running optimizations."""

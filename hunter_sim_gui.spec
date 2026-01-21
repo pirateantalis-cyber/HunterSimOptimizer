@@ -36,8 +36,7 @@ datas = [
     ('hunter-sim/units.py', '.'),
     # Include rust_sim.py from root
     ('rust_sim.py', '.'),
-    # Include IRL Builds folder (for persistence)
-    ('hunter-sim/IRL Builds', 'IRL Builds'),
+    # Do NOT include IRL Builds - let the app create it fresh with zeros
 ]
 
 # Add Rust library if found
