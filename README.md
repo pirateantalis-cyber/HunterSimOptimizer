@@ -1,120 +1,123 @@
-# Hunter-Sim
+# Hunter-Sim Multi-Hunter Optimizer
 
-A simulation of the Interstellar Hunt content from the android incremental game CIFI (Cell Idle Factory Incremental). Can be used to simulate hunter build performance much quicker than in-game and compare build performance based on elapsed time, stage progression, loot per hour and many other statistics. Builds are stored in easy-to-read config files. Simulations can be parsed into logs to monitor moment-for-moment actions.
+A high-performance build optimizer for the Interstellar Hunt content from CIFI (Cell Idle Factory Incremental). This fork features a complete GUI rewrite with a Rust simulation backend for blazing-fast optimization.
 
-Working features:
+## ✨ Features
 
-- 🟩 Borge: including all talents and attributes, up to stage 200
-- 🟩 Ozzy: including all talents and attributes, up to stage 200
-- 🟩 Build comparison: run sims of 2 different builds and see which performed better on each statistic
-- 🟩 Sim as many repetitions as desired to get robust predictions
-- 🟥 Easily compare and explore best upgrade paths
-- 🟥 Log analysis tool: to visualise logs into a graph of hunter HP, showing damage and healing and events to help visually parse the progression of combat
-- 🟥 Snappy name
+### Multi-Hunter GUI
+- **Tabbed interface** for Borge, Knox, and Ozzy optimization
+- **Real-time progress** with animated battle arena visualization
+- **"Optimize All"** button to run all hunters simultaneously
+- **IRL Build comparison** - compare optimized builds against your current in-game build
 
-## Table of Contents
+### High-Performance Rust Backend
+- **22-core parallelization** using native Rust via PyO3
+- **100+ simulations per second** per build
+- **Progressive evolution algorithm** - builds on the best performers from each tier
 
-- [Hunter-Sim](#hunter-sim)
-  - [Installation](#installation)
-    - [Windows](#windows)
-  - [Usage](#usage)
-  - [Frequently Asked Questions and Frequently Encountered Problems](#frequently-asked-questions-and-frequently-encountered-problems)
-  - [Contributing](#contributing)
-  - [Acknowledgements](#acknowledgements)
+### Build Management
+- **Save/Load builds** - your IRL builds persist between sessions
+- **Export to YAML** - share builds with the community
+- **One-click apply** - copy optimized builds to your IRL build slots
 
-## Installation
+### Supported Hunters
+- 🟩 **Borge**: All talents and attributes, up to stage 200+
+- 🟩 **Ozzy**: All talents and attributes, up to stage 200+
+- 🟩 **Knox**: All talents and attributes, up to stage 200+
 
-### Windows
+## 🚀 Quick Start
 
-1. Install <ins>at least</ins> Python v3.10.
+### Option 1: Run the GUI (Recommended)
 
-2. Download the [latest version of the sim](https://github.com/bhnn/hunter-sim/releases) or clone the project onto your drive.
+```powershell
+# Clone the repository
+git clone https://github.com/pirateantalis-cyber/hunter-sim.git
+cd hunter-sim
 
-3. Inside the `hunter-sim` folder, open the `builds/` directory and edit either `empty_borge.yaml` or `empty_ozzy.yaml`, depending on which hunter you want to simulate. The file can be renamed to anything you desire for organisational purposes. Input:
-    - the upgrade levels of all your main stats (e.g. `hp: 200`, not `hp: 910.33`)
-    - your point spent on the talents and attributes screens
-    - your levels in any inscryptions and relics listed in the file
-    - *Adding, removing or renaming any fixed names in the build config file causes the code to reject it*
+# Install dependencies
+pip install -r requirements.txt
 
-4. Open a Powershell window to verify the correct Python version is being accessed by running `python --version`.
+# Run the multi-hunter optimizer
+python hunter-sim/gui_multi.py
+```
 
-5. Then navigate to the `hunter-sim` folder using the `cd` command.
-    - eg.: if you downloaded and unpacked the code to `D:\Downloads`, then run `cd D:\Downloads\hunter-sim-v0.1.0`
+Or double-click `run_gui.bat` on Windows.
 
-6. Then install the project's dependencies (read: required modules) into your python installation from (1) using `python -m pip install -r requirements.txt`.
+### Option 2: Command Line
 
-7. You're now set to run simulations. See [Usage](#usage) for an explanation and examples, or [FAQ](#faq) in case you're experiencing issues.
+```powershell
+python ./hunter-sim/hunter_sim.py -f ./builds/empty_borge.yaml -i 100
+```
 
-## Usage
+## 🔧 Building the Rust Backend (Optional)
 
-Navigate into the root directory of the project, then run the following command to see all available settings.
+The Rust backend provides ~10x speedup over pure Python. Pre-built binaries are included, but you can rebuild:
 
-    python ./hunter-sim/hunter_sim.py -h
+```powershell
+cd hunter-sim-rs
+cargo build --release
+```
 
-- `-f /path/to/file`: Path to a hunter build config file
-- `-i num_sims`: How many simulated runs to perform
-- `-t processes`: How many processes to use for parallelisation. `-1` for sequential processing.
+## 📖 Usage Guide
 
-Examples:
+### Using the GUI
 
-    python ./hunter-sim/hunter_sim.py -f ./builds/borge_lvl37.yaml -i 50 -t -1
-Runs 50 simulations of the build `borge_lvl37.yaml` sequentially.
+1. **Select a Hunter Tab** (Borge, Knox, or Ozzy)
+2. **Enter your current level** in the Level field
+3. **Input your IRL build** - your current in-game talents/attributes
+4. **Click "Start Optimization"** to find optimal builds
+5. **Review results** - sorted by average stage reached
+6. **Apply the best build** with "Apply to IRL Build" button
 
-    python ./hunter-sim/hunter_sim.py -f ./builds/borge_lvl40.yaml -i 50 -t 4
-Runs 50 simulations of the build `borge_lvl40.yaml` in 4 parallel processes.
+### Optimization Settings
 
-    python ./hunter-sim/hunter_sim.py -f ./builds/borge_no_bfb.yaml -c ./builds/borge_3bfb.yaml -i 100
-Runs 100 simulations for each build `borge_no_bfb.yaml` and `borge_3bfb.yaml` and compares their performance.
+| Setting | Description |
+|---------|-------------|
+| Level | Your hunter's current level |
+| Sims/Build | Number of simulations per build (higher = more accurate) |
+| Builds/Tier | Builds to test per optimization tier |
+| Use Rust | Enable high-performance Rust backend |
+| Progressive Evo | Use tiered optimization (recommended) |
 
-    python ./hunter-sim/hunter_sim.py -f ./builds/experimental_borge.yaml -i 1 -l
-Runs a single simulation of the build `experimental_borge.yaml` and saves the corresponding log file to `logs/`.
+### IRL Max Stage
 
-Optional:
+Set this to your actual best stage in-game. The optimizer will show a comparison:
+- ✅ **Green** builds beat your current IRL stage
+- ⚠️ **Yellow** builds match your IRL stage  
+- ❌ **Red** builds are worse than your current build
 
-- `-c`: Path to another hunter build config file to compare against the first. The results display of the simulation will change to compare which build performed best on which statistic.
-- `-s`: Suppresses most of the combat statistics that are shown after finishing the simulation, except for Loot and Stages
-- `-d`: Will save 2 empty config files (Borge and Ozzy) into `builds/` in your current directory. This will always produce config files that contain all build components currently accepted
-- `-v`: Prints simulation progress to terminal. Usually they have a limited history and long encounters will produce a lot of messages, so this is best used for short sims.
-- `-l`: Produces a log file of the simulation and save it to `logs/` in your current directory. Can be used for runs of any length.
+## 📁 Project Structure
 
-`-v` and `-l` can currently only be used for single simulations
+```
+hunter-sim/
+├── hunter-sim/
+│   ├── gui_multi.py    # Multi-hunter GUI optimizer
+│   ├── gui.py          # Single hunter GUI (legacy)
+│   ├── hunters.py      # Hunter class definitions
+│   ├── sim.py          # Simulation engine
+│   └── IRL Builds/     # Your saved builds (persisted)
+├── hunter-sim-rs/      # Rust simulation backend
+│   └── src/
+├── builds/             # Build config templates
+├── rust_sim.py         # Python-Rust bridge
+└── run_gui.bat         # Windows launcher
+```
 
-## Frequently Asked Questions and Frequently Encountered Problems
+## 🤝 Contributing
 
-> Which Python version do I need?
+Contributions welcome! The main areas for improvement:
 
-The sim needs <ins>at least Python v3.10</ins> to function.
+- Additional hunter mechanics
+- Inscryption/mod support in optimizer
+- UI improvements
+- Cross-platform testing
 
-> ModuleNotFoundError: No module named `xyz`
+## 📝 Credits
 
-[Installation](#installation) step 6 deals with installing all the required modules to run the code. If you're still seeing this error after running the command, then either 1. an update might have introduced a new package and you need to repeat [Installation](#installation) step 6 or 2. you might have multiple Python versions installed and the modules were installed into the wrong one. Try installing the missing modules using `python -m pip install xyz`.
+- Original simulation: [bhnn/hunter-sim](https://github.com/bhnn/hunter-sim)
+- Rust backend & GUI: pirateantalis-cyber
+- CIFI game: [Play Store](https://play.google.com/store/apps/details?id=com.weihnachtsmann.idlefactoryinc)
 
-> Terminal window shows:
+## 📄 License
 
-    Python 3.10 ...
-    Type "help", "copyright", "credits", or "license" for more information.
-    >>>
-This means you're inside a Python interactive shell (like Powershell or Command Prompt, but for Python). Usually this happens when you open Python from the Windows Search or type `python` into a terminal window. Simply exit the shell by running `exit()` and repeat [Installation](#installation) step 4.
-
-> How does multiprocessing/parallelisation work?
-
-Since the simulations are independent of each other, you can optionally run them in parallel to speed up running all of your repetitions. For this, use the parameter `-t <n>` with any number between `1 <= n < 62`. The most optimal amount of processes seems to be the amount of CPU cores you have installed in your computer. More than 61 processes are not permitted by OS scheduling.
-
-## Contributing
-
-I will work out some contribution guidelines in the future. In the meantime, submitting issues outlining bugs or requests and style-matching pull requests are more than welcome :)
-
-## Acknowledgements
-
-Thank you all for contributing knowledge, stats or ideas! (*in alphabetical order*):
-
-- Aussie Canadian Dutchman
-- Chunkeekong
-- Feii
-- grandmasta
-- Nrwoope
-- SirRed
-- Statphantom
-- Theorizon
-
-and of course Octocube Games!
+MIT License - See LICENSE file for details.
