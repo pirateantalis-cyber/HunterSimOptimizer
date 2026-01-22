@@ -36,6 +36,10 @@ datas = [
     ('hunter-sim/units.py', '.'),
     # Include rust_sim.py from root
     ('rust_sim.py', '.'),
+    # Include hunter PNG portraits for battle arena
+    ('hunter_borge-GMACLV3e.png', '.'),
+    ('hunter_knox-DfvSfjhv.png', '.'),
+    ('hunter_ozzy-BYN3S8hK.png', '.'),
     # Do NOT include IRL Builds - let the app create it fresh with zeros
 ]
 
