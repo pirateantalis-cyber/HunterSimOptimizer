@@ -249,6 +249,16 @@ class HunterTab:
             label = label[:17] + "…"
         return label
     
+    def _get_hunter_costs(self) -> Dict:
+        """Get the costs dictionary for the current hunter."""
+        if self.hunter_name == "Borge":
+            return Borge.costs
+        elif self.hunter_name == "Ozzy":
+            return Ozzy.costs
+        elif self.hunter_name == "Knox":
+            return Knox.costs
+        return {}
+    
     def _auto_load_build(self):
         """Automatically load the IRL build if it exists."""
         build_file = self._get_build_file_path()
@@ -509,6 +519,9 @@ class HunterTab:
         talents_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
         left_row += 1
         
+        # Get max levels from hunter's costs
+        hunter_costs = self._get_hunter_costs()
+        
         talent_items = list(dummy.get("talents", {}).items())
         num_talent_cols = 3
         for i, (talent_key, talent_val) in enumerate(talent_items):
@@ -523,6 +536,10 @@ class HunterTab:
             entry.insert(0, "0")
             entry.bind('<FocusOut>', lambda e: self._auto_save_build())
             entry.pack(side=tk.LEFT)
+            # Show max level
+            max_lvl = hunter_costs.get("talents", {}).get(talent_key, {}).get("max", "?")
+            max_text = "∞" if max_lvl == float("inf") else str(max_lvl)
+            ttk.Label(frame, text=f"/{max_text}", width=4).pack(side=tk.LEFT)
             self.talent_entries[talent_key] = entry
         
         # Inscryptions Section (LEFT)
@@ -579,6 +596,10 @@ class HunterTab:
             entry.insert(0, "0")
             entry.bind('<FocusOut>', lambda e: self._auto_save_build())
             entry.pack(side=tk.LEFT)
+            # Show max level
+            max_lvl = hunter_costs.get("attributes", {}).get(attr_key, {}).get("max", "?")
+            max_text = "∞" if max_lvl == float("inf") else str(max_lvl)
+            ttk.Label(frame, text=f"/{max_text}", width=4).pack(side=tk.LEFT)
             self.attribute_entries[attr_key] = entry
         
         # Gems Section (RIGHT)
@@ -633,47 +654,15 @@ class HunterTab:
         entry.pack(side=tk.LEFT)
         self.gadget_entries[gadget_key] = entry
         
-        # Bonuses Section (RIGHT - after Mods)
-        bonuses_frame = ttk.LabelFrame(self.scrollable_frame, text="💎 Global Bonuses")
-        bonuses_frame.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
+        # Note about Global Bonuses (RIGHT - after Mods)
+        bonuses_note_frame = ttk.LabelFrame(self.scrollable_frame, text="💎 Global Bonuses")
+        bonuses_note_frame.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
         right_row += 1
         
-        # Shard Milestone (numeric)
-        frame = ttk.Frame(bonuses_frame)
-        frame.grid(row=0, column=0, padx=4, pady=1, sticky="w")
-        ttk.Label(frame, text="Shard MS:", width=10).pack(side=tk.LEFT)
-        entry = ttk.Entry(frame, width=4)
-        entry.insert(0, "0")
-        entry.bind('<FocusOut>', lambda e: self._auto_save_build())
-        entry.pack(side=tk.LEFT)
-        self.bonus_entries["shard_milestone"] = entry
-        
-        # Diamond Loot (numeric)
-        frame = ttk.Frame(bonuses_frame)
-        frame.grid(row=0, column=1, padx=4, pady=1, sticky="w")
-        ttk.Label(frame, text="💎Loot:", width=8).pack(side=tk.LEFT)
-        entry = ttk.Entry(frame, width=3)
-        entry.insert(0, "0")
-        entry.bind('<FocusOut>', lambda e: self._auto_save_build())
-        entry.pack(side=tk.LEFT)
-        self.bonus_entries["diamond_loot"] = entry
-        
-        # IAP Travpack (checkbox)
-        var = tk.BooleanVar(value=False)
-        cb = ttk.Checkbutton(bonuses_frame, text="IAP Pack", variable=var,
-                             command=self._auto_save_build)
-        cb.grid(row=0, column=2, padx=4, pady=1, sticky="w")
-        self.bonus_vars["iap_travpack"] = var
-        
-        # Ultima Multiplier (numeric)
-        frame = ttk.Frame(bonuses_frame)
-        frame.grid(row=1, column=0, padx=4, pady=1, sticky="w")
-        ttk.Label(frame, text="Ultima:", width=10).pack(side=tk.LEFT)
-        entry = ttk.Entry(frame, width=5)
-        entry.insert(0, "1.0")
-        entry.bind('<FocusOut>', lambda e: self._auto_save_build())
-        entry.pack(side=tk.LEFT)
-        self.bonus_entries["ultima_multiplier"] = entry
+        note_label = ttk.Label(bonuses_note_frame, 
+                              text="ℹ️ Bonuses are shared across all hunters.\n   Set them in the Control tab.",
+                              font=('Arial', 9), foreground='gray')
+        note_label.pack(padx=10, pady=10)
     
     def _get_inscryption_tooltips(self) -> Dict[str, str]:
         """Get tooltip descriptions for inscryptions."""
@@ -1162,18 +1151,18 @@ class HunterTab:
             except ValueError:
                 config["gadgets"][key] = 0
         
-        # Bonuses
-        for key, entry in self.bonus_entries.items():
-            try:
-                if key == "ultima_multiplier":
-                    config["bonuses"][key] = float(entry.get())
-                else:
-                    config["bonuses"][key] = int(entry.get())
-            except ValueError:
-                config["bonuses"][key] = 0 if key != "ultima_multiplier" else 1.0
-        
-        for key, var in self.bonus_vars.items():
-            config["bonuses"][key] = var.get()
+        # Bonuses - read from GLOBAL bonuses in the app's Control tab
+        try:
+            config["bonuses"]["shard_milestone"] = self.app.global_shard_milestone.get()
+            config["bonuses"]["diamond_loot"] = self.app.global_diamond_loot.get()
+            config["bonuses"]["iap_travpack"] = self.app.global_iap_travpack.get()
+            config["bonuses"]["ultima_multiplier"] = self.app.global_ultima_multiplier.get()
+        except (AttributeError, tk.TclError):
+            # Fallback if global bonuses not yet initialized
+            config["bonuses"]["shard_milestone"] = 0
+            config["bonuses"]["diamond_loot"] = 0
+            config["bonuses"]["iap_travpack"] = False
+            config["bonuses"]["ultima_multiplier"] = 1.0
         
         return config
     
@@ -2510,6 +2499,37 @@ class MultiHunterGUI:
         ttk.Label(row7, text="(Updates each hunter's Run tab)", 
                  font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
         
+        # ============ GLOBAL BONUSES (shared across all hunters) ============
+        bonuses_frame = ttk.LabelFrame(scrollable, text="💎 Global Bonuses (Shared Across All Hunters)")
+        bonuses_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        bonuses_row1 = ttk.Frame(bonuses_frame)
+        bonuses_row1.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Shard Milestone
+        ttk.Label(bonuses_row1, text="Shard Milestone:").pack(side=tk.LEFT, padx=5)
+        self.global_shard_milestone = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row1, textvariable=self.global_shard_milestone, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Diamond Loot
+        ttk.Label(bonuses_row1, text="💎 Diamond Loot:").pack(side=tk.LEFT, padx=15)
+        self.global_diamond_loot = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row1, textvariable=self.global_diamond_loot, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # IAP Pack
+        self.global_iap_travpack = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bonuses_row1, text="IAP Pack", variable=self.global_iap_travpack).pack(side=tk.LEFT, padx=15)
+        
+        bonuses_row2 = ttk.Frame(bonuses_frame)
+        bonuses_row2.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Ultima Multiplier
+        ttk.Label(bonuses_row2, text="Ultima Multiplier:").pack(side=tk.LEFT, padx=5)
+        self.global_ultima_multiplier = tk.DoubleVar(value=1.0)
+        ttk.Entry(bonuses_row2, textvariable=self.global_ultima_multiplier, width=6).pack(side=tk.LEFT, padx=5)
+        ttk.Label(bonuses_row2, text="(Enter displayed bonus, not upgrade level)", 
+                  font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=5)
+        
         # ============ RUN CONTROLS ============
         run_frame = ttk.LabelFrame(scrollable, text="🚀 Run Optimizations")
         run_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -2728,15 +2748,6 @@ class MultiHunterGUI:
         self.boss_icons = ['🐲', '👿', '☠️', '🦖', '👑', '🎃']
         self.next_enemy_id = 0
         
-        # Power-ups: list of {x, y, icon, type, ttl}
-        self.arena_powerups = []
-        self.powerup_types = [
-            {"icon": "⭐", "type": "speed", "effect": "Speed Boost!"},
-            {"icon": "❤️", "type": "heal", "effect": "Health Restored!"},
-            {"icon": "⚡", "type": "power", "effect": "Power Up!"},
-            {"icon": "🛡️", "type": "shield", "effect": "Shield!"},
-        ]
-        
         # Projectiles: list of {x, y, target_x, target_y, icon, speed, hunter}
         self.arena_projectiles = []
         
@@ -2757,8 +2768,8 @@ class MultiHunterGUI:
         # Track which hunters were running last frame (for detecting start/stop)
         self.prev_running = {"Borge": False, "Knox": False, "Ozzy": False}
         
-        # Spawn initial enemies (fewer - they're stationary targets)
-        for _ in range(4):
+        # Spawn initial enemies (fewer - stationary targets)
+        for _ in range(2):
             self._spawn_enemy()
         
         # Start arena animation
@@ -2897,20 +2908,6 @@ class MultiHunterGUI:
                 "last_attacker": None,
             })
         self.next_enemy_id += 1
-    
-    def _spawn_powerup(self):
-        """Spawn a random power-up."""
-        import random
-        
-        powerup = random.choice(self.powerup_types)
-        self.arena_powerups.append({
-            "x": random.randint(50, self.arena_width - 50),
-            "y": random.randint(50, self.arena_height - 50),
-            "icon": powerup["icon"],
-            "type": powerup["type"],
-            "effect": powerup["effect"],
-            "ttl": 200  # Lasts ~10 seconds
-        })
     
     def _spawn_firework(self):
         """Spawn a firework for victory celebration."""
@@ -3118,15 +3115,20 @@ class MultiHunterGUI:
             theme_text = f"⚔️ {theme['description']} - Stage {self.arena_stage} ⚔️"
             canvas.create_text(self.arena_width // 2, 12, text=theme_text, 
                               fill=theme["accent_color"], font=('Arial', 9, 'bold'))
-            # Progress to next stage
-            progress = min(1.0, self.arena_total_kills / self.kills_for_next_stage)
-            bar_width = 140
-            bar_x = (self.arena_width - bar_width) // 2
-            canvas.create_rectangle(bar_x, 26, bar_x + bar_width, 34, outline='#4a4a6a', fill='#1a1a2e')
-            canvas.create_rectangle(bar_x, 26, bar_x + bar_width * progress, 34, outline='', fill=theme["accent_color"])
-            canvas.create_text(self.arena_width // 2, 33, 
-                              text=f"{self.arena_total_kills}/{self.kills_for_next_stage}", 
-                              fill='#FFFFFF', font=('Arial', 8))
+            
+            # Show simulation progress for running hunters
+            sim_status_y = 28
+            for hname in running_hunters:
+                tab = self.hunter_tabs[hname]
+                if hasattr(tab, 'progress_var') and hasattr(tab, 'results'):
+                    progress = tab.progress_var.get()
+                    builds_tested = len(tab.results)
+                    best_stage = max((r.avg_final_stage for r in tab.results), default=0)
+                    hunter_icon = '🛡️' if hname == 'Borge' else '🔫' if hname == 'Knox' else '🐙'
+                    sim_text = f"{hunter_icon} {progress:.0f}% | {builds_tested} builds | Best: {best_stage:.0f}"
+                    canvas.create_text(self.arena_width // 2, sim_status_y, 
+                                      text=sim_text, fill='#CCCCCC', font=('Arial', 7))
+                    sim_status_y += 10
         else:
             canvas.create_text(self.arena_width // 2, 15, text="🏰 Hunters Resting 🏰", 
                               fill='#888888', font=('Arial', 11, 'bold'))
@@ -3150,20 +3152,6 @@ class MultiHunterGUI:
             fw["ttl"] -= 1
             if fw["ttl"] <= 0:
                 self.fireworks.remove(fw)
-        
-        # Update and draw power-ups
-        for powerup in self.arena_powerups[:]:
-            # Floating animation
-            offset = math.sin(powerup["ttl"] * 0.1) * 3
-            canvas.create_text(powerup["x"], powerup["y"] + offset, text=powerup["icon"],
-                              font=('Segoe UI Emoji', 18))
-            # Glow
-            canvas.create_oval(powerup["x"]-15, powerup["y"]+offset-15, 
-                              powerup["x"]+15, powerup["y"]+offset+15,
-                              outline='#FFFF00', width=2)
-            powerup["ttl"] -= 1
-            if powerup["ttl"] <= 0:
-                self.arena_powerups.remove(powerup)
         
         # Update and draw projectiles (Knox's bullets)
         for projectile in self.arena_projectiles[:]:
@@ -3472,21 +3460,8 @@ class MultiHunterGUI:
                 speed_mult = 1.5 if hunter["speed_boost"] > 0 else 1.0
                 hunter["speed_boost"] = max(0, hunter["speed_boost"] - 1)
                 
-                # DECISION: Should hunter go for powerup or enemy?
+                # DECISION: Find target enemy
                 target_x, target_y = None, None
-                
-                # Check for nearby powerups - prioritize if low HP or powerup is very close
-                best_powerup = None
-                best_powerup_dist = float('inf')
-                for powerup in self.arena_powerups:
-                    dist = math.sqrt((hunter["x"] - powerup["x"])**2 + (hunter["y"] - powerup["y"])**2)
-                    # Prioritize heal powerups when low HP
-                    hp_pct = hunter["hp"] / hunter["max_hp"]
-                    priority_mult = 0.3 if (powerup["type"] == "heal" and hp_pct < 0.5) else 1.0
-                    adjusted_dist = dist * priority_mult
-                    if adjusted_dist < best_powerup_dist:
-                        best_powerup_dist = adjusted_dist
-                        best_powerup = powerup
                 
                 # Find nearest enemy - but prefer enemies that OTHER hunters aren't targeting
                 nearest_enemy = None
@@ -3517,19 +3492,8 @@ class MultiHunterGUI:
                 # Remember our target
                 hunter["target_id"] = nearest_enemy["id"] if nearest_enemy else None
                 
-                # Decide: go for powerup if it's close enough or HP is low
-                hp_pct = hunter["hp"] / hunter["max_hp"]
-                go_for_powerup = False
-                if best_powerup:
-                    # Go for powerup if: very close (<80), or low HP and heal nearby (<150)
-                    if best_powerup_dist < 80:
-                        go_for_powerup = True
-                    elif hp_pct < 0.4 and best_powerup["type"] == "heal" and best_powerup_dist < 150:
-                        go_for_powerup = True
-                
-                if go_for_powerup and best_powerup:
-                    target_x, target_y = best_powerup["x"], best_powerup["y"]
-                elif nearest_enemy:
+                # Go for nearest enemy
+                if nearest_enemy:
                     target_x, target_y = nearest_enemy["x"], nearest_enemy["y"]
                 
                 # Move toward target smoothly
@@ -3557,27 +3521,6 @@ class MultiHunterGUI:
                 # Keep hunters in field bounds
                 hunter["x"] = max(30, min(self.arena_width - 30, hunter["x"]))
                 hunter["y"] = max(self.field_top + 20, min(self.field_bottom - 20, hunter["y"]))
-                
-                # Check for power-up collisions
-                for powerup in self.arena_powerups[:]:
-                    dist = math.sqrt((hunter["x"] - powerup["x"])**2 + (hunter["y"] - powerup["y"])**2)
-                    if dist < 25:
-                        # Collect power-up!
-                        if powerup["type"] == "speed":
-                            hunter["speed_boost"] = 100
-                        elif powerup["type"] == "heal":
-                            hunter["hp"] = min(hunter["max_hp"], hunter["hp"] + 30)
-                        elif powerup["type"] == "power":
-                            hunter["damage"] = min(3, hunter["damage"] + 1)
-                        elif powerup["type"] == "shield":
-                            hunter["max_hp"] += 10
-                            hunter["hp"] += 10
-                        
-                        self.arena_effects.append({
-                            "x": powerup["x"], "y": powerup["y"] - 15,
-                            "icon": powerup["effect"], "ttl": 20, "is_text": True
-                        })
-                        self.arena_powerups.remove(powerup)
                 
                 # Update attack cooldown (based on attack speed from stats)
                 if hunter["attack_cooldown"] > 0:
@@ -3836,13 +3779,10 @@ class MultiHunterGUI:
         
         # Spawn new enemies LESS frequently when running (stationary enemies)
         if any_running and not self.victory_mode:
-            # Lower spawn rate: 0.04 = ~once every 25 frames = ~1.25 seconds
-            max_enemies = 5 + self.arena_stage  # Fewer enemies on screen
-            if random.random() < 0.04 and len(self.arena_enemies) < max_enemies:
+            # Very low spawn rate: 0.015 = ~once every 67 frames = ~3.3 seconds
+            max_enemies = 3 + (self.arena_stage // 2)  # Fewer enemies on screen
+            if random.random() < 0.015 and len(self.arena_enemies) < max_enemies:
                 self._spawn_enemy()
-            # Spawn power-ups more frequently for hunter engagement
-            if random.random() < 0.03 and len(self.arena_powerups) < 4:
-                self._spawn_powerup()
         
         # Draw stats at bottom
         y = self.arena_height - 12
