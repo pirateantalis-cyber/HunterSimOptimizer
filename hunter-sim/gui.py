@@ -244,14 +244,18 @@ class BuildGenerator:
         
         # Point-by-point random allocation
         while remaining > 0:
-            # Find all talents that can still accept points (handle inf max properly)
+            # Find all KNOWN talents that can still accept points (exclude unknown_talent)
             valid_talents = [
                 t for t in talents 
-                if max_levels[t] == float('inf') or result[t] < int(max_levels[t])
+                if t != 'unknown_talent' and (max_levels[t] == float('inf') or result[t] < int(max_levels[t]))
             ]
             
+            # Only use unknown_talent as LAST RESORT when all known talents are maxed
             if not valid_talents:
-                break  # All talents maxed
+                if 'unknown_talent' in talents:
+                    valid_talents = ['unknown_talent']
+                else:
+                    break  # All talents maxed
             
             # Pick random talent and add 1 point
             chosen = random.choice(valid_talents)
@@ -2081,11 +2085,17 @@ This tells you upgrading Power will help you progress 1.24 more stages on averag
         talent_max = {t: generator.costs["talents"][t]["max"] for t in talents_list}
         
         while talent_to_add > 0:
-            # Handle unlimited talents (inf max) properly
+            # Find KNOWN talents that can accept more points (exclude unknown_talent)
             valid = [t for t in talents_list 
-                     if talent_max[t] == float('inf') or talents[t] < int(talent_max[t])]
+                     if t != 'unknown_talent' and (talent_max[t] == float('inf') or talents[t] < int(talent_max[t]))]
+            
+            # Only use unknown_talent as LAST RESORT when all known talents are maxed
             if not valid:
-                break  # All talents maxed (shouldn't happen with enough capacity)
+                if 'unknown_talent' in talents_list:
+                    valid = ['unknown_talent']
+                else:
+                    break  # All talents maxed
+            
             chosen = random.choice(valid)
             talents[chosen] += 1
             talent_to_add -= 1

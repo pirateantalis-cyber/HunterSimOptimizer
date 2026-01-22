@@ -10,26 +10,6 @@ use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use std::collections::BinaryHeap;
 use std::cmp::Ordering;
-use std::sync::Once;
-
-// Initialize Rayon thread pool once with all available cores
-static INIT: Once = Once::new();
-
-fn init_thread_pool() {
-    INIT.call_once(|| {
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(8);
-        
-        // Limit to 8 threads to keep system responsive
-        let num_threads = num_threads.min(8);
-        
-        // Try to initialize global thread pool; ignore if already initialized
-        let _ = ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build_global();
-    });
-}
 
 /// Event in the simulation queue
 #[derive(Debug, Clone)]
@@ -575,9 +555,11 @@ fn enemy_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng) {
 
 /// Run multiple simulations in parallel with proper thread utilization
 pub fn run_simulations_parallel(config: &BuildConfig, count: usize) -> Vec<SimResult> {
-    // Use ~55% of available cores per hunter to allow multi-hunter parallelism
+    // Use 70% of available cores to keep system responsive
     let num_cores = num_cpus::get();
-    let threads_per_hunter = (num_cores * 55 / 100).max(1);
+    let threads_per_hunter = ((num_cores as f64 * 0.70).round() as usize)
+        .max(2)
+        .min(num_cores.saturating_sub(1).max(1));
     
     let pool = ThreadPoolBuilder::new()
         .num_threads(threads_per_hunter)

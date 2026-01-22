@@ -148,6 +148,7 @@ def simulate(
     mods: Optional[Dict[str, bool]] = None,
     relics: Optional[Dict[str, int]] = None,
     gems: Optional[Dict[str, int]] = None,
+    bonuses: Optional[Dict[str, Any]] = None,
     num_sims: int = 100,
     parallel: bool = True
 ) -> Dict[str, Any]:
@@ -164,6 +165,7 @@ def simulate(
         mods: Optional mods dictionary
         relics: Optional relics dictionary
         gems: Optional gems dictionary
+        bonuses: Optional bonuses dictionary (shard_milestone, CMs, diamond_loot, etc.)
         num_sims: Number of simulations to run
         parallel: Whether to use parallel processing
         
@@ -185,6 +187,7 @@ def simulate(
         "mods": mods or {},
         "relics": relics or {},
         "gems": gems or {},
+        "bonuses": bonuses or {},
     }
     
     # Use native bindings with direct JSON (much faster, no temp file!)

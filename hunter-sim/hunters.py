@@ -165,8 +165,23 @@ class Hunter:
         self.relics = config_dict.get("relics", {})
         self.gems = config_dict.get("gems", {})
         # New fields with defaults
-        self.gadgets = config_dict.get("gadgets", {"wrench_of_gore": 0, "zaptron_533": 0, "anchor_of_ages": 0})
-        self.bonuses = config_dict.get("bonuses", {"shard_milestone": 0, "iap_travpack": False, "diamond_loot": 0, "diamond_revive": 0, "ultima_multiplier": 1.0})
+        self.gadgets = config_dict.get("gadgets", {"wrench": 0, "zaptron": 0, "anchor": 0})
+        self.bonuses = config_dict.get("bonuses", {
+            "shard_milestone": 0, 
+            "research81": 0,
+            "scavenger": 0, 
+            "scavenger2": 0,
+            "cm46": False, 
+            "cm47": False, 
+            "cm48": False, 
+            "cm51": False,
+            "gaiden_card": False,
+            "iridian_card": False,
+            "diamond_loot": 0, 
+            "diamond_revive": 0, 
+            "iap_travpack": False, 
+            "ultima_multiplier": 1.0
+        })
 
     def validate_config(self, cfg: Dict) -> bool:
         """Validate a build config dict against a perfect dummy build to see if they have identical keys in themselves and all value entries.
@@ -305,21 +320,137 @@ class Hunter:
         self.total_xp += xp
 
     def compute_loot_multiplier(self) -> float:
-        """Compute the loot multiplier from talents, attributes, inscryptions, etc.
+        """Compute the loot multiplier from talents, attributes, inscryptions, bonuses, etc.
+        
+        This matches the WASM calculation which multiplies all bonuses together.
         
         Returns:
             float: The combined loot multiplier.
         """
         mult = 1.0
         
+        # === TIMELESS MASTERY (Attribute) ===
         if isinstance(self, Borge):
-            mult *= 1 + self.attributes["timeless_mastery"] * 0.14
-            mult *= 1 + (self.inscryptions.get("i60", 0) * 0.03)
+            mult *= 1.0 + self.attributes.get("timeless_mastery", 0) * 0.14
         elif isinstance(self, Ozzy):
-            mult *= 1 + (self.attributes["timeless_mastery"] * 0.16)
-            mult *= 1 + (self.inscryptions.get("i32", 0) * 0.5)  # i32 = 1.5x loot per level
+            mult *= 1.0 + self.attributes.get("timeless_mastery", 0) * 0.16
         elif isinstance(self, Knox):
-            mult *= 1 + (self.attributes.get("timeless_mastery", 0) * 0.14)
+            mult *= 1.0 + self.attributes.get("timeless_mastery", 0) * 0.14
+        
+        # === SHARD MILESTONE #0 ===
+        # 1.02^level (unlimited levels!)
+        shard_milestone = self.bonuses.get("shard_milestone", 0)
+        if shard_milestone > 0:
+            mult *= 1.02 ** shard_milestone
+        
+        # === RELIC #7 (Manifestation Core: Titan) ===
+        # 1.05^level (max 100)
+        relic7 = self.relics.get("r7", 0) or self.relics.get("manifestation_core_titan", 0)
+        if relic7 > 0:
+            mult *= 1.05 ** relic7
+        
+        # === RESEARCH #81 ===
+        # Tier-based: levels 1-3 give 1.1, levels 4-6 give 1.32
+        research81 = self.bonuses.get("research81", 0)
+        if research81 >= 4:
+            if isinstance(self, Borge) or (isinstance(self, Ozzy) and research81 >= 5) or research81 >= 6:
+                mult *= 1.32
+            else:
+                mult *= 1.1
+        elif research81 >= 1:
+            if isinstance(self, Borge) or (isinstance(self, Ozzy) and research81 >= 2) or research81 >= 3:
+                mult *= 1.1
+        
+        # === INSCRYPTIONS (hunter-specific) ===
+        if isinstance(self, Borge):
+            # i14: 1.1^level (max 5)
+            i14 = self.inscryptions.get("i14", 0)
+            if i14 > 0: mult *= 1.1 ** i14
+            
+            # i44: 1.08^level (max 10)
+            i44 = self.inscryptions.get("i44", 0)
+            if i44 > 0: mult *= 1.08 ** i44
+            
+            # i60: special multi-power (+3% per level to loot)
+            i60 = self.inscryptions.get("i60", 0)
+            if i60 > 0: mult *= 1.0 + (i60 * 0.03)
+            
+            # i80: 1.1^level (max 10)
+            i80 = self.inscryptions.get("i80", 0)
+            if i80 > 0: mult *= 1.1 ** i80
+            
+        elif isinstance(self, Ozzy):
+            # i32: 1.5^level (max 8)
+            i32 = self.inscryptions.get("i32", 0)
+            if i32 > 0: mult *= 1.5 ** i32
+            
+            # i81: 1.1^level (max 10)
+            i81 = self.inscryptions.get("i81", 0)
+            if i81 > 0: mult *= 1.1 ** i81
+        
+        # === GADGETS ===
+        # Compound formula: (1.005)^level * (1.02)^(level/10)
+        def gadget_loot(level: int) -> float:
+            if level <= 0: return 1.0
+            base = 1.005 ** level
+            tier_mult = 1.02 ** (level // 10)
+            return base * tier_mult
+        
+        # Wrench (Borge loot)
+        if isinstance(self, Borge):
+            mult *= gadget_loot(self.gadgets.get("wrench", 0))
+        # Zaptron (Ozzy loot)
+        if isinstance(self, Ozzy):
+            mult *= gadget_loot(self.gadgets.get("zaptron", 0))
+        # Anchor (all hunters)
+        mult *= gadget_loot(self.gadgets.get("anchor", 0))
+        
+        # === LOOP MODS ===
+        # Scavenger's Advantage: 1.05^level (max 25) - Borge
+        if isinstance(self, Borge):
+            scavenger = min(self.bonuses.get("scavenger", 0), 25)
+            if scavenger > 0: mult *= 1.05 ** scavenger
+        # Scavenger's Advantage 2: 1.05^level (max 25) - Ozzy
+        if isinstance(self, Ozzy):
+            scavenger2 = min(self.bonuses.get("scavenger2", 0), 25)
+            if scavenger2 > 0: mult *= 1.05 ** scavenger2
+        
+        # === CONSTRUCTION MILESTONES (CMs) ===
+        if self.bonuses.get("cm46", False): mult *= 1.03
+        if self.bonuses.get("cm47", False): mult *= 1.02
+        if self.bonuses.get("cm48", False): mult *= 1.07
+        if self.bonuses.get("cm51", False): mult *= 1.05
+        
+        # === DIAMOND CARDS ===
+        if isinstance(self, Borge) and self.bonuses.get("gaiden_card", False):
+            mult *= 1.05
+        if isinstance(self, Ozzy) and self.bonuses.get("iridian_card", False):
+            mult *= 1.05
+        
+        # === DIAMOND SPECIALS ===
+        # Hunter Loot Booster: +2.5% per level (max 10)
+        diamond_loot = self.bonuses.get("diamond_loot", 0)
+        if diamond_loot > 0:
+            mult *= 1.0 + (diamond_loot * 0.025)
+        
+        # === IAP ===
+        # Traversal Pack: 1.25x loot
+        if self.bonuses.get("iap_travpack", False):
+            mult *= 1.25
+        
+        # === ULTIMA ===
+        # Direct multiplier
+        ultima = self.bonuses.get("ultima_multiplier", 1.0)
+        if ultima > 0:
+            mult *= ultima
+        
+        # === GEM NODES (Attraction Gem) ===
+        if isinstance(self, Borge):
+            loot_borge = self.gems.get("attraction_loot_borge", 0)
+            if loot_borge > 0: mult *= 1.01 ** loot_borge
+        if isinstance(self, Ozzy):
+            loot_ozzy = self.gems.get("attraction_loot_ozzy", 0)
+            if loot_ozzy > 0: mult *= 1.01 ** loot_ozzy
         
         return mult
     

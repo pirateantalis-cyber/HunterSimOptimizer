@@ -87,8 +87,9 @@ pub struct Hunter {
     pub has_trample: bool,
     pub has_decay: bool,
     
-    // Loot multiplier
+    // Loot and XP multipliers
     pub loot_mult: f64,
+    pub xp_mult: f64,
     
     // Combat tracking
     pub result: SimResult,
@@ -195,12 +196,9 @@ impl Hunter {
         // Lifesteal
         let lifesteal = c.get_attr("book_of_baal") as f64 * 0.0111;
         
-        // Loot multiplier
-        let loot_mult = 1.0 
-            + c.get_inscr("i14") as f64 * 1.1
-            + c.get_inscr("i44") as f64 * 1.08
-            + c.get_inscr("i60") as f64 * 0.03
-            + c.get_attr("timeless_mastery") as f64 * 0.10;
+        // Loot and XP multipliers - use comprehensive calculation from config
+        let loot_mult = c.calculate_loot_multiplier(HunterType::Borge);
+        let xp_mult = c.calculate_xp_multiplier(HunterType::Borge);
         
         // Death is my companion revives
         let dimc = c.get_talent("death_is_my_companion");
@@ -264,6 +262,7 @@ impl Hunter {
             has_trample: *c.mods.get("trample").unwrap_or(&false),
             has_decay: false,
             loot_mult,
+            xp_mult,
             result: SimResult::default(),
             current_stage: 0,
             revive_count: 0,
@@ -342,11 +341,13 @@ impl Hunter {
         // Lifesteal - Python: shimmering_scorpion * 0.033
         let lifesteal = c.get_attr("shimmering_scorpion") as f64 * 0.033;
         
-        // Loot multiplier - blessings_of_the_scarab adds +5% loot per level
-        let loot_mult = 1.0 
-            + c.get_inscr("i32") as f64 * 0.5
-            + c.get_attr("timeless_mastery") as f64 * 0.10
-            + c.get_attr("blessings_of_the_scarab") as f64 * 0.05;
+        // Loot multiplier - use comprehensive calculation from config
+        // blessings_of_the_scarab adds +5% loot per level (additive to base)
+        let base_loot_mult = c.calculate_loot_multiplier(HunterType::Ozzy);
+        let loot_mult = base_loot_mult * (1.0 + c.get_attr("blessings_of_the_scarab") as f64 * 0.05);
+        
+        // XP multiplier
+        let xp_mult = c.calculate_xp_multiplier(HunterType::Ozzy);
         
         // Revives - death_is_my_companion + blessings_of_the_sisters
         let dimc = c.get_talent("death_is_my_companion");
@@ -411,6 +412,7 @@ impl Hunter {
             has_trample: false,
             has_decay: *c.mods.get("decay").unwrap_or(&false),
             loot_mult,
+            xp_mult,
             result: SimResult::default(),
             current_stage: 0,
             revive_count: 0,
@@ -476,8 +478,9 @@ impl Hunter {
         let special_chance = 0.10;
         let special_damage = 1.0 + c.get_talent("finishing_move") as f64 * 0.2;
         
-        // Loot multiplier
-        let loot_mult = 1.0 + c.get_attr("timeless_mastery") as f64 * 0.13;
+        // Loot and XP multipliers - use comprehensive calculation from config
+        let loot_mult = c.calculate_loot_multiplier(HunterType::Knox);
+        let xp_mult = c.calculate_xp_multiplier(HunterType::Knox);
         
         // Revives
         let dimc = c.get_talent("death_is_my_companion");
@@ -541,6 +544,7 @@ impl Hunter {
             has_trample: false,
             has_decay: false,
             loot_mult,
+            xp_mult,
             result: SimResult::default(),
             current_stage: 0,
             revive_count: 0,
@@ -620,26 +624,24 @@ impl Hunter {
         let stage = self.current_stage as f64;
         let mult = self.loot_mult;
         
-        // WASM-based per-resource loot formulas:
-        // Mat1: stage * 0.3 * avg(1.686) / divisor(1.4558) = stage * 0.347
-        // Mat2: stage * 0.3 * avg(1.6) / divisor(1.4558) = stage * 0.330
-        // Mat3: stage * 0.3 * avg(1.2) / divisor(1.4558) = stage * 0.247
-        let mat1 = stage * 0.347 * mult;
-        let mat2 = stage * 0.330 * mult;
-        let mat3 = stage * 0.247 * mult;
+        // WASM loot formula uses EXPONENTIAL scaling with stage!
+        // Base loot per stage = pow(1.07, stage) * coefficient
+        // The 1.07 base was derived from matching website expected values:
+        // - 345.67t total loot for 300 stages with ~6000x multiplier
+        // - Base loot ~57.6 billion = sum of pow(1.07, i) for i=1..300
+        // 
+        // Material ratios (from WASM analysis):
+        // - Mat1 (Obsidian): 37.8% of total
+        // - Mat2 (Behlium): 35.7% of total  
+        // - Mat3 (Hellish-Biomatter): 26.6% of total
+        let base_loot = 1.07_f64.powf(stage);
+        let mat1 = base_loot * 0.378 * mult;
+        let mat2 = base_loot * 0.357 * mult;
+        let mat3 = base_loot * 0.266 * mult;
         
-        // XP: stage * 0.1 * avg(1.1) / divisor(1.4558) = stage * 0.0755
-        let xp_bonus = self.get_xp_bonus();
-        let xp = stage * 0.0755 * mult * xp_bonus;
+        // XP also uses exponential scaling
+        // XP multiplier includes Book of Mephisto (r19) and inscryptions
+        let xp = base_loot * 0.1 * mult * self.xp_mult;
         
-        (mat1, mat2, mat3, xp)
-    }
-    
-    /// Get XP bonus multiplier from inscryptions
-    pub fn get_xp_bonus(&self) -> f64 {
-        // Currently only Ozzy has XP inscription (i33 = +75% per level)
-        // This would need inscryption tracking to implement properly
-        // For now return 1.0 (no bonus)
-        1.0
-    }
+        (mat1, mat2, mat3, xp)    }
 }

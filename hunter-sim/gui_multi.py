@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from hunters import Borge, Knox, Ozzy, Hunter
 from sim import SimulationManager, Simulation, sim_worker
+from units import Boss, Enemy
 
 # Import classes from the original gui.py
 from gui import (
@@ -98,10 +99,17 @@ class HunterTab:
         self.hunter_class = hunter_class
         self.app = app
         self.colors = HUNTER_COLORS[hunter_name]
+        self.parent_notebook = parent_notebook
+        
+        # Track if tab content has been initialized (lazy loading)
+        self._content_initialized = False
         
         # Create the main frame for this hunter
         self.frame = ttk.Frame(parent_notebook)
         parent_notebook.add(self.frame, text=f"  {hunter_name}  ")
+        
+        # Bind to visibility event for lazy loading
+        self.frame.bind('<Visibility>', self._on_tab_visible)
         
         # Load portrait image
         self.portrait_image = None
@@ -138,6 +146,42 @@ class HunterTab:
         self.irl_max_stage = tk.IntVar(value=0)
         self.irl_baseline_result = None  # Stores sim result for user's current build
         
+        # Pre-initialize variables that may be accessed before lazy loading
+        self.num_sims = tk.IntVar(value=100)
+        self.builds_per_tier = tk.IntVar(value=10)
+        self.use_rust = tk.BooleanVar(value=RUST_AVAILABLE)
+        self.use_progressive = tk.BooleanVar(value=True)
+        
+        # Placeholder references for lazy-created widgets
+        self.container = None
+        self.sub_notebook = None
+        self.build_frame = None
+        self.run_frame = None
+        self.advisor_frame = None
+        self.results_frame = None
+        self.log_text = None  # Will be created in lazy loading
+        
+        # Show loading placeholder
+        self._loading_label = ttk.Label(self.frame, text=f"Loading {hunter_name}...", 
+                                        font=('Arial', 14))
+        self._loading_label.pack(expand=True)
+    
+    def _on_tab_visible(self, event=None):
+        """Lazy-load tab content when first visible."""
+        if self._content_initialized:
+            return
+        self._content_initialized = True
+        
+        # Remove loading placeholder
+        if hasattr(self, '_loading_label') and self._loading_label:
+            self._loading_label.destroy()
+            self._loading_label = None
+        
+        # Now create the actual content
+        self._initialize_content()
+    
+    def _initialize_content(self):
+        """Create all the tab content (called lazily on first view)."""
         # Create container for portrait + content
         self.container = ttk.Frame(self.frame)
         self.container.pack(fill=tk.BOTH, expand=True)
@@ -554,21 +598,15 @@ class HunterTab:
             entry.pack(side=tk.LEFT)
             self.inscryption_entries[inscr_key] = entry
         
-        # Relics Section (LEFT)
-        relics_frame = ttk.LabelFrame(self.scrollable_frame, text="🏆 Relics")
-        relics_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
+        # Relics Note (LEFT) - Relics are now in the Control tab
+        relics_note_frame = ttk.LabelFrame(self.scrollable_frame, text="🏆 Relics")
+        relics_note_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
         left_row += 1
         
-        for i, (relic_key, relic_val) in enumerate(dummy.get("relics", {}).items()):
-            frame = ttk.Frame(relics_frame)
-            frame.grid(row=i, column=0, padx=4, pady=1, sticky="w")
-            label = relic_key.replace("_", " ").title()[:24]
-            ttk.Label(frame, text=f"{label}:", width=24).pack(side=tk.LEFT)
-            entry = ttk.Entry(frame, width=4)
-            entry.insert(0, "0")
-            entry.bind('<FocusOut>', lambda e: self._auto_save_build())
-            entry.pack(side=tk.LEFT)
-            self.relic_entries[relic_key] = entry
+        note_label = ttk.Label(relics_note_frame, 
+                              text="ℹ️ Relics are shared across all hunters.\n   Set them in the Control tab.",
+                              font=('Arial', 9), foreground='gray')
+        note_label.pack(padx=10, pady=10)
         
         # === RIGHT COLUMN (column 1) ===
         right_row = 0
@@ -601,17 +639,11 @@ class HunterTab:
         gems_frame.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
         right_row += 1
         
-        for i, (gem_key, gem_val) in enumerate(dummy.get("gems", {}).items()):
-            r, c = divmod(i, 3)  # 3 columns
-            frame = ttk.Frame(gems_frame)
-            frame.grid(row=r, column=c, padx=2, pady=1, sticky="w")
-            label = gem_key.replace("_", " ").replace("#", "").title()[:18]
-            ttk.Label(frame, text=f"{label}:", width=18).pack(side=tk.LEFT)
-            entry = ttk.Entry(frame, width=3)
-            entry.insert(0, "0")
-            entry.bind('<FocusOut>', lambda e: self._auto_save_build())
-            entry.pack(side=tk.LEFT)
-            self.gem_entries[gem_key] = entry
+        # Gems are now in the Control tab - show note
+        note_label = ttk.Label(gems_frame, 
+                              text="ℹ️ Gems are shared across all hunters.\n   Set them in the Control tab.",
+                              font=('Arial', 9), foreground='gray')
+        note_label.pack(padx=10, pady=10)
         
         # Mods Section (RIGHT)
         if dummy.get("mods"):
@@ -697,21 +729,21 @@ class HunterTab:
         row1.pack(fill=tk.X, padx=10, pady=3)
         
         ttk.Label(row1, text="Sims per build:").pack(side=tk.LEFT, padx=5)
-        self.num_sims = tk.IntVar(value=100 if RUST_AVAILABLE else 10)
+        # num_sims is pre-initialized in __init__
         ttk.Spinbox(row1, textvariable=self.num_sims, from_=10, to=1000, width=6).pack(side=tk.LEFT, padx=5)
         
         ttk.Label(row1, text="Builds per tier:").pack(side=tk.LEFT, padx=15)
-        self.builds_per_tier = tk.IntVar(value=500)
+        # builds_per_tier is pre-initialized in __init__
         ttk.Spinbox(row1, textvariable=self.builds_per_tier, from_=100, to=5000, width=6).pack(side=tk.LEFT, padx=5)
         
         row2 = ttk.Frame(settings_frame)
         row2.pack(fill=tk.X, padx=10, pady=3)
         
-        self.use_rust = tk.BooleanVar(value=RUST_AVAILABLE)
+        # use_rust is pre-initialized in __init__
         ttk.Checkbutton(row2, text="🦀 Use Rust Engine", variable=self.use_rust,
                         state=tk.NORMAL if RUST_AVAILABLE else tk.DISABLED).pack(side=tk.LEFT, padx=5)
         
-        self.use_progressive = tk.BooleanVar(value=True)
+        # use_progressive is pre-initialized in __init__
         ttk.Checkbutton(row2, text="📈 Progressive Evolution", variable=self.use_progressive).pack(side=tk.LEFT, padx=15)
         
         # Buttons
@@ -746,11 +778,20 @@ class HunterTab:
         self.best_avg_label.pack(side=tk.LEFT, padx=15)
         
         # Log
-        log_frame = ttk.LabelFrame(self.run_frame, text="📋 Log")
+        log_frame = ttk.LabelFrame(self.run_frame, text="📋 Log", style='Dark.TLabelframe')
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=10, state=tk.DISABLED, font=('Consolas', 9))
+        # Dark mode log matching global log style
+        self.log_text = scrolledtext.ScrolledText(
+            log_frame, height=10, state=tk.DISABLED, font=('Consolas', 9),
+            bg='#1e1e2e', fg='#e0e0e0', insertbackground='#e0e0e0',
+            selectbackground='#3d3d5c', selectforeground='#ffffff',
+            highlightbackground='#2d2d3d', highlightcolor='#3d3d5c',
+            relief=tk.FLAT, borderwidth=0
+        )
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Style the internal frame
+        self.log_text.configure(background='#1e1e2e')
     
     def _create_advisor_tab(self):
         """Create the Upgrade Advisor sub-tab."""
@@ -809,7 +850,13 @@ class HunterTab:
         results_frame = ttk.LabelFrame(self.advisor_frame, text="📈 Upgrade Recommendations")
         results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        self.advisor_results = scrolledtext.ScrolledText(results_frame, height=15, font=('Consolas', 10))
+        self.advisor_results = scrolledtext.ScrolledText(
+            results_frame, height=15, font=('Consolas', 10),
+            bg='#1e1e2e', fg='#e0e0e0', insertbackground='#e0e0e0',
+            selectbackground='#3d3d5c', selectforeground='#ffffff',
+            highlightbackground='#2d2d3d', highlightcolor='#3d3d5c',
+            relief=tk.FLAT, borderwidth=0
+        )
         self.advisor_results.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
     
     def _run_upgrade_advisor(self):
@@ -1069,7 +1116,13 @@ class HunterTab:
             frame = ttk.Frame(self.results_notebook)
             self.results_notebook.add(frame, text=label)
             
-            text = scrolledtext.ScrolledText(frame, height=20, font=('Consolas', 9))
+            text = scrolledtext.ScrolledText(
+                frame, height=20, font=('Consolas', 9),
+                bg='#1e1e2e', fg='#e0e0e0', insertbackground='#e0e0e0',
+                selectbackground='#3d3d5c', selectforeground='#ffffff',
+                highlightbackground='#2d2d3d', highlightcolor='#3d3d5c',
+                relief=tk.FLAT, borderwidth=0
+            )
             text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
             
             # Configure color tags for rankings
@@ -1089,6 +1142,8 @@ class HunterTab:
     
     def _log_direct(self, message: str):
         """Add a message to the log directly (only call from main thread)."""
+        if not self.log_text:  # Not initialized yet
+            return
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
@@ -1123,17 +1178,53 @@ class HunterTab:
             except ValueError:
                 config["inscryptions"][key] = 0
         
-        for key, entry in self.relic_entries.items():
-            try:
-                config["relics"][key] = int(entry.get())
-            except ValueError:
-                config["relics"][key] = 0
+        # Relics - read from GLOBAL relics in the app's Control tab (shared across hunters)
+        try:
+            # Common relics for all hunters
+            config["relics"]["disk_of_dawn"] = self.app.global_relic_r4.get()
+            config["relics"]["r7"] = self.app.global_relic7.get()
+            config["relics"]["manifestation_core_titan"] = self.app.global_relic7.get()
+            
+            # Hunter-specific relics
+            if self.hunter_name == "Borge":
+                config["relics"]["long_range_artillery_crawler"] = self.app.global_relic_r16.get()
+                config["relics"]["book_of_mephisto"] = self.app.global_relic_r19.get()
+            elif self.hunter_name == "Ozzy":
+                config["relics"]["bee_gone_companion_drone"] = self.app.global_relic_r17.get()
+        except (AttributeError, tk.TclError):
+            # Fallback if global relics not yet initialized
+            config["relics"]["disk_of_dawn"] = 0
+            config["relics"]["r7"] = 0
+            config["relics"]["manifestation_core_titan"] = 0
+            if self.hunter_name == "Borge":
+                config["relics"]["long_range_artillery_crawler"] = 0
+                config["relics"]["book_of_mephisto"] = 0
+            elif self.hunter_name == "Ozzy":
+                config["relics"]["bee_gone_companion_drone"] = 0
         
-        for key, entry in self.gem_entries.items():
-            try:
-                config["gems"][key] = int(entry.get())
-            except ValueError:
-                config["gems"][key] = 0
+        # Gems - read from GLOBAL gems in the app's Control tab (shared across hunters)
+        try:
+            # Common gems for all hunters
+            config["gems"]["attraction_gem"] = self.app.global_gem_attraction.get()
+            config["gems"]["attraction_catch-up"] = self.app.global_gem_catchup.get()
+            config["gems"]["attraction_node_#3"] = self.app.global_gem_attraction_node3.get()
+            config["gems"]["innovation_node_#3"] = self.app.global_gem_innovation_node3.get()
+            
+            # Borge-only gems
+            if self.hunter_name == "Borge":
+                config["gems"]["creation_node_#1"] = self.app.global_gem_creation_node1.get()
+                config["gems"]["creation_node_#2"] = self.app.global_gem_creation_node2.get()
+                config["gems"]["creation_node_#3"] = self.app.global_gem_creation_node3.get()
+        except (AttributeError, tk.TclError):
+            # Fallback if global gems not yet initialized
+            config["gems"]["attraction_gem"] = 0
+            config["gems"]["attraction_catch-up"] = 0
+            config["gems"]["attraction_node_#3"] = 0
+            config["gems"]["innovation_node_#3"] = 0
+            if self.hunter_name == "Borge":
+                config["gems"]["creation_node_#1"] = 0
+                config["gems"]["creation_node_#2"] = 0
+                config["gems"]["creation_node_#3"] = 0
         
         for key, var in self.mod_vars.items():
             config["mods"][key] = var.get()
@@ -1147,16 +1238,49 @@ class HunterTab:
         
         # Bonuses - read from GLOBAL bonuses in the app's Control tab
         try:
+            # Core multipliers
             config["bonuses"]["shard_milestone"] = self.app.global_shard_milestone.get()
+            config["bonuses"]["research81"] = self.app.global_research81.get()
             config["bonuses"]["diamond_loot"] = self.app.global_diamond_loot.get()
-            config["bonuses"]["iap_travpack"] = self.app.global_iap_travpack.get()
             config["bonuses"]["ultima_multiplier"] = self.app.global_ultima_multiplier.get()
+            
+            # Loop mods
+            config["bonuses"]["scavenger"] = self.app.global_scavenger.get()
+            config["bonuses"]["scavenger2"] = self.app.global_scavenger2.get()
+            
+            # Construction Milestones
+            config["bonuses"]["cm46"] = self.app.global_cm46.get()
+            config["bonuses"]["cm47"] = self.app.global_cm47.get()
+            config["bonuses"]["cm48"] = self.app.global_cm48.get()
+            config["bonuses"]["cm51"] = self.app.global_cm51.get()
+            
+            # Diamond cards
+            config["bonuses"]["gaiden_card"] = self.app.global_gaiden_card.get()
+            config["bonuses"]["iridian_card"] = self.app.global_iridian_card.get()
+            
+            # IAP
+            config["bonuses"]["iap_travpack"] = self.app.global_iap_travpack.get()
+            
+            # Gem loot nodes - CRITICAL for loot multiplier!
+            config["bonuses"]["attraction_loot_borge"] = self.app.global_gem_loot_borge.get()
+            config["bonuses"]["attraction_loot_ozzy"] = self.app.global_gem_loot_ozzy.get()
         except (AttributeError, tk.TclError):
             # Fallback if global bonuses not yet initialized
             config["bonuses"]["shard_milestone"] = 0
+            config["bonuses"]["research81"] = 0
             config["bonuses"]["diamond_loot"] = 0
             config["bonuses"]["iap_travpack"] = False
             config["bonuses"]["ultima_multiplier"] = 1.0
+            config["bonuses"]["scavenger"] = 0
+            config["bonuses"]["scavenger2"] = 0
+            config["bonuses"]["cm46"] = False
+            config["bonuses"]["cm47"] = False
+            config["bonuses"]["cm48"] = False
+            config["bonuses"]["cm51"] = False
+            config["bonuses"]["gaiden_card"] = False
+            config["bonuses"]["iridian_card"] = False
+            config["bonuses"]["attraction_loot_borge"] = 0
+            config["bonuses"]["attraction_loot_ozzy"] = 0
         
         return config
     
@@ -1628,18 +1752,24 @@ class HunterTab:
         # Sort by cost (prefer cheaper ones for efficiency)
         unlimited_attrs.sort(key=lambda a: attr_costs[a])
         
-        # Find unlimited talents for fallback
-        unlimited_talents = [t for t in talents_list if talent_max[t] == float('inf')]
+        # Find unlimited talents for fallback (but NOT unknown_talent - that's last resort)
+        unlimited_talents = [t for t in talents_list if talent_max[t] == float('inf') and t != 'unknown_talent']
         
         # === ADD TALENT POINTS ===
         attempts = 0
         while talent_to_add > 0 and attempts < 1000:
             attempts += 1
-            # Find talents that can accept more points (handle inf max properly)
+            # Find KNOWN talents that can accept more points (exclude unknown_talent)
             valid = [t for t in talents_list 
-                     if talent_max[t] == float('inf') or talents[t] < int(talent_max[t])]
+                     if t != 'unknown_talent' and (talent_max[t] == float('inf') or talents[t] < int(talent_max[t]))]
+            
+            # Only use unknown_talent as LAST RESORT when all known talents are maxed
             if not valid:
-                break
+                if 'unknown_talent' in talents_list:
+                    valid = ['unknown_talent']
+                else:
+                    break
+            
             chosen = random.choice(valid)
             talents[chosen] += 1
             talent_to_add -= 1
@@ -1734,6 +1864,7 @@ class HunterTab:
                 mods=config.get("mods", {}),
                 relics=config.get("relics", {}),
                 gems=config.get("gems", {}),
+                bonuses=config.get("bonuses", {}),
                 num_sims=num_sims,
                 parallel=True
             )
@@ -2306,11 +2437,23 @@ class HunterTab:
 class MultiHunterGUI:
     """Main GUI with tabs for each hunter."""
     
+    # Dark theme colors
+    DARK_BG = "#1a1a2e"
+    DARK_BG_SECONDARY = "#16213e"
+    DARK_BG_TERTIARY = "#0f0f1a"
+    DARK_TEXT = "#e0e0e0"
+    DARK_TEXT_DIM = "#888888"
+    DARK_ACCENT = "#4a4a6a"
+    DARK_BORDER = "#3a3a5a"
+    
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("🎮 Hunter Sim - Multi-Hunter Optimizer")
         self.root.geometry("1400x900")
         self.root.minsize(1000, 600)
+        
+        # Apply dark theme to root window
+        self.root.configure(bg=self.DARK_BG)
         
         # Setup color styles FIRST
         self._setup_styles()
@@ -2319,14 +2462,14 @@ class MultiHunterGUI:
         self._create_log_frame()
         
         # Create main notebook
-        self.main_notebook = ttk.Notebook(self.root)
+        self.main_notebook = ttk.Notebook(self.root, style="Dark.TNotebook")
         self.main_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Initialize hunter_tabs dict BEFORE creating control tab (which references it)
         self.hunter_tabs: Dict[str, HunterTab] = {}
         
         # Create control tab frame FIRST (so it's first in notebook)
-        self.control_frame = ttk.Frame(self.main_notebook)
+        self.control_frame = ttk.Frame(self.main_notebook, style="Dark.TFrame")
         self.main_notebook.add(self.control_frame, text="  ⚙️ Control  ")
         
         # Create hunter tabs with colors in order: Borge, Ozzy, Knox
@@ -2339,12 +2482,127 @@ class MultiHunterGUI:
             icon = '🛡️' if name == 'Borge' else '🔫' if name == 'Knox' else '🐙'
             self.main_notebook.tab(idx, text=f"  {icon} {name}  ")
         
+        # Pre-initialize Borge tab since Control tab is shown first and 
+        # Borge will be the first hunter tab selected
+        self.root.after(100, lambda: self.hunter_tabs["Borge"]._on_tab_visible())
+        
         # Now populate the control tab (hunter_tabs exists now)
         self._populate_control_tab()
     
     def _setup_styles(self):
-        """Configure ttk styles with hunter colors."""
+        """Configure ttk styles with hunter colors and dark theme."""
         style = ttk.Style()
+        
+        # Set theme base
+        try:
+            style.theme_use('clam')  # 'clam' works well with custom colors
+        except:
+            pass  # Use default if clam not available
+        
+        # === APPLY DARK THEME TO ALL DEFAULT TTK WIDGETS ===
+        # This ensures all ttk widgets use dark theme by default
+        style.configure(".", background=self.DARK_BG, foreground=self.DARK_TEXT,
+                       fieldbackground=self.DARK_BG_SECONDARY, 
+                       insertcolor=self.DARK_TEXT,
+                       selectbackground=self.DARK_ACCENT,
+                       selectforeground=self.DARK_TEXT)
+        
+        # TFrame - dark background
+        style.configure("TFrame", background=self.DARK_BG)
+        
+        # TLabel - dark with light text
+        style.configure("TLabel", background=self.DARK_BG, foreground=self.DARK_TEXT)
+        
+        # TLabelframe - dark with border
+        style.configure("TLabelframe", background=self.DARK_BG, foreground=self.DARK_TEXT,
+                       bordercolor=self.DARK_BORDER)
+        style.configure("TLabelframe.Label", background=self.DARK_BG, foreground=self.DARK_TEXT,
+                       font=('Arial', 10, 'bold'))
+        
+        # TEntry - dark field background
+        style.configure("TEntry", fieldbackground=self.DARK_BG_SECONDARY, 
+                       foreground=self.DARK_TEXT, insertcolor=self.DARK_TEXT)
+        style.map("TEntry",
+                 fieldbackground=[("readonly", self.DARK_BG_TERTIARY)],
+                 foreground=[("readonly", self.DARK_TEXT_DIM)])
+        
+        # TSpinbox - dark field background
+        style.configure("TSpinbox", fieldbackground=self.DARK_BG_SECONDARY,
+                       foreground=self.DARK_TEXT, background=self.DARK_BG,
+                       arrowcolor=self.DARK_TEXT, insertcolor=self.DARK_TEXT)
+        style.map("TSpinbox",
+                 fieldbackground=[("readonly", self.DARK_BG_TERTIARY)])
+        
+        # TButton - dark with accent
+        style.configure("TButton", background=self.DARK_ACCENT, foreground=self.DARK_TEXT,
+                       borderwidth=1, focuscolor=self.DARK_ACCENT)
+        style.map("TButton",
+                 background=[("active", "#5a5a8a"), ("pressed", "#3a3a5a")])
+        
+        # TCheckbutton - dark
+        style.configure("TCheckbutton", background=self.DARK_BG, foreground=self.DARK_TEXT,
+                       indicatorbackground=self.DARK_BG_SECONDARY)
+        style.map("TCheckbutton",
+                 background=[("active", self.DARK_BG)],
+                 indicatorbackground=[("selected", self.DARK_ACCENT)])
+        
+        # TNotebook - dark tabs
+        style.configure("TNotebook", background=self.DARK_BG, borderwidth=0)
+        style.configure("TNotebook.Tab", background=self.DARK_BG_SECONDARY,
+                       foreground=self.DARK_TEXT, padding=[12, 4],
+                       font=('Arial', 10, 'bold'))
+        style.map("TNotebook.Tab",
+                 background=[("selected", self.DARK_BG), ("active", self.DARK_ACCENT)],
+                 foreground=[("selected", "#ffffff"), ("active", "#ffffff")])
+        
+        # TProgressbar - dark with accent
+        style.configure("Horizontal.TProgressbar",
+                       troughcolor=self.DARK_BG_TERTIARY,
+                       background="#4a90d9")
+        
+        # TScrollbar - dark
+        style.configure("Vertical.TScrollbar", background=self.DARK_BG_SECONDARY,
+                       troughcolor=self.DARK_BG, borderwidth=0, arrowcolor=self.DARK_TEXT)
+        style.configure("Horizontal.TScrollbar", background=self.DARK_BG_SECONDARY,
+                       troughcolor=self.DARK_BG, borderwidth=0, arrowcolor=self.DARK_TEXT)
+        
+        # TCombobox - dark
+        style.configure("TCombobox", fieldbackground=self.DARK_BG_SECONDARY,
+                       foreground=self.DARK_TEXT, background=self.DARK_BG,
+                       arrowcolor=self.DARK_TEXT, selectbackground=self.DARK_ACCENT)
+        style.map("TCombobox",
+                 fieldbackground=[("readonly", self.DARK_BG_SECONDARY)])
+        
+        # TSeparator - dark border
+        style.configure("TSeparator", background=self.DARK_BORDER)
+        
+        # === EXPLICIT DARK VARIANTS (for manual use) ===
+        style.configure("Dark.TFrame", background=self.DARK_BG)
+        style.configure("Dark.TLabel", background=self.DARK_BG, foreground=self.DARK_TEXT)
+        style.configure("Dark.TLabelframe", background=self.DARK_BG, foreground=self.DARK_TEXT)
+        style.configure("Dark.TLabelframe.Label", background=self.DARK_BG, foreground=self.DARK_TEXT, 
+                       font=('Arial', 10, 'bold'))
+        style.configure("Dark.TNotebook", background=self.DARK_BG, borderwidth=0)
+        style.configure("Dark.TNotebook.Tab", background=self.DARK_BG_SECONDARY, 
+                       foreground=self.DARK_TEXT, padding=[12, 4],
+                       font=('Arial', 10, 'bold'))
+        style.map("Dark.TNotebook.Tab",
+                 background=[("selected", self.DARK_BG), ("active", self.DARK_ACCENT)],
+                 foreground=[("selected", "#ffffff"), ("active", "#ffffff")])
+        style.configure("Dark.TButton", background=self.DARK_ACCENT, foreground=self.DARK_TEXT,
+                       borderwidth=1, focuscolor=self.DARK_ACCENT, font=('Arial', 10))
+        style.map("Dark.TButton",
+                 background=[("active", "#5a5a8a"), ("pressed", "#3a3a5a")])
+        style.configure("Dark.TCheckbutton", background=self.DARK_BG, foreground=self.DARK_TEXT)
+        style.configure("Dark.TSpinbox", fieldbackground=self.DARK_BG_SECONDARY, 
+                       foreground=self.DARK_TEXT, background=self.DARK_BG)
+        style.configure("Dark.TEntry", fieldbackground=self.DARK_BG_SECONDARY, 
+                       foreground=self.DARK_TEXT)
+        style.configure("Dark.Horizontal.TProgressbar",
+                       troughcolor=self.DARK_BG_TERTIARY, background="#4a90d9")
+        style.configure("Dark.TSeparator", background=self.DARK_BORDER)
+        style.configure("Dark.Vertical.TScrollbar", background=self.DARK_BG_SECONDARY,
+                       troughcolor=self.DARK_BG, borderwidth=0)
         
         # Configure styles for each hunter
         for hunter, colors in HUNTER_COLORS.items():
@@ -2353,56 +2611,129 @@ class MultiHunterGUI:
                           foreground=colors["dark"],
                           font=('Arial', 10, 'bold'))
             
-            # Label styles
+            # Label styles (dark theme compatible)
             style.configure(f"{hunter}.TLabel",
-                          foreground=colors["dark"],
+                          background=self.DARK_BG,
+                          foreground=colors["primary"],
                           font=('Arial', 10, 'bold'))
             
             style.configure(f"{hunter}Light.TLabel",
-                          foreground=colors["primary"])
+                          background=self.DARK_BG,
+                          foreground=colors["light"])
             
             # Frame style with colored border effect
             style.configure(f"{hunter}.TLabelframe",
+                          background=self.DARK_BG,
                           bordercolor=colors["primary"])
             style.configure(f"{hunter}.TLabelframe.Label",
-                          foreground=colors["dark"],
+                          background=self.DARK_BG,
+                          foreground=colors["primary"],
                           font=('Arial', 10, 'bold'))
             
             # Progress bar colors
             style.configure(f"{hunter}.Horizontal.TProgressbar",
-                          troughcolor=colors["light"],
+                          troughcolor=self.DARK_BG_TERTIARY,
                           background=colors["primary"])
             
             # Button style
             style.configure(f"{hunter}.TButton",
-                          foreground=colors["dark"])
+                          foreground=colors["primary"])
     
     def _save_global_bonuses(self, *args):
         """Save global bonuses to file."""
         try:
             # Get values with fallbacks for invalid intermediate states during typing
-            try:
-                shard = self.global_shard_milestone.get()
-            except (tk.TclError, ValueError):
+            def safe_get_int(var):
+                try:
+                    return var.get()
+                except (tk.TclError, ValueError):
+                    return None
+            
+            def safe_get_bool(var):
+                try:
+                    return var.get()
+                except (tk.TclError, ValueError):
+                    return None
+            
+            def safe_get_float(var):
+                try:
+                    return var.get()
+                except (tk.TclError, ValueError):
+                    return None
+            
+            # Skip save if any value is invalid (during typing)
+            shard = safe_get_int(self.global_shard_milestone)
+            relic7 = safe_get_int(self.global_relic7)
+            research81 = safe_get_int(self.global_research81)
+            scavenger = safe_get_int(self.global_scavenger)
+            scavenger2 = safe_get_int(self.global_scavenger2)
+            diamond = safe_get_int(self.global_diamond_loot)
+            cm46 = safe_get_bool(self.global_cm46)
+            cm47 = safe_get_bool(self.global_cm47)
+            cm48 = safe_get_bool(self.global_cm48)
+            cm51 = safe_get_bool(self.global_cm51)
+            gaiden = safe_get_bool(self.global_gaiden_card)
+            iridian = safe_get_bool(self.global_iridian_card)
+            iap = safe_get_bool(self.global_iap_travpack)
+            ultima = safe_get_float(self.global_ultima_multiplier)
+            
+            # Relics
+            relic_r4 = safe_get_int(self.global_relic_r4)
+            relic_r16 = safe_get_int(self.global_relic_r16)
+            relic_r17 = safe_get_int(self.global_relic_r17)
+            relic_r19 = safe_get_int(self.global_relic_r19)
+            
+            # Gems
+            gem_attraction = safe_get_int(self.global_gem_attraction)
+            gem_loot_borge = safe_get_int(self.global_gem_loot_borge)
+            gem_loot_ozzy = safe_get_int(self.global_gem_loot_ozzy)
+            gem_catchup = safe_get_int(self.global_gem_catchup)
+            gem_attraction_node3 = safe_get_int(self.global_gem_attraction_node3)
+            gem_innovation_node3 = safe_get_int(self.global_gem_innovation_node3)
+            gem_creation_node1 = safe_get_int(self.global_gem_creation_node1)
+            gem_creation_node2 = safe_get_int(self.global_gem_creation_node2)
+            gem_creation_node3 = safe_get_int(self.global_gem_creation_node3)
+            
+            all_values = [shard, relic7, research81, scavenger, scavenger2, 
+                          diamond, cm46, cm47, cm48, cm51, gaiden, iridian, iap, ultima,
+                          relic_r4, relic_r16, relic_r17, relic_r19,
+                          gem_attraction, gem_loot_borge, gem_loot_ozzy, gem_catchup, 
+                          gem_attraction_node3, gem_innovation_node3,
+                          gem_creation_node1, gem_creation_node2, gem_creation_node3]
+            
+            if any(v is None for v in all_values):
                 return  # Skip save during invalid typing
-            try:
-                diamond = self.global_diamond_loot.get()
-            except (tk.TclError, ValueError):
-                return
-            try:
-                iap = self.global_iap_travpack.get()
-            except (tk.TclError, ValueError):
-                return
-            try:
-                ultima = self.global_ultima_multiplier.get()
-            except (tk.TclError, ValueError):
-                return  # Skip save during invalid typing (e.g., "1.." while typing "1.05")
             
             config = {
                 "shard_milestone": shard,
+                "relic7": relic7,
+                "research81": research81,
+                "scavenger": scavenger,
+                "scavenger2": scavenger2,
                 "diamond_loot": diamond,
+                "cm46": cm46,
+                "cm47": cm47,
+                "cm48": cm48,
+                "cm51": cm51,
+                "gaiden_card": gaiden,
+                "iridian_card": iridian,
                 "iap_travpack": iap,
-                "ultima_multiplier": ultima
+                "ultima_multiplier": ultima,
+                # Global relics
+                "relic_r4": relic_r4,
+                "relic_r16": relic_r16,
+                "relic_r17": relic_r17,
+                "relic_r19": relic_r19,
+                # Global gems
+                "gem_attraction": gem_attraction,
+                "gem_loot_borge": gem_loot_borge,
+                "gem_loot_ozzy": gem_loot_ozzy,
+                "gem_catchup": gem_catchup,
+                "gem_attraction_node3": gem_attraction_node3,
+                "gem_innovation_node3": gem_innovation_node3,
+                "gem_creation_node1": gem_creation_node1,
+                "gem_creation_node2": gem_creation_node2,
+                "gem_creation_node3": gem_creation_node3
             }
             IRL_BUILDS_PATH.mkdir(exist_ok=True)
             with open(GLOBAL_BONUSES_FILE, 'w') as f:
@@ -2417,85 +2748,196 @@ class MultiHunterGUI:
                 with open(GLOBAL_BONUSES_FILE, 'r') as f:
                     config = json.load(f)
                 self.global_shard_milestone.set(config.get("shard_milestone", 0))
+                self.global_relic7.set(config.get("relic7", 0))
+                self.global_research81.set(config.get("research81", 0))
+                self.global_scavenger.set(config.get("scavenger", 0))
+                self.global_scavenger2.set(config.get("scavenger2", 0))
                 self.global_diamond_loot.set(config.get("diamond_loot", 0))
+                self.global_cm46.set(config.get("cm46", False))
+                self.global_cm47.set(config.get("cm47", False))
+                self.global_cm48.set(config.get("cm48", False))
+                self.global_cm51.set(config.get("cm51", False))
+                self.global_gaiden_card.set(config.get("gaiden_card", False))
+                self.global_iridian_card.set(config.get("iridian_card", False))
                 self.global_iap_travpack.set(config.get("iap_travpack", False))
                 self.global_ultima_multiplier.set(config.get("ultima_multiplier", 1.0))
+                # Global relics
+                self.global_relic_r4.set(config.get("relic_r4", 0))
+                self.global_relic_r16.set(config.get("relic_r16", 0))
+                self.global_relic_r17.set(config.get("relic_r17", 0))
+                self.global_relic_r19.set(config.get("relic_r19", 0))
+                # Global gems
+                self.global_gem_attraction.set(config.get("gem_attraction", 0))
+                self.global_gem_loot_borge.set(config.get("gem_loot_borge", 0))
+                self.global_gem_loot_ozzy.set(config.get("gem_loot_ozzy", 0))
+                self.global_gem_catchup.set(config.get("gem_catchup", 0))
+                self.global_gem_attraction_node3.set(config.get("gem_attraction_node3", 0))
+                self.global_gem_innovation_node3.set(config.get("gem_innovation_node3", 0))
+                self.global_gem_creation_node1.set(config.get("gem_creation_node1", 0))
+                self.global_gem_creation_node2.set(config.get("gem_creation_node2", 0))
+                self.global_gem_creation_node3.set(config.get("gem_creation_node3", 0))
                 self._log("✅ Loaded global bonuses")
             except Exception as e:
                 self._log(f"⚠️ Failed to load global bonuses: {e}")
     
     def _populate_control_tab(self):
-        """Populate the control tab for running all hunters."""
+        """Populate the control tab for running all hunters with dark theme."""
         control_frame = self.control_frame  # Use the pre-created frame
+        control_frame.configure(style="Dark.TFrame")
         
-        # Split into left (settings) and right (battle arena)
-        left_frame = ttk.Frame(control_frame)
+        # Split into left (settings) and right (battle arena + run controls)
+        left_frame = tk.Frame(control_frame, bg=self.DARK_BG)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        right_frame = ttk.Frame(control_frame)
+        right_frame = tk.Frame(control_frame, bg=self.DARK_BG)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, pady=5)
         
-        # ============ BATTLE ARENA (right side) ============
-        arena_frame = ttk.LabelFrame(right_frame, text="⚔️ Battle Arena")
-        arena_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # ============ BATTLE ARENA (right side, top) ============
+        arena_label = tk.Label(right_frame, text="⚔️ Battle Arena", 
+                              bg=self.DARK_BG, fg=self.DARK_TEXT, font=('Arial', 11, 'bold'))
+        arena_label.pack(anchor='w', padx=5, pady=(5, 2))
         
         # Create battle canvas
-        self.battle_canvas = tk.Canvas(arena_frame, width=350, height=400, bg='#1a1a2e', highlightthickness=2, highlightbackground='#4a4a6a')
+        self.battle_canvas = tk.Canvas(right_frame, width=350, height=300, bg=self.DARK_BG_TERTIARY, 
+                                       highlightthickness=2, highlightbackground=self.DARK_ACCENT)
         self.battle_canvas.pack(padx=5, pady=5)
         
-        # ============ LEADERBOARD (below arena) ============
-        leaderboard_frame = ttk.LabelFrame(right_frame, text="🏆 Leaderboard - Completed Runs")
-        leaderboard_frame.pack(fill=tk.X, padx=5, pady=5)
+        # ============ RUN CONTROLS (below arena) ============
+        run_panel = tk.Frame(right_frame, bg=self.DARK_BG_SECONDARY, relief='groove', bd=1)
+        run_panel.pack(fill=tk.X, padx=5, pady=5)
         
-        # Create leaderboard labels for each hunter
+        run_label = tk.Label(run_panel, text="🚀 Run Optimizations", 
+                            bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT, font=('Arial', 10, 'bold'))
+        run_label.pack(anchor='w', padx=10, pady=(8, 5))
+        
+        # Run All button row
+        btn_frame = tk.Frame(run_panel, bg=self.DARK_BG_SECONDARY)
+        btn_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.run_all_btn = tk.Button(btn_frame, text="🚀 Run ALL Hunters", 
+                                     command=self._run_all_hunters,
+                                     bg='#2d5a27', fg='white', font=('Arial', 10, 'bold'),
+                                     activebackground='#3d7a37', activeforeground='white',
+                                     relief='raised', bd=2, padx=10, pady=5)
+        self.run_all_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.stop_all_btn = tk.Button(btn_frame, text="⏹️ Stop All", 
+                                      command=self._stop_all_hunters, state=tk.DISABLED,
+                                      bg='#8b2500', fg='white', font=('Arial', 10, 'bold'),
+                                      activebackground='#ab3500', activeforeground='white',
+                                      relief='raised', bd=2, padx=10, pady=5)
+        self.stop_all_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Hunter selection checkboxes
+        selection_frame = tk.Frame(run_panel, bg=self.DARK_BG_SECONDARY)
+        selection_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(selection_frame, text="Select:", bg=self.DARK_BG_SECONDARY, 
+                fg=self.DARK_TEXT_DIM, font=('Arial', 9)).pack(side=tk.LEFT)
+        
+        self.run_borge_var = tk.BooleanVar(value=True)
+        self.run_knox_var = tk.BooleanVar(value=True)
+        self.run_ozzy_var = tk.BooleanVar(value=True)
+        
+        for name, var, color in [("🛡️ Borge", self.run_borge_var, "#DC3545"), 
+                                  ("🔫 Knox", self.run_knox_var, "#0D6EFD"),
+                                  ("🐙 Ozzy", self.run_ozzy_var, "#198754")]:
+            cb = tk.Checkbutton(selection_frame, text=name, variable=var,
+                               bg=self.DARK_BG_SECONDARY, fg=color, 
+                               selectcolor=self.DARK_BG_TERTIARY, activebackground=self.DARK_BG_SECONDARY,
+                               font=('Arial', 9, 'bold'))
+            cb.pack(side=tk.LEFT, padx=8)
+        
+        # ============ STATUS / LEADERBOARD (combined panel below run controls) ============
+        status_panel = tk.Frame(right_frame, bg=self.DARK_BG_TERTIARY, relief='groove', bd=1)
+        status_panel.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Status header (will switch between "Status" and "Leaderboard")
+        self.status_header = tk.Label(status_panel, text="📊 Status / 🏆 Leaderboard", 
+                                      bg=self.DARK_BG_TERTIARY, fg=self.DARK_TEXT, 
+                                      font=('Arial', 10, 'bold'))
+        self.status_header.pack(anchor='w', padx=10, pady=(8, 5))
+        
+        # Overall status
+        self.all_status = tk.Label(status_panel, text="Ready to run optimizations",
+                                   bg=self.DARK_BG_TERTIARY, fg=self.DARK_TEXT_DIM,
+                                   font=('Arial', 9))
+        self.all_status.pack(anchor='w', padx=10, pady=2)
+        
+        # Create combined status/leaderboard entries for each hunter
         self.leaderboard_labels = {}
+        self.hunter_status_frames = {}
+        
         for hunter_name, (icon, color) in [("Borge", ("🛡️", "#DC3545")), 
                                             ("Knox", ("🔫", "#0D6EFD")), 
                                             ("Ozzy", ("🐙", "#198754"))]:
-            row_frame = ttk.Frame(leaderboard_frame)
-            row_frame.pack(fill=tk.X, padx=5, pady=2)
+            row_frame = tk.Frame(status_panel, bg=self.DARK_BG_TERTIARY)
+            row_frame.pack(fill=tk.X, padx=10, pady=3)
             
+            # Hunter name
             name_label = tk.Label(row_frame, text=f"{icon} {hunter_name}", 
-                                  fg=color, bg='#1a1a2e', font=('Arial', 10, 'bold'), width=10, anchor='w')
+                                  fg=color, bg=self.DARK_BG_TERTIARY, 
+                                  font=('Arial', 10, 'bold'), width=10, anchor='w')
             name_label.pack(side=tk.LEFT, padx=2)
             
+            # Progress bar (visible during run)
+            progress_var = tk.DoubleVar(value=0)
+            progress_bar = ttk.Progressbar(row_frame, variable=progress_var, maximum=100, 
+                                           length=100, style=f"{hunter_name}.Horizontal.TProgressbar")
+            progress_bar.pack(side=tk.LEFT, padx=5)
+            
+            # Status/result text
             stats_label = tk.Label(row_frame, text="Waiting...", 
-                                   fg='#888888', bg='#1a1a2e', font=('Arial', 9), anchor='w')
+                                   fg=self.DARK_TEXT_DIM, bg=self.DARK_BG_TERTIARY, 
+                                   font=('Arial', 9), anchor='w')
             stats_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
             
             self.leaderboard_labels[hunter_name] = stats_label
+            self.hunter_status_frames[hunter_name] = {
+                'frame': row_frame, 
+                'progress_var': progress_var,
+                'progress_bar': progress_bar,
+                'status_label': stats_label
+            }
         
         # Initialize battle state
         self._init_battle_arena()
         
-        # Create scrollable content for left side
-        canvas = tk.Canvas(left_frame)
+        # Create scrollable content for left side with dark theme
+        canvas = tk.Canvas(left_frame, bg=self.DARK_BG, highlightthickness=0)
         scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=canvas.yview)
-        scrollable = ttk.Frame(canvas)
+        scrollable = tk.Frame(canvas, bg=self.DARK_BG)
         
         scrollable.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         
+        # Enable mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         # ============ GLOBAL SETTINGS ============
-        settings_frame = ttk.LabelFrame(scrollable, text="⚙️ Global Optimization Settings (applies to all hunters)")
+        settings_frame = tk.LabelFrame(scrollable, text="⚙️ Global Optimization Settings", 
+                                       bg=self.DARK_BG, fg=self.DARK_TEXT, font=('Arial', 10, 'bold'))
         settings_frame.pack(fill=tk.X, padx=20, pady=10)
         
         # Simulations per build
-        row1 = ttk.Frame(settings_frame)
+        row1 = tk.Frame(settings_frame, bg=self.DARK_BG)
         row1.pack(fill=tk.X, padx=10, pady=5)
         
-        ttk.Label(row1, text="Simulations per build:").pack(side=tk.LEFT, padx=5)
+        tk.Label(row1, text="Simulations per build:", bg=self.DARK_BG, fg=self.DARK_TEXT).pack(side=tk.LEFT, padx=5)
         self.global_num_sims = tk.IntVar(value=100 if RUST_AVAILABLE else 10)
-        ttk.Spinbox(row1, textvariable=self.global_num_sims, from_=10, to=1000, increment=10, width=8).pack(side=tk.LEFT, padx=5)
-        ttk.Label(row1, text="(More = more accurate, 100-500 recommended)", 
-                  font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
+        tk.Spinbox(row1, textvariable=self.global_num_sims, from_=10, to=1000, increment=10, width=8,
+                  bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT, insertbackground=self.DARK_TEXT).pack(side=tk.LEFT, padx=5)
+        tk.Label(row1, text="(100-500 recommended)", bg=self.DARK_BG, fg=self.DARK_TEXT_DIM,
+                font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
         
         # Builds per tier
-        row2 = ttk.Frame(settings_frame)
+        row2 = tk.Frame(settings_frame, bg=self.DARK_BG)
         row2.pack(fill=tk.X, padx=10, pady=5)
         
         ttk.Label(row2, text="Builds per tier:").pack(side=tk.LEFT, padx=5)
@@ -2560,1317 +3002,763 @@ class MultiHunterGUI:
         ttk.Label(row7, text="(Updates each hunter's Run tab)", 
                  font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
         
+        # ============ GLOBAL RELICS (shared across all hunters) ============
+        relics_frame = ttk.LabelFrame(scrollable, text="🏆 Global Relics (Shared Across All Hunters)")
+        relics_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        # Create two-column grid layout for relics (like hunter builds)
+        relics_container = ttk.Frame(relics_frame)
+        relics_container.pack(fill=tk.X, padx=10, pady=5)
+        relics_container.columnconfigure(0, weight=1)
+        relics_container.columnconfigure(1, weight=1)
+        
+        # Left column relics
+        left_relics_frame = ttk.Frame(relics_container)
+        left_relics_frame.grid(row=0, column=0, sticky="nsew", padx=5)
+        
+        # Relic #4 - Disk of Dawn (HP)
+        r4_frame = ttk.Frame(left_relics_frame)
+        r4_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(r4_frame, text="#4 Disk of Dawn (+3% HP):", width=28).pack(side=tk.LEFT)
+        self.global_relic_r4 = tk.IntVar(value=0)
+        ttk.Spinbox(r4_frame, textvariable=self.global_relic_r4, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(r4_frame, text="/100", width=5).pack(side=tk.LEFT)
+        
+        # Relic #7 - Manifestation Core (Loot)
+        r7_frame = ttk.Frame(left_relics_frame)
+        r7_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(r7_frame, text="#7 Manifestation Core (1.05x Loot):", width=28).pack(side=tk.LEFT)
+        self.global_relic7 = tk.IntVar(value=0)
+        ttk.Spinbox(r7_frame, textvariable=self.global_relic7, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(r7_frame, text="/100", width=5).pack(side=tk.LEFT)
+        
+        # Relic #16 - Long-Range Artillery (ATK for Borge)
+        r16_frame = ttk.Frame(left_relics_frame)
+        r16_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(r16_frame, text="#16 Artillery Crawler (+3% ATK):", width=28).pack(side=tk.LEFT)
+        self.global_relic_r16 = tk.IntVar(value=0)
+        ttk.Spinbox(r16_frame, textvariable=self.global_relic_r16, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(r16_frame, text="/100", width=5).pack(side=tk.LEFT)
+        ttk.Label(r16_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
+        # Right column relics
+        right_relics_frame = ttk.Frame(relics_container)
+        right_relics_frame.grid(row=0, column=1, sticky="nsew", padx=5)
+        
+        # Relic #17 - Bee-gone Drone (ATK for Ozzy)
+        r17_frame = ttk.Frame(right_relics_frame)
+        r17_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(r17_frame, text="#17 Bee-gone Drone (+3% ATK):", width=28).pack(side=tk.LEFT)
+        self.global_relic_r17 = tk.IntVar(value=0)
+        ttk.Spinbox(r17_frame, textvariable=self.global_relic_r17, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(r17_frame, text="/100", width=5).pack(side=tk.LEFT)
+        ttk.Label(r17_frame, text="(Ozzy)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
+        # Relic #19 - Book of Mephisto (XP for Borge)
+        r19_frame = ttk.Frame(right_relics_frame)
+        r19_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(r19_frame, text="#19 Book of Mephisto (2x XP):", width=28).pack(side=tk.LEFT)
+        self.global_relic_r19 = tk.IntVar(value=0)
+        ttk.Spinbox(r19_frame, textvariable=self.global_relic_r19, from_=0, to=8, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(r19_frame, text="/8", width=5).pack(side=tk.LEFT)
+        ttk.Label(r19_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
         # ============ GLOBAL BONUSES (shared across all hunters) ============
         bonuses_frame = ttk.LabelFrame(scrollable, text="💎 Global Bonuses (Shared Across All Hunters)")
         bonuses_frame.pack(fill=tk.X, padx=20, pady=10)
         
+        # Row 1: Core multipliers
         bonuses_row1 = ttk.Frame(bonuses_frame)
         bonuses_row1.pack(fill=tk.X, padx=10, pady=5)
         
-        # Shard Milestone
+        # Shard Milestone (unlimited in game, but we cap at 10000 for UI)
         ttk.Label(bonuses_row1, text="Shard Milestone:").pack(side=tk.LEFT, padx=5)
         self.global_shard_milestone = tk.IntVar(value=0)
-        ttk.Spinbox(bonuses_row1, textvariable=self.global_shard_milestone, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Spinbox(bonuses_row1, textvariable=self.global_shard_milestone, from_=0, to=10000, width=6).pack(side=tk.LEFT, padx=5)
         
-        # Diamond Loot
-        ttk.Label(bonuses_row1, text="💎 Diamond Loot:").pack(side=tk.LEFT, padx=15)
-        self.global_diamond_loot = tk.IntVar(value=0)
-        ttk.Spinbox(bonuses_row1, textvariable=self.global_diamond_loot, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        # Research #81
+        ttk.Label(bonuses_row1, text="Research #81:").pack(side=tk.LEFT, padx=15)
+        self.global_research81 = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row1, textvariable=self.global_research81, from_=0, to=6, width=5).pack(side=tk.LEFT, padx=5)
         
-        # IAP Pack
-        self.global_iap_travpack = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bonuses_row1, text="IAP Pack", variable=self.global_iap_travpack).pack(side=tk.LEFT, padx=15)
-        
+        # Row 2: Loop mods
         bonuses_row2 = ttk.Frame(bonuses_frame)
         bonuses_row2.pack(fill=tk.X, padx=10, pady=5)
         
+        ttk.Label(bonuses_row2, text="Loop Mods:", font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
+        
+        # Scavenger's Advantage (Borge)
+        ttk.Label(bonuses_row2, text="Scavenger (Borge):").pack(side=tk.LEFT, padx=10)
+        self.global_scavenger = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row2, textvariable=self.global_scavenger, from_=0, to=25, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Scavenger's Advantage 2 (Ozzy)
+        ttk.Label(bonuses_row2, text="Scavenger 2 (Ozzy):").pack(side=tk.LEFT, padx=10)
+        self.global_scavenger2 = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row2, textvariable=self.global_scavenger2, from_=0, to=25, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Row 3: Construction Milestones
+        bonuses_row3 = ttk.Frame(bonuses_frame)
+        bonuses_row3.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(bonuses_row3, text="CMs:", font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
+        
+        self.global_cm46 = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bonuses_row3, text="CM46 (1.03x)", variable=self.global_cm46).pack(side=tk.LEFT, padx=10)
+        
+        self.global_cm47 = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bonuses_row3, text="CM47 (1.02x)", variable=self.global_cm47).pack(side=tk.LEFT, padx=10)
+        
+        self.global_cm48 = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bonuses_row3, text="CM48 (1.07x)", variable=self.global_cm48).pack(side=tk.LEFT, padx=10)
+        
+        self.global_cm51 = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bonuses_row3, text="CM51 (1.05x)", variable=self.global_cm51).pack(side=tk.LEFT, padx=10)
+        
+        # Row 4: Diamond bonuses
+        bonuses_row4 = ttk.Frame(bonuses_frame)
+        bonuses_row4.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(bonuses_row4, text="💎 Diamond:", font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
+        
+        # Diamond Loot Booster
+        ttk.Label(bonuses_row4, text="Loot Booster:").pack(side=tk.LEFT, padx=10)
+        self.global_diamond_loot = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row4, textvariable=self.global_diamond_loot, from_=0, to=10, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Diamond Cards
+        self.global_gaiden_card = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bonuses_row4, text="Gaiden Card (Borge 1.05x)", variable=self.global_gaiden_card).pack(side=tk.LEFT, padx=10)
+        
+        self.global_iridian_card = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bonuses_row4, text="Iridian Card (Ozzy 1.05x)", variable=self.global_iridian_card).pack(side=tk.LEFT, padx=10)
+        
+        # Row 5: IAP and Ultima
+        bonuses_row5 = ttk.Frame(bonuses_frame)
+        bonuses_row5.pack(fill=tk.X, padx=10, pady=5)
+        
+        # IAP Pack
+        self.global_iap_travpack = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bonuses_row5, text="IAP Traversal Pack (1.25x)", variable=self.global_iap_travpack).pack(side=tk.LEFT, padx=5)
+        
         # Ultima Multiplier
-        ttk.Label(bonuses_row2, text="Ultima Multiplier:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(bonuses_row5, text="Ultima Multiplier:").pack(side=tk.LEFT, padx=15)
         self.global_ultima_multiplier = tk.DoubleVar(value=1.0)
-        ttk.Entry(bonuses_row2, textvariable=self.global_ultima_multiplier, width=6).pack(side=tk.LEFT, padx=5)
-        ttk.Label(bonuses_row2, text="(Enter displayed bonus, not upgrade level)", 
+        ttk.Entry(bonuses_row5, textvariable=self.global_ultima_multiplier, width=8).pack(side=tk.LEFT, padx=5)
+        ttk.Label(bonuses_row5, text="(Enter displayed value, e.g. 1.5 for 50% boost)", 
                   font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=5)
         
-        # Load saved global bonuses, then set up auto-save traces
+        # ============ GLOBAL GEMS (shared across all hunters) ============
+        gems_frame = ttk.LabelFrame(scrollable, text="💎 Global Gems (Shared Across All Hunters)")
+        gems_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        # Create two-column grid layout for gems
+        gems_container = ttk.Frame(gems_frame)
+        gems_container.pack(fill=tk.X, padx=10, pady=5)
+        gems_container.columnconfigure(0, weight=1)
+        gems_container.columnconfigure(1, weight=1)
+        
+        # Left column gems
+        left_gems_frame = ttk.Frame(gems_container)
+        left_gems_frame.grid(row=0, column=0, sticky="nsew", padx=5)
+        
+        # Attraction Gem Level
+        gem1_frame = ttk.Frame(left_gems_frame)
+        gem1_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem1_frame, text="Attraction Gem:", width=22).pack(side=tk.LEFT)
+        self.global_gem_attraction = tk.IntVar(value=0)
+        ttk.Spinbox(gem1_frame, textvariable=self.global_gem_attraction, from_=0, to=3, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Loot (Borge) - CRITICAL MULTIPLIER!
+        loot_borge_frame = ttk.Frame(left_gems_frame)
+        loot_borge_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(loot_borge_frame, text="Loot (Borge):", width=22).pack(side=tk.LEFT)
+        self.global_gem_loot_borge = tk.IntVar(value=0)
+        ttk.Spinbox(loot_borge_frame, textvariable=self.global_gem_loot_borge, from_=0, to=50, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(loot_borge_frame, text="(1.07^lvl)", font=('Arial', 8), foreground='red').pack(side=tk.LEFT, padx=2)
+        
+        # Loot (Ozzy) - CRITICAL MULTIPLIER!
+        loot_ozzy_frame = ttk.Frame(left_gems_frame)
+        loot_ozzy_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(loot_ozzy_frame, text="Loot (Ozzy):", width=22).pack(side=tk.LEFT)
+        self.global_gem_loot_ozzy = tk.IntVar(value=0)
+        ttk.Spinbox(loot_ozzy_frame, textvariable=self.global_gem_loot_ozzy, from_=0, to=50, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(loot_ozzy_frame, text="(1.07^lvl)", font=('Arial', 8), foreground='green').pack(side=tk.LEFT, padx=2)
+        
+        # Attraction Catch-Up
+        gem2_frame = ttk.Frame(left_gems_frame)
+        gem2_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem2_frame, text="Catch-Up Power:", width=22).pack(side=tk.LEFT)
+        self.global_gem_catchup = tk.IntVar(value=0)
+        ttk.Spinbox(gem2_frame, textvariable=self.global_gem_catchup, from_=0, to=5, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Attraction Node #3
+        gem3_frame = ttk.Frame(left_gems_frame)
+        gem3_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem3_frame, text="Attraction Node #3:", width=22).pack(side=tk.LEFT)
+        self.global_gem_attraction_node3 = tk.IntVar(value=0)
+        ttk.Spinbox(gem3_frame, textvariable=self.global_gem_attraction_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Innovation Node #3
+        gem4_frame = ttk.Frame(left_gems_frame)
+        gem4_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem4_frame, text="Innovation Node #3:", width=22).pack(side=tk.LEFT)
+        self.global_gem_innovation_node3 = tk.IntVar(value=0)
+        ttk.Spinbox(gem4_frame, textvariable=self.global_gem_innovation_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Right column gems (Borge-only Creation nodes)
+        right_gems_frame = ttk.Frame(gems_container)
+        right_gems_frame.grid(row=0, column=1, sticky="nsew", padx=5)
+        
+        # Creation Node #1
+        gem5_frame = ttk.Frame(right_gems_frame)
+        gem5_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem5_frame, text="Creation Node #1:", width=22).pack(side=tk.LEFT)
+        self.global_gem_creation_node1 = tk.IntVar(value=0)
+        ttk.Spinbox(gem5_frame, textvariable=self.global_gem_creation_node1, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(gem5_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
+        # Creation Node #2
+        gem6_frame = ttk.Frame(right_gems_frame)
+        gem6_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem6_frame, text="Creation Node #2:", width=22).pack(side=tk.LEFT)
+        self.global_gem_creation_node2 = tk.IntVar(value=0)
+        ttk.Spinbox(gem6_frame, textvariable=self.global_gem_creation_node2, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(gem6_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
+        # Creation Node #3
+        gem7_frame = ttk.Frame(right_gems_frame)
+        gem7_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem7_frame, text="Creation Node #3:", width=22).pack(side=tk.LEFT)
+        self.global_gem_creation_node3 = tk.IntVar(value=0)
+        ttk.Spinbox(gem7_frame, textvariable=self.global_gem_creation_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(gem7_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
+        # Load saved global bonuses (after all fields created, before traces)
         self._load_global_bonuses()
-        self.global_shard_milestone.trace_add("write", self._save_global_bonuses)
-        self.global_diamond_loot.trace_add("write", self._save_global_bonuses)
-        self.global_iap_travpack.trace_add("write", self._save_global_bonuses)
-        self.global_ultima_multiplier.trace_add("write", self._save_global_bonuses)
         
-        # ============ RUN CONTROLS ============
-        run_frame = ttk.LabelFrame(scrollable, text="🚀 Run Optimizations")
-        run_frame.pack(fill=tk.X, padx=20, pady=10)
-        
-        # Run All button
-        all_btn_frame = ttk.Frame(run_frame)
-        all_btn_frame.pack(fill=tk.X, padx=10, pady=10)
-        
-        self.run_all_btn = ttk.Button(all_btn_frame, text="🚀 Run ALL Hunters (Borge + Knox + Ozzy)", 
-                                       command=self._run_all_hunters)
-        self.run_all_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.stop_all_btn = ttk.Button(all_btn_frame, text="⏹️ Stop All", 
-                                        command=self._stop_all_hunters, state=tk.DISABLED)
-        self.stop_all_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Hunter selection checkboxes
-        ttk.Separator(run_frame, orient='horizontal').pack(fill=tk.X, padx=10, pady=5)
-        
-        selection_label = ttk.Label(run_frame, text="Select hunters to optimize (runs sequentially):", font=('Arial', 10, 'bold'))
-        selection_label.pack(padx=10, pady=5)
-        
-        selection_frame = ttk.Frame(run_frame)
-        selection_frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        self.run_borge_var = tk.BooleanVar(value=True)
-        self.run_knox_var = tk.BooleanVar(value=True)
-        self.run_ozzy_var = tk.BooleanVar(value=True)
-        
-        ttk.Checkbutton(selection_frame, text="🛡️ Borge", variable=self.run_borge_var).pack(side=tk.LEFT, padx=20)
-        ttk.Checkbutton(selection_frame, text="🔫 Knox", variable=self.run_knox_var).pack(side=tk.LEFT, padx=20)
-        ttk.Checkbutton(selection_frame, text="🐙 Ozzy", variable=self.run_ozzy_var).pack(side=tk.LEFT, padx=20)
-        
-        # Status
-        status_frame = ttk.LabelFrame(scrollable, text="📊 Status")
-        status_frame.pack(fill=tk.X, padx=20, pady=10)
-        
-        self.all_status = ttk.Label(status_frame, text="Ready to run optimizations")
-        self.all_status.pack(padx=20, pady=10)
-        
-        # Hunter status indicators with mini progress bars and battle animations
-        # Borge (Red theme)
-        borge_frame = ttk.Frame(status_frame)
-        borge_frame.pack(fill=tk.X, padx=10, pady=3)
-        self.borge_status = ttk.Label(borge_frame, text="🛡️ Borge: Idle", width=25, style="Borge.TLabel")
-        self.borge_status.pack(side=tk.LEFT, padx=5)
-        self.borge_battle = tk.Label(borge_frame, text="", width=15, font=('Segoe UI Emoji', 10))
-        self.borge_battle.pack(side=tk.LEFT, padx=2)
-        self.borge_progress = tk.DoubleVar(value=0)
-        self.borge_progress_bar = ttk.Progressbar(borge_frame, variable=self.borge_progress, maximum=100, length=150, style="Borge.Horizontal.TProgressbar")
-        self.borge_progress_bar.pack(side=tk.LEFT, padx=5)
-        self.borge_eta = ttk.Label(borge_frame, text="", width=12, style="BorgeLight.TLabel")
-        self.borge_eta.pack(side=tk.LEFT, padx=5)
-        
-        # Knox (Blue theme)
-        knox_frame = ttk.Frame(status_frame)
-        knox_frame.pack(fill=tk.X, padx=10, pady=3)
-        self.knox_status = ttk.Label(knox_frame, text="🔫 Knox: Idle", width=25, style="Knox.TLabel")
-        self.knox_status.pack(side=tk.LEFT, padx=5)
-        self.knox_battle = tk.Label(knox_frame, text="", width=15, font=('Segoe UI Emoji', 10))
-        self.knox_battle.pack(side=tk.LEFT, padx=2)
-        self.knox_progress = tk.DoubleVar(value=0)
-        self.knox_progress_bar = ttk.Progressbar(knox_frame, variable=self.knox_progress, maximum=100, length=150, style="Knox.Horizontal.TProgressbar")
-        self.knox_progress_bar.pack(side=tk.LEFT, padx=5)
-        self.knox_eta = ttk.Label(knox_frame, text="", width=12, style="KnoxLight.TLabel")
-        self.knox_eta.pack(side=tk.LEFT, padx=5)
-        
-        # Ozzy (Green theme)
-        ozzy_frame = ttk.Frame(status_frame)
-        ozzy_frame.pack(fill=tk.X, padx=10, pady=3)
-        self.ozzy_status = ttk.Label(ozzy_frame, text="🐙 Ozzy: Idle", width=25, style="Ozzy.TLabel")
-        self.ozzy_status.pack(side=tk.LEFT, padx=5)
-        self.ozzy_battle = tk.Label(ozzy_frame, text="", width=15, font=('Segoe UI Emoji', 10))
-        self.ozzy_battle.pack(side=tk.LEFT, padx=2)
-        self.ozzy_progress = tk.DoubleVar(value=0)
-        self.ozzy_progress_bar = ttk.Progressbar(ozzy_frame, variable=self.ozzy_progress, maximum=100, length=150, style="Ozzy.Horizontal.TProgressbar")
-        self.ozzy_progress_bar.pack(side=tk.LEFT, padx=5)
-        self.ozzy_eta = ttk.Label(ozzy_frame, text="", width=12, style="OzzyLight.TLabel")
-        self.ozzy_eta.pack(side=tk.LEFT, padx=5)
+        # Set up auto-save traces for all bonus, relic, and gem fields
+        for var in [self.global_shard_milestone, self.global_relic7, self.global_research81,
+                    self.global_scavenger, self.global_scavenger2,
+                    self.global_cm46, self.global_cm47, self.global_cm48, self.global_cm51,
+                    self.global_diamond_loot, self.global_gaiden_card, self.global_iridian_card,
+                    self.global_iap_travpack, self.global_ultima_multiplier,
+                    self.global_relic_r4, self.global_relic_r16, self.global_relic_r17, self.global_relic_r19,
+                    self.global_gem_attraction, self.global_gem_loot_borge, self.global_gem_loot_ozzy,
+                    self.global_gem_catchup, self.global_gem_attraction_node3,
+                    self.global_gem_innovation_node3, self.global_gem_creation_node1, 
+                    self.global_gem_creation_node2, self.global_gem_creation_node3]:
+            var.trace_add("write", self._save_global_bonuses)
         
         # Start battle animation loop
         self.battle_frame = 0
         self._animate_battles()
         
-        # Save All button
-        save_frame = ttk.LabelFrame(scrollable, text="💾 Save All Builds")
+        # Save All button - dark themed
+        save_frame = tk.LabelFrame(scrollable, text="💾 Save & Share Builds",
+                                   bg=self.DARK_BG, fg=self.DARK_TEXT, font=('Arial', 10, 'bold'))
         save_frame.pack(fill=tk.X, padx=20, pady=10)
         
-        ttk.Button(save_frame, text="💾 Save All Builds to IRL Builds folder", 
-                   command=self._save_all_builds).pack(pady=10)
+        btn_row = tk.Frame(save_frame, bg=self.DARK_BG)
+        btn_row.pack(pady=10)
+        
+        save_btn = tk.Button(btn_row, text="💾 Save All Builds", 
+                            command=self._save_all_builds,
+                            bg=self.DARK_ACCENT, fg=self.DARK_TEXT,
+                            font=('Arial', 10), padx=10, pady=5)
+        save_btn.pack(side=tk.LEFT, padx=5)
+        
+        open_btn = tk.Button(btn_row, text="📁 Open IRL Builds Folder", 
+                            command=self._open_irl_builds_folder,
+                            bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT,
+                            font=('Arial', 10), padx=10, pady=5)
+        open_btn.pack(side=tk.LEFT, padx=5)
     
     def _animate_battles(self):
         """Animate hunter battle scenes when running."""
         import random
         
-        # Enemy emojis for battles
-        enemies = ['👹', '👺', '👻', '💀', '🐉', '🐲', '👾', '🤖', '🦇', '🕷️', '🦂', '🐍', '🔥', '⚡']
-        attacks = ['⚔️', '💥', '✨', '🌟', '💫', '🔥', '⚡', '💢', '💨']
+        # Only animate when on a hunter tab that's running (reduce CPU when not visible)
+        try:
+            # Check if notebook exists yet (may not during initialization)
+            if not hasattr(self, 'main_notebook') or self.main_notebook is None:
+                self.root.after(1000, self._animate_battles)
+                return
+            
+            # Cache control tab index to avoid repeated lookups
+            if not hasattr(self, '_control_tab_index'):
+                self._control_tab_index = self.main_notebook.index(self.control_frame)
+            
+            current_tab = self.main_notebook.index(self.main_notebook.select())
+            
+            # Check if any hunter is actually running
+            any_running = any(tab.is_running for tab in self.hunter_tabs.values())
+            
+            if current_tab == self._control_tab_index or not any_running:
+                # On Control tab or no simulations running - slow down animation
+                self.root.after(1000, self._animate_battles)
+                return
+        except (tk.TclError, ValueError, AttributeError):
+            # Tab lookup failed or notebook not ready, slow poll
+            self.root.after(1000, self._animate_battles)
+            return
         
-        # Battle scenes for each hunter (hunter attacks enemy)
-        battle_labels = {
-            "Borge": (self.borge_battle, '🛡️', self.hunter_tabs["Borge"]),
-            "Knox": (self.knox_battle, '🔫', self.hunter_tabs["Knox"]),
-            "Ozzy": (self.ozzy_battle, '🐙', self.hunter_tabs["Ozzy"]),
-        }
-        
-        self.battle_frame += 1
-        
-        for name, (label, icon, tab) in battle_labels.items():
-            if tab.is_running:
-                # Animated battle!
-                enemy = random.choice(enemies)
-                attack = random.choice(attacks)
-                
-                # Alternate between attack frames
-                if self.battle_frame % 2 == 0:
-                    label.configure(text=f"{icon} {attack} {enemy}")
+        # Update status panel with running info
+        for hunter_name, tab in self.hunter_tabs.items():
+            if hunter_name in self.hunter_status_frames:
+                status_info = self.hunter_status_frames[hunter_name]
+                if tab.is_running:
+                    # Show progress
+                    progress_pct = tab.progress_var.get() if hasattr(tab, 'progress_var') else 0
+                    status_info['progress_var'].set(progress_pct)
+                    status_info['status_label'].configure(text=f"Running... {progress_pct:.0f}%", fg='#ffcc00')
+                elif tab.results:
+                    # Show result
+                    best = tab.results[0] if tab.results else None
+                    if best:
+                        status_info['progress_var'].set(100)
+                        status_info['status_label'].configure(
+                            text=f"Stage {best.avg_final_stage:.0f} | {best.avg_loot_per_hour:.0f} loot/hr", 
+                            fg='#00ff00')
                 else:
-                    label.configure(text=f"{icon} 💥 {enemy}")
-            elif tab.results:
-                # Victory pose
-                label.configure(text=f"{icon} 🏆 ✨")
-            else:
-                # Idle - resting
-                label.configure(text=f"{icon} 💤")
+                    # Idle
+                    status_info['progress_var'].set(0)
+                    status_info['status_label'].configure(text="Waiting...", fg=self.DARK_TEXT_DIM)
         
-        # Schedule next frame (300ms = ~3fps animation)
-        self.root.after(300, self._animate_battles)
+        # Schedule next frame (1 second)
+        self.root.after(1000, self._animate_battles)
     
     def _log_arena(self, msg: str):
         """Log a message to the arena - shows briefly in effects."""
         pass  # Silent for now - can add visual log later
     
     def _init_battle_arena(self):
-        """Initialize the battle arena with hunters and enemies using CIFI-accurate mechanics."""
+        """Initialize the battle arena with static hunter PNG and enemy emoji."""
         import random
         
         self.arena_width = 350
-        self.arena_height = 400
+        self.arena_height = 300  # Shorter - simpler layout
         
-        # Bench positions (bottom of arena) - where hunters rest
-        self.bench_y = self.arena_height - 50  # Bench is near bottom
-        self.bench_positions = {
-            "Borge": {"x": 80, "y": self.bench_y},
-            "Knox": {"x": 175, "y": self.bench_y},
-            "Ozzy": {"x": 270, "y": self.bench_y},
+        # Static positions for simplified arena
+        self.hunter_pos = {"x": 80, "y": 150}   # Hunter on left
+        self.enemy_pos = {"x": 270, "y": 150}   # Enemy on right
+        
+        # Load hunter PNG images (scaled down for arena)
+        self.hunter_images = {}
+        self.hunter_photo_images = {}  # Keep reference to prevent garbage collection
+        
+        # PNG file paths - in parent directory
+        import os
+        parent_dir = os.path.dirname(os.path.dirname(__file__))
+        png_files = {
+            "Borge": os.path.join(parent_dir, "hunter_borge-GMACLV3e.png"),
+            "Knox": os.path.join(parent_dir, "hunter_knox-DfvSfjhv.png"),
+            "Ozzy": os.path.join(parent_dir, "hunter_ozzy-BYN3S8hK.png"),
         }
         
-        # Battle field area (where fighting happens)
-        self.field_top = 50  # Below stage header
-        self.field_bottom = self.arena_height - 90  # Above bench
+        # Try to load PNG images
+        if PIL_AVAILABLE:
+            for hunter_name, path in png_files.items():
+                try:
+                    if os.path.exists(path):
+                        img = Image.open(path)
+                        # Scale to 80x80 for arena display
+                        img = img.resize((80, 80), Image.Resampling.LANCZOS)
+                        self.hunter_photo_images[hunter_name] = ImageTk.PhotoImage(img)
+                        self._log(f"📷 Loaded {hunter_name} portrait")
+                except Exception as e:
+                    self._log(f"⚠️ Could not load {hunter_name} image: {e}")
         
         # Hunter-specific arena themes
         self.arena_themes = {
             "Borge": {
-                "bg_color": "#1a0a0a",  # Dark red
-                "grid_color": "#3a1515",  # Crimson grid
+                "bg_color": "#1a0a0a",
                 "accent_color": "#DC3545",
                 "field_color": "#2a0505",
-                "particles": ["🔥", "💀", "⚔️"],
-                "description": "Crimson Battleground"
+                "description": "Exon-12"
             },
             "Knox": {
-                "bg_color": "#0a0a1a",  # Dark blue
-                "grid_color": "#151535",  # Navy grid
+                "bg_color": "#0a0a1a",
                 "accent_color": "#0D6EFD",
                 "field_color": "#050520",
-                "particles": ["⚡", "💥", "🎯"],
-                "description": "Tech Arena"
+                "description": "Sirene-6"
             },
             "Ozzy": {
-                "bg_color": "#0a1a0a",  # Dark green
-                "grid_color": "#153515",  # Forest grid
+                "bg_color": "#0a1a0a",
                 "accent_color": "#198754",
                 "field_color": "#052005",
-                "particles": ["🌀", "☠️", "🧪"],
-                "description": "Toxic Swamp"
+                "description": "Endo Prime"
             }
         }
         
-        # Current active hunter for theming (or mixed if multiple)
-        self.active_arena_theme = None
-        
-        # Track last avg stage for each hunter (for arena stage syncing)
-        self.hunter_last_avg_stage = {"Borge": 0, "Knox": 0, "Ozzy": 0}
-        
-        # Hunter data with CIFI-like stats - start on bench
-        self.arena_hunters = {
-            "Borge": {"x": 80, "y": self.bench_y, "dx": 2, "dy": 1.5, "icon": "🛡", "color": "#DC3545", 
-                      "hp": 150, "max_hp": 150, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0, 
-                      "damage": 3, "base_damage": 3, "lifesteal": 0.15,
-                      "attack_timer": 0, "attack_speed": 3.5, "attack_cooldown": 0,
-                      "crit_chance": 0.15, "crit_damage": 1.8, "dr": 0.10, "regen": 0,
-                      "on_field": False, "returning_to_bench": False,
-                      "field_position": {"x": 100, "y": 130},
-                      "last_avg_stage": 0, "last_max_stage": 0, "last_gen": 0},
-            "Knox": {"x": 175, "y": self.bench_y, "dx": 2.5, "dy": -1, "icon": "🔫", "color": "#0D6EFD", 
-                     "hp": 80, "max_hp": 80, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0,
-                     "damage": 2, "base_damage": 2, "lifesteal": 0, "regen": 0,
-                     "attack_timer": 0, "attack_speed": 1.2, "attack_cooldown": 0,
-                     "crit_chance": 0.25, "crit_damage": 2.0, "dr": 0.0,
-                     "attack_range": 120,
-                     "on_field": False, "returning_to_bench": False,
-                     "field_position": {"x": 175, "y": 175},
-                     "last_avg_stage": 0, "last_max_stage": 0, "last_gen": 0},
-            "Ozzy": {"x": 270, "y": self.bench_y, "dx": 1.5, "dy": 2, "icon": "🐙", "color": "#198754", 
-                     "hp": 100, "max_hp": 100, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0,
-                     "damage": 2, "base_damage": 2, "lifesteal": 0, "regen": 0.5,
-                     "attack_timer": 0, "attack_speed": 2.0, "attack_cooldown": 0,
-                     "crit_chance": 0.20, "crit_damage": 1.5, "dr": 0.05,
-                     "poison_chance": 0.30, "poison_damage": 1,
-                     "on_field": False, "returning_to_bench": False,
-                     "field_position": {"x": 250, "y": 220},
-                     "last_avg_stage": 0, "last_max_stage": 0, "last_gen": 0},
+        # Current enemy state for display
+        self.current_enemy = {
+            "icon": "👹",
+            "hp_percent": 100,
+            "is_boss": False,
+            "color": "#90EE90"  # Changes with difficulty
         }
         
-        # Enemies: list of {x, y, dx, dy, icon, hp, max_hp, id, is_boss, power, speed, poison_stacks}
-        self.arena_enemies = []
-        self.enemy_icons = ['👹', '👺', '👻', '💀', '🐉', '👾', '🤖', '🦇', '🕷️', '🦂', '🐍', '🔥']
-        self.boss_icons = ['🐲', '👿', '☠️', '🦖', '👑', '🎃']
-        self.next_enemy_id = 0
-        
-        # Projectiles: list of {x, y, target_x, target_y, icon, speed, hunter}
-        self.arena_projectiles = []
-        
-        # Attack effects: list of {x, y, icon, ttl, size}
+        # Battle effects for animations
         self.arena_effects = []
         
-        # Game state
+        # Arena state - 10 enemies per stage like the game
         self.arena_stage = 1
-        self.arena_total_kills = 0
-        self.kills_for_next_stage = 10
-        self.boss_active = False
+        self.arena_enemy_index = 0  # 0-9 within current stage (10 enemies per stage)
+        self.arena_target_stage = 0  # Target stage based on optimization progress
+        self.arena_visual_stage = 0.0  # Smooth interpolation to target
         self.victory_mode = False
         self.victory_timer = 0
-        self.fireworks = []
-        self.was_running = False
-        self.arena_tick = 0  # For timing regen/poison
         
-        # Track which hunters were running last frame (for detecting start/stop)
+        # Track which hunters were running last frame
         self.prev_running = {"Borge": False, "Knox": False, "Ozzy": False}
         
-        # Spawn initial enemies (fewer - stationary targets)
-        for _ in range(2):
-            self._spawn_enemy()
+        # Enemy icons by stage difficulty (each stage cycles through these)
+        self.enemy_icons = ['👹', '👺', '👻', '💀', '🐉', '👾', '🤖', '🦇', '🕷️', '🦂']
+        self.boss_icons = ['🐲', '👿', '☠️', '🦖', '👑', '🎃']
+        
+        # Live simulation state (simplified - now syncs with optimization)
+        self.live_sim_hunter = None
+        self.live_sim_stage = 0
+        self.live_sim_hp_percent = 100
+        self.live_sim_final_stage = 0
+        self.live_sim_running = False
+        
+        # For compatibility
+        self.arena_hunters = {
+            "Borge": {"hp": 100, "max_hp": 100, "kills": 0, "color": "#DC3545"},
+            "Knox": {"hp": 100, "max_hp": 100, "kills": 0, "color": "#0D6EFD"},
+            "Ozzy": {"hp": 100, "max_hp": 100, "kills": 0, "color": "#198754"},
+        }
         
         # Start arena animation
         self._animate_arena()
     
-    def _multi_wasm_arena(self, stage: int) -> float:
-        """CIFI-accurate stage scaling for arena enemies."""
-        if stage < 15:  # Scaled down from 150 for arena
-            return 1.0
+    def _start_live_simulation(self, hunter_name: str):
+        """Start arena visualization synced with optimization progress.
         
-        result = 1.0
-        # Breakpoints scaled for arena (divide real stages by 10)
-        if stage > 14:
-            result *= 1 + (stage - 14) * 0.06
-        if stage > 19:
-            result *= 1 + (stage - 19) * 0.06
-        if stage > 24:
-            result *= 1 + (stage - 24) * 0.06
-        if stage > 29:
-            result *= 1 + (stage - 29) * 0.06
-        # Exponential after stage 35
-        if stage > 35:
-            result *= 1.02 ** (stage - 35)
+        Instead of running a separate simulation, we sync the visual with
+        the optimization's progress and best_avg_stage.
+        """
+        self.live_sim_hunter = hunter_name
+        self.live_sim_stage = 0
+        self.live_sim_hp_percent = 100
+        self.live_sim_final_stage = 0
+        self.live_sim_running = True
         
-        return result
+        # Reset arena state
+        self.arena_stage = 1
+        self.arena_enemy_index = 0
+        self.arena_target_stage = 0
+        self.arena_visual_stage = 0.0
+        
+        self._log_arena(f"🎬 {hunter_name} entering the arena!")
     
-    def _spawn_enemy(self, is_boss=False):
-        """Spawn a new enemy with CIFI-accurate stat scaling."""
-        import random
+    def _update_arena_from_optimization(self, hunter_name: str):
+        """Update arena visuals based on optimization progress."""
+        tab = self.hunter_tabs.get(hunter_name)
+        if not tab or not tab._content_initialized:
+            return
         
-        # Spawn enemies from all four edges of the field
-        existing_positions = [(e["x"], e["y"]) for e in self.arena_enemies]
+        # Get current best avg stage from optimization
+        target_stage = tab.best_avg_stage if tab.best_avg_stage > 0 else 0
         
-        # Try to find a good spawn position
-        attempts = 0
-        while attempts < 20:
-            # Choose a random edge: 0=top, 1=right, 2=bottom, 3=left
-            edge = random.randint(0, 3)
-            
-            if edge == 0:  # Top
-                x = random.randint(50, self.arena_width - 50)
-                y = random.randint(self.field_top, self.field_top + 50)
-            elif edge == 1:  # Right
-                x = random.randint(self.arena_width - 80, self.arena_width - 30)
-                y = random.randint(self.field_top + 30, self.field_bottom - 30)
-            elif edge == 2:  # Bottom (but above bench)
-                x = random.randint(50, self.arena_width - 50)
-                y = random.randint(self.field_bottom - 60, self.field_bottom - 20)
-            else:  # Left
-                x = random.randint(30, 80)
-                y = random.randint(self.field_top + 30, self.field_bottom - 30)
-            
-            # Check if position is far enough from all other enemies
-            min_dist = 70  # Minimum distance between enemies
-            is_good = True
-            for ex, ey in existing_positions:
-                dist = math.sqrt((x - ex)**2 + (y - ey)**2)
-                if dist < min_dist:
-                    is_good = False
-                    break
-            
-            if is_good:
-                break
-            attempts += 1
-        
-        # If we couldn't find a spot, just place it somewhere random in the field
-        if attempts >= 20:
-            x = random.randint(50, self.arena_width - 50)
-            y = random.randint(self.field_top + 20, self.field_bottom - 20)
-        
-        # CIFI-style scaling: base stats * stage multiplier
-        stage = self.arena_stage
-        stage_mult = self._multi_wasm_arena(stage)
-        post_10_mult = 2.85 if stage > 10 else 1.0  # Like post-100 in real game
-        
-        # Base enemy stats (scaled down for arena)
-        base_hp = (2 + stage * 0.5) * post_10_mult * stage_mult
-        base_power = (0.5 + stage * 0.15) * post_10_mult * stage_mult
-        base_speed = max(1.5, 4.5 - stage * 0.03)  # Enemies attack faster at higher stages
-        crit_chance = min(0.25, 0.03 + stage * 0.004)  # Capped at 25%
-        crit_damage = min(2.5, 1.2 + stage * 0.008)  # Capped at 250%
-        
-        # Color enemies based on stage (low=green, mid=yellow, high=red, very high=purple)
-        if stage < 10:
-            enemy_color = "#90EE90"  # Light green
-        elif stage < 20:
-            enemy_color = "#FFD700"  # Gold
-        elif stage < 30:
-            enemy_color = "#FF8C00"  # Dark orange
-        elif stage < 40:
-            enemy_color = "#DC3545"  # Red
+        # Get optimization progress (0-100%)
+        if hasattr(tab, 'progress_var'):
+            progress = tab.progress_var.get()
         else:
-            enemy_color = "#8B00FF"  # Purple
+            progress = 0
         
-        if is_boss:
-            # Boss spawns in center of the field
-            x = self.arena_width // 2
-            y = (self.field_top + self.field_bottom) // 2  # Center of field
-            # Boss HP = 90x enemy (Borge-style), Power = 3.63x
-            boss_hp = base_hp * 90
-            boss_power = base_power * 3.63
-            boss_speed = base_speed * 2.1  # Bosses attack slower
-            
-            self.arena_enemies.append({
-                "x": x, "y": y, "dx": 0, "dy": 0,
-                "icon": random.choice(self.boss_icons),
-                "color": "#8B0000",  # Dark red for bosses
-                "hp": boss_hp, "max_hp": boss_hp,
-                "power": boss_power, "base_power": boss_power,
-                "speed": boss_speed, "base_speed": boss_speed,
-                "attack_cooldown": int(boss_speed * 10),
-                "crit_chance": min(0.25, crit_chance + 0.08),
-                "crit_damage": min(2.5, crit_damage + 0.5),
-                "id": self.next_enemy_id,
-                "is_boss": True,
-                "enrage_stacks": 0,
-                "poison_stacks": 0,
-                "last_attacker": None,
-            })
-            self.boss_active = True
+        # If optimization is running and we have results, interpolate to target
+        if tab.is_running and target_stage > 0:
+            # Scale visual stage based on progress
+            # Start slow (builds tension), speed up as we get more data
+            progress_factor = min(1.0, progress / 80)  # Reach target at 80% progress
+            self.arena_target_stage = target_stage * progress_factor
+        elif not tab.is_running and self.live_sim_running:
+            # Optimization just finished - rush to final stage
+            self.arena_target_stage = target_stage
+        
+        # Smooth interpolation towards target
+        stage_diff = self.arena_target_stage - self.arena_visual_stage
+        if abs(stage_diff) > 0.1:
+            # Move towards target - faster when further away
+            speed = max(0.5, abs(stage_diff) * 0.1)
+            self.arena_visual_stage += speed if stage_diff > 0 else -speed
         else:
-            self.arena_enemies.append({
-                "x": x, "y": y, "dx": 0, "dy": 0,
-                "icon": random.choice(self.enemy_icons),
-                "color": enemy_color,
-                "hp": base_hp, "max_hp": base_hp,
-                "power": base_power, "base_power": base_power,
-                "speed": base_speed, "base_speed": base_speed,
-                "attack_cooldown": int(base_speed * 10),
-                "crit_chance": crit_chance,
-                "crit_damage": crit_damage,
-                "id": self.next_enemy_id,
-                "is_boss": False,
-                "enrage_stacks": 0,
-                "poison_stacks": 0,
-                "last_attacker": None,
+            self.arena_visual_stage = self.arena_target_stage
+        
+        # Convert visual stage to integer stage + enemy index (10 enemies per stage)
+        total_enemies = self.arena_visual_stage * 10  # 10 enemies per stage
+        self.live_sim_stage = int(self.arena_visual_stage) + 1  # Stages are 1-indexed
+        self.arena_enemy_index = int(total_enemies) % 10  # Which of 10 enemies
+        
+        # Simulate HP fluctuations based on stage (higher stage = lower HP on average)
+        if self.arena_visual_stage > 0:
+            import random
+            base_hp = max(10, 100 - (self.arena_visual_stage * 0.5))
+            self.live_sim_hp_percent = base_hp + random.uniform(-10, 10)
+            self.live_sim_hp_percent = max(5, min(100, self.live_sim_hp_percent))
+    
+    def _add_arena_effect(self, icon: str, x: float, y: float, ttl: int = 15):
+        """Add a visual effect to the arena."""
+        if hasattr(self, 'arena_effects'):
+            self.arena_effects.append({
+                "icon": icon, "x": x, "y": y, "ttl": ttl, "alpha": 1.0
             })
-        self.next_enemy_id += 1
     
-    def _spawn_firework(self):
-        """Spawn a firework for victory celebration."""
-        import random
-        
-        colors = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF', '#FFD700']
-        x = random.randint(50, self.arena_width - 50)
-        y = random.randint(50, self.arena_height - 100)
-        
-        self.fireworks.append({
-            "x": x, "y": y,
-            "particles": [
-                {"dx": random.uniform(-3, 3), "dy": random.uniform(-3, 3), 
-                 "color": random.choice(colors), "ttl": random.randint(15, 30)}
-                for _ in range(12)
-            ],
-            "ttl": 30
-        })
-    
+    def _log_arena(self, message: str):
+        """Log arena-related messages."""
+        if hasattr(self, 'global_log'):
+            try:
+                self.global_log.configure(state=tk.NORMAL)
+                timestamp = time.strftime("%H:%M:%S")
+                self.global_log.insert(tk.END, f"[{timestamp}] 🎮 {message}\n")
+                self.global_log.see(tk.END)
+                self.global_log.configure(state=tk.DISABLED)
+            except:
+                pass
+
     def _animate_arena(self):
-        """Animate the battle arena with hunter-themed visuals."""
+        """Arena showing hunter vs enemies with 10 enemies per stage at the bottom."""
         import random
-        import math
+        
+        # Only animate when Control tab is visible
+        try:
+            if not hasattr(self, 'main_notebook') or self.main_notebook is None:
+                self.root.after(500, self._animate_arena)
+                return
+            
+            # Cache control tab index to avoid repeated lookups
+            if not hasattr(self, '_control_tab_index'):
+                self._control_tab_index = self.main_notebook.index(self.control_frame)
+            
+            current_tab = self.main_notebook.index(self.main_notebook.select())
+            if current_tab != self._control_tab_index:
+                self.root.after(1000, self._animate_arena)
+                return
+        except (tk.TclError, ValueError, AttributeError):
+            self.root.after(1000, self._animate_arena)
+            return
         
         # Check if any hunter is running
         any_running = any(tab.is_running for tab in self.hunter_tabs.values())
         running_hunters = [name for name, tab in self.hunter_tabs.items() if tab.is_running]
         
+        # Update arena from optimization progress
+        if self.live_sim_running and running_hunters:
+            self._update_arena_from_optimization(running_hunters[0])
+        
         canvas = self.battle_canvas
         canvas.delete("all")
         
-        # Detect when optimization just completed (was running, now stopped)
-        # Victory mode is now triggered per-hunter in the loop below
-        self.was_running = any_running
+        # Determine which hunter to show (first running, or last one that ran)
+        active_hunter = None
+        if running_hunters:
+            active_hunter = running_hunters[0]
+        elif self.live_sim_hunter:
+            active_hunter = self.live_sim_hunter
         
-        # Determine arena theme based on active hunters
-        if len(running_hunters) == 1:
-            theme = self.arena_themes[running_hunters[0]]
-            theme_name = running_hunters[0]
-        elif len(running_hunters) > 1:
-            # Mixed theme - blend colors
-            theme = {
-                "bg_color": "#1a1a1a",
-                "grid_color": "#2a2a2a",
-                "accent_color": "#FFFFFF",
-                "field_color": "#0f0f0f",
-                "particles": ["⚔️", "💥", "✨"],
-                "description": "Battle Royale"
-            }
-            theme_name = "Mixed"
+        # Get theme
+        if active_hunter:
+            theme = self.arena_themes.get(active_hunter, self.arena_themes["Borge"])
         else:
-            # No one running - neutral theme
-            theme = {
-                "bg_color": "#1a1a2e",
-                "grid_color": "#2a2a4a",
-                "accent_color": "#888888",
-                "field_color": "#15152e",
-                "particles": ["💤"],
-                "description": "Resting"
-            }
-            theme_name = None
+            theme = {"bg_color": "#1a1a2e", "accent_color": "#888888", "field_color": "#15152e", "description": "Waiting"}
         
-        # Check which hunters just started or stopped running
-        for name, hunter in self.arena_hunters.items():
+        # Draw background
+        canvas.configure(bg=theme["bg_color"])
+        
+        # Draw battle field area (upper portion)
+        field_top = 35
+        field_bottom = self.arena_height - 60
+        canvas.create_rectangle(10, field_top, self.arena_width - 10, field_bottom,
+                               fill=theme["field_color"], outline=theme["accent_color"], width=2)
+        
+        # Draw header with stage info
+        if any_running and active_hunter:
+            stage_text = f"⚔️ Stage {self.live_sim_stage} - {theme['description']} ⚔️"
+            canvas.create_text(self.arena_width // 2, 18, text=stage_text,
+                              fill=theme["accent_color"], font=('Arial', 10, 'bold'))
+        else:
+            canvas.create_text(self.arena_width // 2, 18, text="🏰 Waiting for Battle 🏰",
+                              fill='#888888', font=('Arial', 11, 'bold'))
+        
+        # === DRAW HUNTER (left side of battle field) ===
+        hunter_x, hunter_y = 100, (field_top + field_bottom) // 2
+        
+        if active_hunter and active_hunter in self.hunter_photo_images:
+            try:
+                canvas.create_image(hunter_x, hunter_y, image=self.hunter_photo_images[active_hunter], anchor='center')
+            except:
+                canvas.create_text(hunter_x, hunter_y, text=active_hunter[0], 
+                                  font=('Arial', 40, 'bold'), fill=theme["accent_color"])
+        elif active_hunter:
+            canvas.create_oval(hunter_x - 35, hunter_y - 35, hunter_x + 35, hunter_y + 35,
+                              fill=theme["accent_color"], outline='#FFFFFF', width=3)
+            canvas.create_text(hunter_x, hunter_y, text=active_hunter[0],
+                              font=('Arial', 30, 'bold'), fill='#FFFFFF')
+        else:
+            # Idle state - show all three hunter portraits stacked
+            for i, name in enumerate(["Borge", "Knox", "Ozzy"]):
+                y_offset = (i - 1) * 50
+                if name in self.hunter_photo_images:
+                    try:
+                        canvas.create_image(hunter_x, hunter_y + y_offset, 
+                                          image=self.hunter_photo_images[name], anchor='center')
+                    except:
+                        color = self.arena_themes[name]["accent_color"]
+                        canvas.create_oval(hunter_x - 25, hunter_y + y_offset - 25, 
+                                          hunter_x + 25, hunter_y + y_offset + 25,
+                                          fill=color, outline='#666666', width=2)
+        
+        # Draw HP bar under hunter
+        if any_running:
+            bar_width = 70
+            bar_y = hunter_y + 48
+            hp_pct = self.live_sim_hp_percent / 100
+            canvas.create_rectangle(hunter_x - bar_width//2, bar_y, hunter_x + bar_width//2, bar_y + 8,
+                                   fill='#333333', outline='#555555')
+            hp_color = '#00FF00' if hp_pct > 0.5 else '#FFFF00' if hp_pct > 0.25 else '#FF0000'
+            canvas.create_rectangle(hunter_x - bar_width//2, bar_y, 
+                                   hunter_x - bar_width//2 + bar_width * hp_pct, bar_y + 8,
+                                   fill=hp_color, outline='')
+        
+        # === DRAW CURRENT ENEMY (right side of battle field) ===
+        enemy_x, enemy_y = self.arena_width - 100, (field_top + field_bottom) // 2
+        
+        if any_running:
+            stage = self.live_sim_stage
+            # Enemy color by stage difficulty
+            if stage < 50:
+                enemy_color = "#90EE90"
+            elif stage < 100:
+                enemy_color = "#FFD700"
+            elif stage < 150:
+                enemy_color = "#FF8C00"
+            elif stage < 200:
+                enemy_color = "#FF4500"
+            else:
+                enemy_color = "#FF00FF"
+            
+            # Pick enemy icon based on current enemy index
+            is_boss = stage > 0 and stage % 100 == 0
+            enemy_idx = self.arena_enemy_index
+            if is_boss:
+                enemy_icon = self.boss_icons[(stage // 100) % len(self.boss_icons)]
+                font_size = 45
+                canvas.create_text(enemy_x, enemy_y - 40, text="👑 BOSS 👑",
+                                  font=('Arial', 9, 'bold'), fill='#FFD700')
+            else:
+                enemy_icon = self.enemy_icons[enemy_idx % len(self.enemy_icons)]
+                font_size = 35
+            
+            canvas.create_text(enemy_x, enemy_y, text=enemy_icon,
+                              font=('Segoe UI Emoji', font_size), fill=enemy_color)
+            
+            # Show which enemy (e.g., "Enemy 3/10")
+            canvas.create_text(enemy_x, enemy_y + 40, text=f"Enemy {enemy_idx + 1}/10",
+                              font=('Arial', 8), fill='#888888')
+        else:
+            canvas.create_text(enemy_x, enemy_y, text="💤",
+                              font=('Segoe UI Emoji', 30), fill='#666666')
+        
+        # === DRAW BATTLE EFFECTS (center) ===
+        effect_x = self.arena_width // 2
+        effect_y = (field_top + field_bottom) // 2
+        
+        if any_running:
+            tick = int(time.time() * 3) % 4
+            attack_icons = ['⚔️', '💥', '✨', '🔥']
+            canvas.create_text(effect_x, effect_y, text=attack_icons[tick],
+                              font=('Segoe UI Emoji', 20))
+            canvas.create_text(effect_x - 25, effect_y, text="→",
+                              font=('Arial', 16, 'bold'), fill=theme["accent_color"])
+            canvas.create_text(effect_x + 25, effect_y, text="←",
+                              font=('Arial', 16, 'bold'), fill='#FF6666')
+        
+        # === DRAW 10 ENEMIES AT BOTTOM (stage queue) ===
+        queue_y = self.arena_height - 30
+        queue_start_x = 40
+        queue_spacing = (self.arena_width - 80) // 10
+        
+        if any_running:
+            stage = self.live_sim_stage
+            current_enemy_idx = self.arena_enemy_index
+            
+            # Draw enemy queue label
+            canvas.create_text(self.arena_width // 2, field_bottom + 8, 
+                              text=f"Stage {stage} Queue", font=('Arial', 8), fill='#666666')
+            
+            for i in range(10):
+                x = queue_start_x + i * queue_spacing + queue_spacing // 2
+                
+                if i < current_enemy_idx:
+                    # Defeated - draw skull
+                    canvas.create_text(x, queue_y, text="💀",
+                                      font=('Segoe UI Emoji', 14), fill='#444444')
+                elif i == current_enemy_idx:
+                    # Current enemy - highlighted
+                    enemy_icon = self.enemy_icons[i % len(self.enemy_icons)]
+                    canvas.create_rectangle(x - 15, queue_y - 15, x + 15, queue_y + 15,
+                                           outline='#FFD700', width=2)
+                    canvas.create_text(x, queue_y, text=enemy_icon,
+                                      font=('Segoe UI Emoji', 16))
+                else:
+                    # Waiting enemies
+                    enemy_icon = self.enemy_icons[i % len(self.enemy_icons)]
+                    canvas.create_text(x, queue_y, text=enemy_icon,
+                                      font=('Segoe UI Emoji', 12), fill='#666666')
+        else:
+            # Idle - show empty slots
+            canvas.create_text(self.arena_width // 2, queue_y, 
+                              text="👹 👺 👻 💀 🐉 👾 🤖 🦇 🕷️ 🦂",
+                              font=('Segoe UI Emoji', 12), fill='#444444')
+        
+        # === DEFEAT MODE ===
+        if self.victory_mode:
+            self.victory_timer -= 1
+            if self.victory_timer <= 0:
+                self.victory_mode = False
+            else:
+                canvas.create_text(self.arena_width // 2, (field_top + field_bottom) // 2 - 20,
+                                  text="💀 DEFEATED 💀", font=('Arial', 16, 'bold'), fill='#FF6B6B')
+                if self.live_sim_final_stage > 0:
+                    canvas.create_text(self.arena_width // 2, (field_top + field_bottom) // 2 + 5,
+                                      text=f"Fell at Stage {self.live_sim_final_stage}",
+                                      font=('Arial', 12), fill='#FFFFFF')
+        
+        # === TRACK HUNTER START/STOP ===
+        for name in ["Borge", "Knox", "Ozzy"]:
             tab = self.hunter_tabs[name]
             was_running = self.prev_running.get(name, False)
             is_running = tab.is_running
             
             if is_running and not was_running:
-                # Hunter just started - walk onto field AND LOAD USER'S BUILD
-                hunter["on_field"] = True
-                hunter["returning_to_bench"] = False
+                # Hunter just started
+                self._start_live_simulation(name)
                 
-                # LOAD USER'S BUILD STATS for this hunter
-                try:
-                    config = tab._get_current_config()
-                    stats = config.get("stats", {})
-                    attrs = config.get("attributes", {})
-                    talents = config.get("talents", {})
-                    
-                    # Calculate effective combat stats from build (simplified CIFI formulas)
-                    hp_stat = stats.get("hp", 0)
-                    hunter["max_hp"] = int(43 + hp_stat * 2.5 + (hp_stat / 5) * 0.01 * hp_stat)
-                    hunter["hp"] = hunter["max_hp"]
-                    
-                    pwr_stat = stats.get("power", 0)
-                    hunter["base_damage"] = 3.0 + pwr_stat * 0.5 + (pwr_stat / 10) * 0.01 * pwr_stat
-                    hunter["damage"] = hunter["base_damage"]
-                    
-                    spd_stat = stats.get("speed", 0)
-                    hunter["attack_speed"] = max(0.5, 5.0 - spd_stat * 0.03)
-                    
-                    reg_stat = stats.get("regen", 0)
-                    hunter["regen"] = 0.02 + reg_stat * 0.03
-                    
-                    dr_stat = stats.get("damage_reduction", 0)
-                    hunter["dr"] = min(0.90, dr_stat * 0.0144)
-                    
-                    crit_stat = stats.get("special_chance", 0)
-                    hunter["crit_chance"] = 0.05 + crit_stat * 0.0018
-                    
-                    crit_dmg_stat = stats.get("special_damage", 0)
-                    hunter["crit_damage"] = 1.30 + crit_dmg_stat * 0.01
-                    
-                    # Hunter-specific from attributes
-                    if name == "Borge":
-                        hunter["lifesteal"] = attrs.get("book_of_baal", 0) * 0.0111
-                    elif name == "Ozzy":
-                        effect_stat = stats.get("effect_chance", 0)
-                        hunter["poison_chance"] = 0.04 + effect_stat * 0.005
-                        hunter["poison_damage"] = 1 + talents.get("omen_of_decay", 0) * 0.5
-                    elif name == "Knox":
-                        hunter["attack_range"] = 120  # Ranged
-                        
-                    self._log_arena(f"📊 {name}: HP={hunter['max_hp']:.0f} PWR={hunter['damage']:.1f} SPD={hunter['attack_speed']:.2f}s")
-                except Exception as e:
-                    self._log_arena(f"⚠️ {name} using default stats")
-                
-                # Assign a good field position for this hunter
-                if name == "Borge":
-                    hunter["field_position"] = {"x": 100, "y": (self.field_top + self.field_bottom) // 2 - 30}
-                elif name == "Knox":
-                    hunter["field_position"] = {"x": 175, "y": (self.field_top + self.field_bottom) // 2}
-                else:  # Ozzy
-                    hunter["field_position"] = {"x": 250, "y": (self.field_top + self.field_bottom) // 2 + 30}
-                    
-                # RESET arena to stage 1 when any new run starts
-                self.arena_stage = 1
-                self.kills_for_next_stage = 10  # 10 enemies per stage like real sim
-                self.arena_total_kills = 0
-                
-                # Reset this hunter's arena stats
-                hunter["kills"] = 0
-                hunter["level"] = 1
-                hunter["xp"] = 0
-                
-                # Clear enemies and spawn fresh ones (10 per stage like sim)
-                self.arena_enemies.clear()
-                self.arena_effects.clear()
-                self.arena_projectiles.clear()
-                self.boss_active = False
-                for _ in range(3):  # Start with 3 visible enemies
-                    self._spawn_enemy()
-                    
             elif not is_running and was_running:
-                # Hunter just finished - update their results and trigger victory
-                hunter["returning_to_bench"] = True
-                
-                # Get last avg stage from tab results
-                if tab.results:
-                    best_result = max(tab.results, key=lambda r: r.avg_final_stage)
-                    hunter["last_avg_stage"] = best_result.avg_final_stage
-                    hunter["last_max_stage"] = best_result.highest_stage  # Fixed: was max_final_stage
-                    hunter["last_gen"] = len(tab.results)
-                    
-                    # Update leaderboard
-                    self._update_leaderboard(name, hunter)
-                
-                # Trigger victory mode for this hunter's completion
-                if hunter["kills"] > 0:
+                # Hunter just finished
+                if self.live_sim_hunter == name:
+                    self.live_sim_running = False
+                    self.live_sim_final_stage = int(self.arena_visual_stage) + 1
                     self.victory_mode = True
-                    self.victory_timer = 60  # ~3 seconds of celebration
+                    self.victory_timer = 6
+                
+                # Update leaderboard
+                if tab._content_initialized and tab.results:
+                    best_result = max(tab.results, key=lambda r: r.avg_final_stage)
+                    hunter_data = self.arena_hunters.get(name, {})
+                    hunter_data["last_avg_stage"] = best_result.avg_final_stage
+                    hunter_data["last_max_stage"] = best_result.highest_stage
+                    hunter_data["last_gen"] = len(tab.results)
+                    self._update_leaderboard(name, hunter_data)
             
             self.prev_running[name] = is_running
         
-        # SYNC ARENA STAGE WITH SIMULATION PROGRESS
-        # When any hunter is running, sync arena stage to their best_avg_stage (scaled down)
-        if running_hunters:
-            # Get the highest best_avg_stage from all running hunters
-            max_sim_stage = 0
-            for name in running_hunters:
-                tab = self.hunter_tabs[name]
-                # Check if tab has best_avg_stage attribute (set during optimization)
-                if hasattr(tab, 'best_avg_stage') and tab.best_avg_stage > 0:
-                    max_sim_stage = max(max_sim_stage, tab.best_avg_stage)
-            
-            # Scale simulation stage to arena stage (1:10 ratio)
-            # e.g., sim stage 500 -> arena stage 50
-            if max_sim_stage > 0:
-                target_arena_stage = max(1, int(max_sim_stage / 10))
-                # Gradually increase arena stage toward target (smooth progression)
-                if target_arena_stage > self.arena_stage:
-                    old_stage = self.arena_stage
-                    self.arena_stage = target_arena_stage
-                    self.kills_for_next_stage = self.arena_stage * 15
-                    
-                    # Scale hunter stats to match their power at this stage
-                    for h_name, hunter in self.arena_hunters.items():
-                        if hunter.get("on_field"):
-                            stage_mult = self._multi_wasm_arena(self.arena_stage)
-                            hunter["damage"] = hunter["base_damage"] * stage_mult * (1 + hunter["level"] * 0.15)
-                            hunter["max_hp"] = int(hunter["max_hp"] * (1 + (self.arena_stage - old_stage) * 0.05))
-                            hunter["hp"] = min(hunter["hp"] + 20, hunter["max_hp"])  # Heal a bit on stage up
-                    
-                    # Spawn effect to show stage increase
-                    self.arena_effects.append({
-                        "x": self.arena_width // 2, "y": 50, 
-                        "icon": f"📈 Stage {self.arena_stage}!", "ttl": 30, "is_text": True,
-                        "color": "#FFD700", "float": True
-                    })
-        
-        # Draw themed background
-        canvas.configure(bg=theme["bg_color"])
-        
-        # Draw themed grid
-        grid_color = theme["grid_color"]
-        for i in range(0, self.arena_width, 30):
-            canvas.create_line(i, 0, i, self.arena_height, fill=grid_color, width=1)
-        for i in range(0, self.arena_height, 30):
-            canvas.create_line(0, i, self.arena_width, i, fill=grid_color, width=1)
-        
-        # Draw themed field area with gradient effect
-        field_color = theme["field_color"]
-        canvas.create_rectangle(10, self.field_top - 5, self.arena_width - 10, self.field_bottom + 5,
-                               fill=field_color, outline=theme["accent_color"], width=1)
-        
-        # Add floating theme particles when running
-        if any_running and random.random() < 0.15:
-            particle = random.choice(theme["particles"])
-            px = random.randint(20, self.arena_width - 20)
-            py = random.randint(self.field_top, self.field_bottom)
-            self.arena_effects.append({
-                "x": px, "y": py, "icon": particle, "ttl": 20, "is_text": False,
-                "color": theme["accent_color"], "float": True
-            })
-        
-        # Draw the bench at the bottom
-        bench_y_top = self.bench_y - 20
-        canvas.create_rectangle(20, bench_y_top, self.arena_width - 20, self.bench_y + 20,
-                               fill='#3d2b1f', outline='#5c4033', width=3)
-        canvas.create_text(self.arena_width // 2, bench_y_top - 8, text="🪑 BENCH 🪑",
-                          fill='#8B4513', font=('Arial', 8, 'bold'))
-        
-        # Draw bench seat spots
-        for bx in [80, 175, 270]:
-            canvas.create_oval(bx-10, self.bench_y-6, bx+10, self.bench_y+6,
-                              fill='#5c4033', outline='#3d2b1f')
-        
-        # Draw title and stage - show which hunter's arena it is
-        if self.victory_mode:
-            canvas.create_text(self.arena_width // 2, 12, text="🎉 VICTORY! 🎉", 
-                              fill='#FFD700', font=('Arial', 11, 'bold'))
-            canvas.create_text(self.arena_width // 2, 28, 
-                              text=f"Stage {self.arena_stage} | Kills: {self.arena_total_kills}", 
-                              fill='#FFFFFF', font=('Arial', 8))
-        elif any_running:
-            # Show theme name and stage
-            theme_text = f"⚔️ {theme['description']} - Stage {self.arena_stage} ⚔️"
-            canvas.create_text(self.arena_width // 2, 12, text=theme_text, 
-                              fill=theme["accent_color"], font=('Arial', 9, 'bold'))
-            
-            # Show simulation progress for running hunters
-            sim_status_y = 28
-            for hname in running_hunters:
-                tab = self.hunter_tabs[hname]
-                if hasattr(tab, 'progress_var') and hasattr(tab, 'results'):
-                    progress = tab.progress_var.get()
-                    builds_tested = len(tab.results)
-                    best_stage = max((r.avg_final_stage for r in tab.results), default=0)
-                    hunter_icon = '🛡️' if hname == 'Borge' else '🔫' if hname == 'Knox' else '🐙'
-                    sim_text = f"{hunter_icon} {progress:.0f}% | {builds_tested} builds | Best: {best_stage:.0f}"
-                    canvas.create_text(self.arena_width // 2, sim_status_y, 
-                                      text=sim_text, fill='#CCCCCC', font=('Arial', 7))
-                    sim_status_y += 10
-        else:
-            canvas.create_text(self.arena_width // 2, 15, text="🏰 Hunters Resting 🏰", 
-                              fill='#888888', font=('Arial', 11, 'bold'))
-        
-        # Victory mode - spawn fireworks
-        if self.victory_mode:
-            self.victory_timer -= 1
-            if random.random() < 0.3:
-                self._spawn_firework()
-            if self.victory_timer <= 0:
-                self.victory_mode = False
-        
-        # Draw and update fireworks
-        for fw in self.fireworks[:]:
-            for p in fw["particles"]:
-                px = fw["x"] + p["dx"] * (30 - fw["ttl"])
-                py = fw["y"] + p["dy"] * (30 - fw["ttl"])
-                size = max(2, p["ttl"] // 5)
-                canvas.create_oval(px-size, py-size, px+size, py+size, fill=p["color"], outline='')
-                p["ttl"] -= 1
-            fw["ttl"] -= 1
-            if fw["ttl"] <= 0:
-                self.fireworks.remove(fw)
-        
-        # Update and draw projectiles (Knox's bullets)
-        for projectile in self.arena_projectiles[:]:
-            # Find target enemy
-            target_enemy = None
-            for e in self.arena_enemies:
-                if e["id"] == projectile["target_enemy_id"]:
-                    target_enemy = e
-                    break
-            
-            if target_enemy:
-                # Move toward target
-                dx = target_enemy["x"] - projectile["x"]
-                dy = target_enemy["y"] - projectile["y"]
-                dist = math.sqrt(dx*dx + dy*dy)
-                
-                if dist < projectile["speed"]:
-                    # Hit! Apply damage
-                    target_enemy["hp"] -= projectile["damage"]
-                    target_enemy["last_attacker"] = projectile["hunter"]
-                    
-                    # Floating damage number
-                    damage = projectile["damage"]
-                    is_crit = projectile.get("is_crit", False)
-                    dmg_text = f"{damage:.0f}" if not is_crit else f"💥{damage:.0f}"
-                    self.arena_effects.append({
-                        "x": target_enemy["x"] + random.randint(-10, 10), 
-                        "y": target_enemy["y"] - 15,
-                        "icon": dmg_text, "ttl": 18, "is_text": True,
-                        "color": "#FFD700" if is_crit else projectile.get("color", "#0D6EFD"),
-                        "float": True
-                    })
-                    
-                    # Show crit text
-                    if projectile.get("is_crit"):
-                        self.arena_effects.append({
-                            "x": target_enemy["x"], "y": target_enemy["y"] - 20,
-                            "icon": "💥CRIT!", "ttl": 12, "is_text": True,
-                            "color": "#FFD700"
-                        })
-                    
-                    # Check if enemy died
-                    if target_enemy["hp"] <= 0:
-                        self.arena_effects.append({
-                            "x": target_enemy["x"], "y": target_enemy["y"],
-                            "icon": "💥", "ttl": 10, "is_text": False
-                        })
-                        self.arena_hunters["Knox"]["kills"] += 1
-                        self.arena_hunters["Knox"]["xp"] += 2 if target_enemy.get("is_boss") else 1
-                        self.arena_total_kills += 1
-                        if target_enemy.get("is_boss"):
-                            self.boss_active = False
-                        self.arena_enemies.remove(target_enemy)
-                    
-                    self.arena_projectiles.remove(projectile)
-                else:
-                    # Move projectile
-                    projectile["x"] += (dx / dist) * projectile["speed"]
-                    projectile["y"] += (dy / dist) * projectile["speed"]
-                    
-                    # Draw projectile
-                    proj_color = projectile.get("color", "#0D6EFD")
-                    canvas.create_text(projectile["x"], projectile["y"], 
-                                     text=projectile["icon"],
-                                     fill=proj_color,
-                                     font=('Segoe UI Emoji', 12))
-            else:
-                # Target dead, remove projectile
-                self.arena_projectiles.remove(projectile)
-        
-        # Update and draw enemies (enemies attack hunters!)
-        for enemy in self.arena_enemies[:]:
-            # Remove if somehow off screen
-            if enemy["x"] < -20 or enemy["x"] > self.arena_width + 20:
-                self.arena_enemies.remove(enemy)
-                continue
-            
-            # Process poison damage (every 10 ticks)
-            if enemy.get("poison_stacks", 0) > 0 and self.arena_tick % 10 == 0:
-                poison_dmg = enemy["poison_stacks"] * self.arena_hunters["Ozzy"].get("poison_damage", 1)
-                enemy["hp"] -= poison_dmg
-                self.arena_effects.append({
-                    "x": enemy["x"], "y": enemy["y"] + 15,
-                    "icon": "🤢", "ttl": 6, "is_text": False
-                })
-                # Reduce poison stacks over time
-                if random.random() < 0.3:
-                    enemy["poison_stacks"] = max(0, enemy["poison_stacks"] - 1)
-                
-                # Check if poison killed the enemy
-                if enemy["hp"] <= 0:
-                    self.arena_effects.append({
-                        "x": enemy["x"], "y": enemy["y"],
-                        "icon": "☠️", "ttl": 10, "is_text": False
-                    })
-                    self.arena_hunters["Ozzy"]["kills"] += 1
-                    self.arena_hunters["Ozzy"]["xp"] += 2 if enemy["is_boss"] else 1
-                    self.arena_total_kills += 1
-                    if enemy["is_boss"]:
-                        self.boss_active = False
-                    self.arena_enemies.remove(enemy)
-                    if len(self.arena_enemies) < 5 + self.arena_stage:
-                        self._spawn_enemy()
-                    continue
-            
-            # Enemy attack logic - find nearest hunter and attack
-            if any_running and enemy.get("attack_cooldown", 0) <= 0:
-                nearest_hunter = None
-                nearest_dist = float('inf')
-                for hname, h in self.arena_hunters.items():
-                    if self.hunter_tabs[hname].is_running:
-                        dist = math.sqrt((enemy["x"] - h["x"])**2 + (enemy["y"] - h["y"])**2)
-                        if dist < nearest_dist:
-                            nearest_dist = dist
-                            nearest_hunter = (hname, h)
-                
-                # Attack if hunter is close enough
-                attack_range = 60 if enemy["is_boss"] else 50
-                if nearest_hunter and nearest_dist < attack_range:
-                    hname, h = nearest_hunter
-                    # Calculate damage with crits
-                    is_crit = random.random() < enemy.get("crit_chance", 0.1)
-                    damage = enemy.get("power", 1)
-                    if is_crit:
-                        damage *= enemy.get("crit_damage", 1.5)
-                    
-                    # Apply hunter damage reduction
-                    damage *= (1 - h.get("dr", 0))
-                    
-                    # Deal damage
-                    h["hp"] -= damage
-                    
-                    # Boss enrage - speed up after each attack
-                    if enemy["is_boss"]:
-                        enemy["enrage_stacks"] = enemy.get("enrage_stacks", 0) + 1
-                        stacks = enemy["enrage_stacks"]
-                        # CIFI enrage: speed reduction per stack
-                        base_speed = enemy.get("base_speed", 3.0)
-                        enemy["speed"] = max(0.5, base_speed - (stacks * base_speed / 200))
-                        # At 200 stacks: 3x power, always crit
-                        if stacks >= 20:  # Scaled down for arena (200/10)
-                            enemy["power"] = enemy.get("base_power", 1) * 3
-                            enemy["crit_chance"] = 1.0
-                            if stacks == 20:
-                                self.arena_effects.append({
-                                    "x": enemy["x"], "y": enemy["y"] - 30,
-                                    "icon": "💀MAX ENRAGE💀", "ttl": 40, "is_text": True
-                                })
-                    
-                    # Show attack effect
-                    attack_icon = '👊' if not is_crit else '💥'
-                    self.arena_effects.append({
-                        "x": (enemy["x"] + h["x"]) / 2,
-                        "y": (enemy["y"] + h["y"]) / 2,
-                        "icon": attack_icon, "ttl": 5, "is_text": False
-                    })
-                    
-                    # Floating damage number on hunter
-                    dmg_text = f"-{damage:.0f}" if not is_crit else f"💢-{damage:.0f}"
-                    self.arena_effects.append({
-                        "x": h["x"] + random.randint(-10, 10), 
-                        "y": h["y"] - 15,
-                        "icon": dmg_text, "ttl": 18, "is_text": True,
-                        "color": "#FF4444" if is_crit else "#FF8888",
-                        "float": True
-                    })
-                    
-                    # Set cooldown
-                    enemy["attack_cooldown"] = int(enemy.get("speed", 2.0) * 10)
-                    
-                    # Hunter death? Respawn after delay
-                    if h["hp"] <= 0:
-                        h["hp"] = 0
-                        self.arena_effects.append({
-                            "x": h["x"], "y": h["y"],
-                            "icon": "💀", "ttl": 20, "is_text": False
-                        })
-                        # Respawn at field position with reduced HP
-                        h["hp"] = h["max_hp"] * 0.5
-                        field_pos = h.get("field_position", {"x": 175, "y": 200})
-                        h["x"], h["y"] = field_pos["x"], field_pos["y"]
-            
-            # Decrease attack cooldown
-            if enemy.get("attack_cooldown", 0) > 0:
-                enemy["attack_cooldown"] -= 1
-            
-            # Draw enemy with color
-            font_size = 22 if enemy["is_boss"] else 16
-            enemy_color = enemy.get("color", "#FFFFFF")
-            canvas.create_text(enemy["x"], enemy["y"], text=enemy["icon"], 
-                              fill=enemy_color, font=('Segoe UI Emoji', font_size))
-            
-            # Draw poison indicator
-            if enemy.get("poison_stacks", 0) > 0:
-                canvas.create_text(enemy["x"] + 18, enemy["y"] - 5, 
-                                  text=f"☠{enemy['poison_stacks']}", 
-                                  fill='#00FF00', font=('Arial', 7, 'bold'))
-            
-            # Draw enrage indicator for bosses
-            if enemy["is_boss"] and enemy.get("enrage_stacks", 0) > 0:
-                stacks = enemy["enrage_stacks"]
-                rage_color = '#FF0000' if stacks >= 20 else '#FF6600' if stacks >= 10 else '#FFAA00'
-                canvas.create_text(enemy["x"], enemy["y"] + 20, 
-                                  text=f"🔥{stacks}", 
-                                  fill=rage_color, font=('Arial', 8, 'bold'))
-            
-            # Draw health bar for enemies with HP > 1 or bosses
-            if enemy["hp"] > 0 and (enemy["is_boss"] or enemy["max_hp"] > 1):
-                bar_width = 40 if enemy["is_boss"] else 25
-                hp_pct = enemy["hp"] / enemy["max_hp"]
-                bar_y = enemy["y"] - 18 if enemy["is_boss"] else enemy["y"] - 14
-                canvas.create_rectangle(enemy["x"]-bar_width//2, bar_y, 
-                                        enemy["x"]+bar_width//2, bar_y+4,
-                                        outline='#FF0000', fill='#330000')
-                canvas.create_rectangle(enemy["x"]-bar_width//2, bar_y, 
-                                        enemy["x"]-bar_width//2 + bar_width*hp_pct, bar_y+4,
-                                        outline='', fill='#FF0000')
-                if enemy["is_boss"]:
-                    canvas.create_text(enemy["x"], enemy["y"]-25, text="👑 BOSS", 
-                                      fill='#FFD700', font=('Arial', 7, 'bold'))
-        
-        # Update and draw hunters
-        for name, hunter in self.arena_hunters.items():
-            tab = self.hunter_tabs[name]
-            
-            # Track optimization progress for visual effects
-            if tab.is_running:
-                hunter["opt_progress"] = getattr(tab, 'progress_var', tk.DoubleVar()).get() / 100.0
-            
-            # Get bench position for this hunter
-            bench_pos = self.bench_positions[name]
-            field_pos = hunter["field_position"]
-            
-            # Scale field position based on progress (hunters move deeper into field as progress increases)
-            if hunter.get("on_field", False) and not hunter.get("returning_to_bench", False):
-                progress = hunter.get("opt_progress", 0)
-                # As progress increases, hunters fight closer to the top (enemy territory)
-                base_y = field_pos["y"]
-                min_y = self.field_top + 25
-                # Interpolate: at 0% progress, stay at field_pos; at 100%, push toward top
-                field_pos["y"] = int(base_y - (base_y - min_y) * progress * 0.5)
-            
-            # Handle hunter state: on bench, walking to field, fighting, or returning to bench
-            if hunter.get("returning_to_bench", False):
-                # Walk back to bench
-                dx = bench_pos["x"] - hunter["x"]
-                dy = bench_pos["y"] - hunter["y"]
-                dist = math.sqrt(dx*dx + dy*dy)
-                if dist > 5:
-                    move_speed = 4.0  # Walk speed
-                    hunter["x"] += (dx / dist) * move_speed
-                    hunter["y"] += (dy / dist) * move_speed
-                else:
-                    # Arrived at bench
-                    hunter["x"] = bench_pos["x"]
-                    hunter["y"] = bench_pos["y"]
-                    hunter["returning_to_bench"] = False
-                    hunter["on_field"] = False
-                    
-            elif tab.is_running and hunter.get("on_field", False):
-                # Hunter is on field and fighting
-                # Calculate speed with boost
-                speed_mult = 1.5 if hunter["speed_boost"] > 0 else 1.0
-                hunter["speed_boost"] = max(0, hunter["speed_boost"] - 1)
-                
-                # DECISION: Find target enemy
-                target_x, target_y = None, None
-                
-                # Find nearest enemy - but prefer enemies that OTHER hunters aren't targeting
-                nearest_enemy = None
-                nearest_enemy_dist = float('inf')
-                
-                # Get list of enemies other hunters are targeting
-                other_targets = set()
-                for other_name, other_hunter in self.arena_hunters.items():
-                    if other_name != name and self.hunter_tabs[other_name].is_running:
-                        if "target_id" in other_hunter and other_hunter["target_id"] is not None:
-                            other_targets.add(other_hunter["target_id"])
-                
-                for enemy in self.arena_enemies:
-                    dist = math.sqrt((hunter["x"] - enemy["x"])**2 + (hunter["y"] - enemy["y"])**2)
-                    
-                    # Prefer enemies not targeted by others (add penalty)
-                    if enemy["id"] in other_targets:
-                        dist += 100  # Penalty for contested targets
-                    
-                    # Prefer enemies in hunter's vertical zone
-                    zone_diff = abs(enemy["y"] - hunter["y"])
-                    dist += zone_diff * 0.3  # Small preference for same vertical area
-                    
-                    if dist < nearest_enemy_dist:
-                        nearest_enemy_dist = dist
-                        nearest_enemy = enemy
-                
-                # Remember our target
-                hunter["target_id"] = nearest_enemy["id"] if nearest_enemy else None
-                
-                # Go for nearest enemy
-                if nearest_enemy:
-                    target_x, target_y = nearest_enemy["x"], nearest_enemy["y"]
-                
-                # Move toward target smoothly
-                if target_x is not None:
-                    dx = target_x - hunter["x"]
-                    dy = target_y - hunter["y"]
-                    dist = math.sqrt(dx*dx + dy*dy)
-                    if dist > 5:  # Don't jitter when very close
-                        # Smooth speed based on hunter type
-                        base_speed = 3.0 if name == "Knox" else (2.5 if name == "Borge" else 2.2)
-                        move_speed = min(base_speed * speed_mult, dist * 0.15)  # Smooth approach
-                        hunter["x"] += (dx / dist) * move_speed
-                        hunter["y"] += (dy / dist) * move_speed
-                else:
-                    # No target - idle at field position
-                    home_x = field_pos["x"]
-                    home_y = field_pos["y"]
-                    dx = home_x - hunter["x"]
-                    dy = home_y - hunter["y"]
-                    dist = math.sqrt(dx*dx + dy*dy)
-                    if dist > 10:
-                        hunter["x"] += dx * 0.05
-                        hunter["y"] += dy * 0.05
-                
-                # Keep hunters in field bounds
-                hunter["x"] = max(30, min(self.arena_width - 30, hunter["x"]))
-                hunter["y"] = max(self.field_top + 20, min(self.field_bottom - 20, hunter["y"]))
-                
-                # Update attack cooldown (based on attack speed from stats)
-                if hunter["attack_cooldown"] > 0:
-                    hunter["attack_cooldown"] -= 1
-                
-                # Ozzy regeneration (every 10 ticks = 0.5 sec)
-                if name == "Ozzy" and self.arena_tick % 10 == 0 and hunter.get("regen", 0) > 0:
-                    heal_amount = hunter["regen"] * hunter["level"]
-                    hunter["hp"] = min(hunter["max_hp"], hunter["hp"] + heal_amount)
-                    if heal_amount > 0.5:
-                        self.arena_effects.append({
-                            "x": hunter["x"] + 15, "y": hunter["y"] - 10,
-                            "icon": "💚", "ttl": 8, "is_text": False
-                        })
-                
-                # Check for enemy attacks - determine attack range
-                attack_range = hunter.get("attack_range", 45)  # Knox has 120 range
-                
-                # Check for enemy collisions (attacks) - only attack when cooldown is 0
-                for enemy in self.arena_enemies[:]:
-                    dist = math.sqrt((hunter["x"] - enemy["x"])**2 + (hunter["y"] - enemy["y"])**2)
-                    if dist < attack_range and hunter["attack_cooldown"] <= 0:
-                        # Calculate damage with crits
-                        is_crit = random.random() < hunter.get("crit_chance", 0.15)
-                        damage = hunter["damage"]
-                        if is_crit:
-                            damage *= hunter.get("crit_damage", 1.5)
-                        
-                        # Attack icons based on hunter type and crit
-                        attack_icons = {
-                            "Borge": ['⚔️', '🗡️', '💪'] if not is_crit else ['🔥', '💥', '⚔️'],
-                            "Knox": ['�', '⚡', '🎯'] if not is_crit else ['💥', '🎯', '⚡'],
-                            "Ozzy": ['🌀', '✨', '🐙'] if not is_crit else ['💫', '🎆', '✨']
-                        }
-                        attack_icon = random.choice(attack_icons.get(name, ['💥']))
-                        
-                        # Knox fires projectiles instead of instant hit
-                        if name == "Knox":
-                            self.arena_projectiles.append({
-                                "x": hunter["x"], "y": hunter["y"],
-                                "target_enemy_id": enemy["id"],
-                                "icon": "💥",
-                                "speed": 8,
-                                "damage": damage,
-                                "is_crit": is_crit,
-                                "hunter": name,
-                                "color": hunter.get("color", "#0D6EFD")
-                            })
-                            # Set attack cooldown
-                            hunter["attack_cooldown"] = int(hunter["attack_speed"] * 10)
-                            continue  # Don't do instant damage, projectile will handle it
-                        
-                        # Show attack effect - melee for Borge/Ozzy
-                        effect_x = (hunter["x"] + enemy["x"]) / 2
-                        effect_y = (hunter["y"] + enemy["y"]) / 2
-                        attack_color = hunter.get("color", "#FFFFFF")
-                        self.arena_effects.append({
-                            "x": effect_x, "y": effect_y,
-                            "icon": attack_icon, "ttl": 5, "is_text": False,
-                            "color": attack_color
-                        })
-                        
-                        # Floating damage number
-                        dmg_text = f"{damage:.0f}" if not is_crit else f"💥{damage:.0f}"
-                        self.arena_effects.append({
-                            "x": enemy["x"] + random.randint(-10, 10), 
-                            "y": enemy["y"] - 15,
-                            "icon": dmg_text, "ttl": 18, "is_text": True,
-                            "color": "#FFD700" if is_crit else attack_color,
-                            "float": True  # Will float upward
-                        })
-                        
-                        enemy["hp"] -= damage
-                        enemy["last_attacker"] = name
-                        
-                        # Borge lifesteal
-                        if name == "Borge" and hunter.get("lifesteal", 0) > 0:
-                            heal = damage * hunter["lifesteal"]
-                            hunter["hp"] = min(hunter["max_hp"], hunter["hp"] + heal)
-                        
-                        # Ozzy poison application with visual cloud
-                        if name == "Ozzy" and random.random() < hunter.get("poison_chance", 0.3):
-                            enemy["poison_stacks"] = enemy.get("poison_stacks", 0) + 1
-                            # Green poison cloud effect
-                            self.arena_effects.append({
-                                "x": enemy["x"], "y": enemy["y"],
-                                "icon": "☠️", "ttl": 15, "is_text": False,
-                                "color": "#00FF00"
-                            })
-                            # Text showing poison applied
-                            self.arena_effects.append({
-                                "x": enemy["x"], "y": enemy["y"] - 25,
-                                "icon": "🧪 POISON!", "ttl": 12, "is_text": True,
-                                "color": "#00FF00"
-                            })
-                        
-                        # Set attack cooldown based on attack speed
-                        hunter["attack_cooldown"] = int(hunter["attack_speed"] * 10)
-                        
-                        if enemy["hp"] <= 0:
-                            # Enemy killed!
-                            kill_icons = {
-                                "Borge": ['💀', '☠️', '🔥', '⚔️'],
-                                "Knox": ['💥', '🎯', '💨', '🔫'],
-                                "Ozzy": ['🌀', '✨', '💫', '🎆']
-                            }
-                            self.arena_effects.append({
-                                "x": enemy["x"], "y": enemy["y"],
-                                "icon": random.choice(kill_icons.get(name, ['💥'])) if not enemy["is_boss"] else '🎆',
-                                "ttl": 8, "is_text": False
-                            })
-                            
-                            # XP and kills - bosses give more XP
-                            xp_gain = 20 if enemy["is_boss"] else 1
-                            hunter["kills"] += 1
-                            hunter["xp"] += xp_gain
-                            self.arena_total_kills += 1
-                            
-                            if enemy["is_boss"]:
-                                self.boss_active = False
-                                # Victory bonus heal
-                                hunter["hp"] = hunter["max_hp"]
-                            
-                            self.arena_enemies.remove(enemy)
-                            
-                            # Level up check with CIFI-like stat scaling
-                            xp_needed = hunter["level"] * 10
-                            if hunter["xp"] >= xp_needed:
-                                hunter["xp"] -= xp_needed
-                                hunter["level"] += 1
-                                # Scale stats on level up
-                                hunter["max_hp"] += 10 if name == "Borge" else (5 if name == "Ozzy" else 3)
-                                hunter["hp"] = hunter["max_hp"]
-                                hunter["damage"] = hunter["base_damage"] * (1 + hunter["level"] * 0.15)
-                                if name == "Ozzy":
-                                    hunter["regen"] = 0.5 + hunter["level"] * 0.2
-                                self.arena_effects.append({
-                                    "x": hunter["x"], "y": hunter["y"] - 25,
-                                    "icon": f"⬆️ LVL {hunter['level']}!", "ttl": 30, "is_text": True
-                                })
-                            
-                            # Stage progression
-                            if self.arena_total_kills >= self.kills_for_next_stage:
-                                self.arena_stage += 1
-                                self.kills_for_next_stage = self.arena_stage * 15
-                                self.arena_effects.append({
-                                    "x": self.arena_width // 2, "y": self.arena_height // 2,
-                                    "icon": f"🏆 STAGE {self.arena_stage}!", "ttl": 40, "is_text": True
-                                })
-                                # Spawn boss every 3 stages
-                                if self.arena_stage % 3 == 0 and not self.boss_active:
-                                    self._spawn_enemy(is_boss=True)
-                            
-                            # Spawn replacement enemy
-                            if len(self.arena_enemies) < 10 + self.arena_stage:
-                                self._spawn_enemy()
-                        else:
-                            # Hit but not killed (boss)
-                            self.arena_effects.append({
-                                "x": enemy["x"], "y": enemy["y"],
-                                "icon": '💢', "ttl": 5, "is_text": False
-                            })
-            
-            # Draw hunter with effects
-            is_active = tab.is_running or self.victory_mode or hunter.get("returning_to_bench", False)
-            is_on_bench = not hunter.get("on_field", False) and not hunter.get("returning_to_bench", False)
-            
-            if is_active and not is_on_bench:
-                # Active hunter - glow effect
-                glow_size = 22 if hunter["speed_boost"] > 0 else 18
-                canvas.create_oval(hunter["x"]-glow_size, hunter["y"]-glow_size, 
-                                  hunter["x"]+glow_size, hunter["y"]+glow_size,
-                                  fill=hunter["color"], outline='', stipple='gray50')
-            
-            # Draw hunter icon - use text icons to ensure proper centering
-            icon_map = {"Borge": "B", "Knox": "K", "Ozzy": "O"}
-            icon_char = icon_map.get(name, "?")
-            
-            # Smaller icon if on bench, larger if active
-            icon_size = 10 if is_on_bench else 14
-            circle_size = 10 if is_on_bench else 14
-            
-            # Draw circle background for icon
-            canvas.create_oval(hunter["x"]-circle_size, hunter["y"]-circle_size, 
-                              hunter["x"]+circle_size, hunter["y"]+circle_size,
-                              fill=hunter["color"] if not is_on_bench else '#444444', 
-                              outline='#FFFFFF' if not is_on_bench else '#888888', width=2)
-            # Draw letter
-            canvas.create_text(hunter["x"], hunter["y"], text=icon_char, 
-                              font=('Arial', icon_size, 'bold'), 
-                              fill='#FFFFFF' if not is_on_bench else '#CCCCCC', anchor='center')
-            
-            # Draw emoji next to the circle (only if not on bench)
-            if not is_on_bench:
-                emoji_x = hunter["x"] + 20
-                canvas.create_text(emoji_x, hunter["y"] - 10, text=hunter["icon"], 
-                                  font=('Segoe UI Emoji', 12), anchor='w')
-            
-                # Draw level badge
-                if hunter["level"] > 1:
-                    canvas.create_oval(hunter["x"]+12, hunter["y"]-18, hunter["x"]+24, hunter["y"]-6,
-                                      fill='#FFD700', outline='#000000')
-                    canvas.create_text(hunter["x"]+18, hunter["y"]-12, text=str(hunter["level"]),
-                                      fill='#000000', font=('Arial', 7, 'bold'))
-                
-                # Draw HP bar
-                bar_width = 30
-                hp_pct = hunter["hp"] / hunter["max_hp"]
-                bar_y = hunter["y"] + 18
-                canvas.create_rectangle(hunter["x"]-bar_width//2, bar_y, 
-                                        hunter["x"]+bar_width//2, bar_y+4,
-                                        outline='#333333', fill='#1a1a1a')
-                hp_color = '#00FF00' if hp_pct > 0.5 else '#FFFF00' if hp_pct > 0.25 else '#FF0000'
-                canvas.create_rectangle(hunter["x"]-bar_width//2, bar_y, 
-                                        hunter["x"]-bar_width//2 + bar_width*hp_pct, bar_y+4,
-                                        outline='', fill=hp_color)
-                
-                # Draw kill count
-                canvas.create_text(hunter["x"], hunter["y"] + 30, 
-                                  text=f"💀{hunter['kills']}", 
-                                  fill=hunter["color"], font=('Arial', 8, 'bold'))
-                
-                # Draw optimization progress bar if running
-                if tab.is_running:
-                    opt_progress = hunter.get("opt_progress", 0)
-                    prog_bar_width = 40
-                    prog_bar_y = hunter["y"] + 42
-                    canvas.create_rectangle(hunter["x"]-prog_bar_width//2, prog_bar_y, 
-                                            hunter["x"]+prog_bar_width//2, prog_bar_y+3,
-                                            outline='#333333', fill='#1a1a1a')
-                    canvas.create_rectangle(hunter["x"]-prog_bar_width//2, prog_bar_y, 
-                                            hunter["x"]-prog_bar_width//2 + prog_bar_width*opt_progress, prog_bar_y+3,
-                                            outline='', fill='#00BFFF')
-                    canvas.create_text(hunter["x"], prog_bar_y + 10, 
-                                      text=f"{int(opt_progress*100)}%",
-                                      fill='#00BFFF', font=('Arial', 7, 'bold'))
-            else:
-                # On bench - show "💤" sleeping indicator
-                canvas.create_text(hunter["x"], hunter["y"] - 18, text="💤",
-                                  font=('Segoe UI Emoji', 10))
-                # Show name label below
-                canvas.create_text(hunter["x"], hunter["y"] + 18, text=name,
-                                  fill='#888888', font=('Arial', 7))
-        
-        # Draw and update effects
-        for effect in self.arena_effects[:]:
-            effect_color = effect.get("color", "#FFFFFF")
-            if effect.get("is_text"):
-                canvas.create_text(effect["x"], effect["y"], text=effect["icon"],
-                                  fill=effect_color, font=('Arial', 10, 'bold'))
-                effect["y"] -= 1  # Float upward
-            else:
-                canvas.create_text(effect["x"], effect["y"], text=effect["icon"],
-                                  fill=effect_color, font=('Segoe UI Emoji', 14))
-            effect["ttl"] -= 1
-            if effect["ttl"] <= 0:
-                self.arena_effects.remove(effect)
-        
-        # Spawn new enemies LESS frequently when running (stationary enemies)
-        if any_running and not self.victory_mode:
-            # Very low spawn rate: 0.015 = ~once every 67 frames = ~3.3 seconds
-            max_enemies = 3 + (self.arena_stage // 2)  # Fewer enemies on screen
-            if random.random() < 0.015 and len(self.arena_enemies) < max_enemies:
-                self._spawn_enemy()
-        
-        # Draw stats at bottom
-        y = self.arena_height - 12
-        stats_text = f"🛡️Lv{self.arena_hunters['Borge']['level']}:{self.arena_hunters['Borge']['kills']}  " \
-                     f"🔫Lv{self.arena_hunters['Knox']['level']}:{self.arena_hunters['Knox']['kills']}  " \
-                     f"🐙Lv{self.arena_hunters['Ozzy']['level']}:{self.arena_hunters['Ozzy']['kills']}"
-        canvas.create_text(self.arena_width // 2, y, text=stats_text,
-                          fill='#FFFFFF', font=('Arial', 9, 'bold'))
-        
-        # Increment tick counter for timing (regen, poison, etc.)
-        self.arena_tick += 1
-        
-        # Schedule next frame (50ms = 20fps)
-        self.root.after(50, self._animate_arena)
+        # Schedule next frame (faster when running)
+        delay = 100 if any_running else 500
+        self.root.after(delay, self._animate_arena)
     
     def _update_leaderboard(self, hunter_name: str, hunter: dict):
         """Update the leaderboard with completed run results."""
@@ -3917,88 +3805,108 @@ class MultiHunterGUI:
     
     def _update_hunter_status(self):
         """Update individual hunter status labels and progress bars."""
-        statuses = {
-            "Borge": (self.borge_status, self.borge_progress, self.borge_eta, self.hunter_tabs["Borge"]),
-            "Knox": (self.knox_status, self.knox_progress, self.knox_eta, self.hunter_tabs["Knox"]),
-            "Ozzy": (self.ozzy_status, self.ozzy_progress, self.ozzy_eta, self.hunter_tabs["Ozzy"]),
-        }
-        
         total_progress = 0
         running_count = 0
         
-        for name, (label, progress_var, eta_label, tab) in statuses.items():
+        for name, tab in self.hunter_tabs.items():
             icon = '🛡️' if name=='Borge' else '🔫' if name=='Knox' else '🐙'
             
-            if tab.is_running:
-                # Get progress from the tab's progress var
-                pct = tab.progress_var.get()
-                progress_var.set(pct)
-                total_progress += pct
-                running_count += 1
+            # Use the new hunter_status_frames structure
+            if name in self.hunter_status_frames:
+                status_info = self.hunter_status_frames[name]
+                progress_var = status_info['progress_var']
+                status_label = status_info['status_label']
                 
-                # Calculate ETA
-                if tab.optimization_start_time > 0:
-                    elapsed = time.time() - tab.optimization_start_time
-                    if pct > 0:
-                        total_time = elapsed / (pct / 100)
-                        remaining = total_time - elapsed
-                        if remaining < 60:
-                            eta_str = f"{remaining:.0f}s"
-                        elif remaining < 3600:
-                            eta_str = f"{remaining/60:.1f}m"
-                        else:
-                            eta_str = f"{remaining/3600:.1f}h"
-                        eta_label.configure(text=f"ETA: {eta_str}")
-                    else:
-                        eta_label.configure(text="Starting...")
-                
-                label.configure(text=f"{icon} {name}: ⏳ {pct:.0f}%")
-            elif tab.results:
-                best = max(tab.results, key=lambda r: r.avg_final_stage).avg_final_stage
-                progress_var.set(100)
-                eta_label.configure(text="✅ Complete")
-                label.configure(text=f"{icon} {name}: Best {best:.1f}")
-            else:
-                progress_var.set(0)
-                eta_label.configure(text="")
-                label.configure(text=f"{icon} {name}: Idle")
+                if tab.is_running:
+                    # Get progress from the tab's progress var
+                    pct = tab.progress_var.get()
+                    progress_var.set(pct)
+                    total_progress += pct
+                    running_count += 1
+                    
+                    # Calculate ETA
+                    eta_str = ""
+                    if tab.optimization_start_time > 0:
+                        elapsed = time.time() - tab.optimization_start_time
+                        if pct > 0:
+                            total_time = elapsed / (pct / 100)
+                            remaining = total_time - elapsed
+                            if remaining < 60:
+                                eta_str = f" ({remaining:.0f}s)"
+                            elif remaining < 3600:
+                                eta_str = f" ({remaining/60:.1f}m)"
+                            else:
+                                eta_str = f" ({remaining/3600:.1f}h)"
+                    
+                    status_label.configure(text=f"⏳ Running... {pct:.0f}%{eta_str}", fg='#ffcc00')
+                elif tab.results:
+                    best = max(tab.results, key=lambda r: r.avg_final_stage).avg_final_stage
+                    progress_var.set(100)
+                    status_label.configure(text=f"✅ Stage {best:.1f}", fg='#00ff00')
+                else:
+                    progress_var.set(0)
+                    status_label.configure(text="Waiting...", fg=self.DARK_TEXT_DIM)
         
-        # Update global progress
+        # Update hunter progress state for color-coded bar
+        for name, tab in self.hunter_tabs.items():
+            if name in self.hunter_progress_state:
+                if tab.is_running:
+                    self.hunter_progress_state[name]["progress"] = tab.progress_var.get()
+                    self.hunter_progress_state[name]["complete"] = False
+                elif tab.results:
+                    self.hunter_progress_state[name]["progress"] = 100
+                    self.hunter_progress_state[name]["complete"] = True
+                else:
+                    self.hunter_progress_state[name]["progress"] = 0
+                    self.hunter_progress_state[name]["complete"] = False
+        
+        # Draw color-coded progress bar
+        self._draw_global_progress()
+        
+        # Update global ETA label
         if running_count > 0:
-            self.global_progress.set(total_progress / 3)  # Average of all 3
             self.global_eta.configure(text=f"Running {running_count}/3 hunters...")
         elif any(tab.results for tab in self.hunter_tabs.values()):
-            self.global_progress.set(100)
             self.global_eta.configure(text="✅ All complete!")
         else:
-            self.global_progress.set(0)
             self.global_eta.configure(text="Ready")
     
     def _create_log_frame(self):
-        """Create a global log and progress bar at the bottom."""
+        """Create a global log and progress bar at the bottom with dark theme."""
         # Container for log + progress
-        bottom_frame = ttk.Frame(self.root)
+        bottom_frame = ttk.Frame(self.root, style='Dark.TFrame')
         bottom_frame.pack(fill=tk.X, padx=10, pady=5, side=tk.BOTTOM)
         
         # Global progress bar
-        progress_frame = ttk.LabelFrame(bottom_frame, text="📊 Global Progress")
+        progress_frame = ttk.LabelFrame(bottom_frame, text="📊 Global Progress", style='Dark.TLabelframe')
         progress_frame.pack(fill=tk.X, pady=2)
         
-        progress_inner = ttk.Frame(progress_frame)
+        progress_inner = ttk.Frame(progress_frame, style='Dark.TFrame')
         progress_inner.pack(fill=tk.X, padx=10, pady=5)
         
-        self.global_progress = tk.DoubleVar(value=0)
-        self.global_progress_bar = ttk.Progressbar(progress_inner, variable=self.global_progress, maximum=100)
-        self.global_progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        # Hunter-colored progress canvas (3 segments)
+        self.global_progress_canvas = tk.Canvas(progress_inner, height=20, bg='#1a1a2e', 
+                                                 highlightthickness=1, highlightbackground='#3d3d5c')
+        self.global_progress_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        self.global_eta = ttk.Label(progress_inner, text="Ready", width=30)
+        # Track progress for each hunter: {name: {progress: 0-100, complete: bool}}
+        self.hunter_progress_state = {
+            "Borge": {"progress": 0, "complete": False, "color": "#DC3545"},
+            "Ozzy": {"progress": 0, "complete": False, "color": "#198754"},
+            "Knox": {"progress": 0, "complete": False, "color": "#0D6EFD"},
+        }
+        
+        self.global_eta = ttk.Label(progress_inner, text="Ready", width=30, style='Dark.TLabel')
         self.global_eta.pack(side=tk.LEFT, padx=5)
         
         # Log
-        log_frame = ttk.LabelFrame(bottom_frame, text="📋 Global Log")
+        log_frame = ttk.LabelFrame(bottom_frame, text="📋 Global Log", style='Dark.TLabelframe')
         log_frame.pack(fill=tk.X, pady=2)
         
-        self.global_log = scrolledtext.ScrolledText(log_frame, height=4, state=tk.DISABLED, font=('Consolas', 9))
+        self.global_log = scrolledtext.ScrolledText(
+            log_frame, height=4, state=tk.DISABLED, font=('Consolas', 9),
+            bg=self.DARK_BG_TERTIARY, fg=self.DARK_TEXT, insertbackground=self.DARK_TEXT
+        )
         self.global_log.pack(fill=tk.X, padx=5, pady=5)
     
     def _log(self, message: str):
@@ -4009,6 +3917,66 @@ class MultiHunterGUI:
         self.global_log.see(tk.END)
         self.global_log.configure(state=tk.DISABLED)
     
+    def _draw_global_progress(self):
+        """Draw the color-coded global progress bar with 3 hunter segments."""
+        canvas = self.global_progress_canvas
+        canvas.delete("all")
+        
+        # Get canvas dimensions
+        canvas.update_idletasks()
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        
+        if width < 10:  # Canvas not ready yet
+            return
+        
+        # Get selected hunters for dynamic sizing
+        selected_hunters = []
+        if hasattr(self, 'run_borge_var') and self.run_borge_var.get():
+            selected_hunters.append("Borge")
+        if hasattr(self, 'run_ozzy_var') and self.run_ozzy_var.get():
+            selected_hunters.append("Ozzy")
+        if hasattr(self, 'run_knox_var') and self.run_knox_var.get():
+            selected_hunters.append("Knox")
+        
+        # If no hunters selected, show all 3 at equal size
+        if not selected_hunters:
+            selected_hunters = ["Borge", "Ozzy", "Knox"]
+        
+        # Each selected hunter gets equal portion of bar
+        num_hunters = len(selected_hunters)
+        segment_width = width / num_hunters
+        
+        for i, name in enumerate(selected_hunters):
+            state = self.hunter_progress_state[name]
+            x_start = i * segment_width
+            x_end = (i + 1) * segment_width
+            progress = state["progress"] / 100
+            color = state["color"]
+            
+            # Draw background (dark)
+            canvas.create_rectangle(x_start, 0, x_end, height, 
+                                   fill='#2a2a3a', outline='#3d3d5c', width=1)
+            
+            # Draw filled progress portion
+            fill_width = segment_width * progress
+            if fill_width > 0:
+                # Brighter color for fill
+                canvas.create_rectangle(x_start, 2, x_start + fill_width, height - 2,
+                                       fill=color, outline='')
+            
+            # Draw segment label (hunter initial + percentage)
+            label = f"{name[0]}:{state['progress']:.0f}%"
+            text_x = x_start + segment_width / 2
+            text_color = '#FFFFFF' if progress > 0.3 else '#888888'
+            canvas.create_text(text_x, height / 2, text=label, 
+                              fill=text_color, font=('Arial', 8, 'bold'))
+            
+            # Draw checkmark if complete
+            if state["complete"]:
+                canvas.create_text(x_end - 12, height / 2, text="✓",
+                                  fill='#00FF00', font=('Arial', 10, 'bold'))
+
     def _run_all_hunters(self):
         """Start optimization for selected hunters sequentially."""
         # Apply global settings to all hunters first
@@ -4084,11 +4052,11 @@ class MultiHunterGUI:
             self.all_status.configure(text="🎉 Celebrating victory...")
             self.root.after(200, self._check_sequential_complete)
         else:
-            # Current hunter finished AND back on bench, add 3 second cooldown before next
+            # Current hunter finished AND back on bench, brief cooldown before next
             if hasattr(self, 'sequential_queue') and self.sequential_queue:
-                self._log("   ⏳ 3 second cooldown before next hunter...")
-                self.all_status.configure(text="⏳ Cooldown before next hunter...")
-                self.root.after(3000, self._run_next_sequential)
+                self._log("   ⏳ Starting next hunter...")
+                self.all_status.configure(text="⏳ Starting next hunter...")
+                self.root.after(1000, self._run_next_sequential)
             else:
                 # All done
                 self._run_next_sequential()
@@ -4129,6 +4097,26 @@ class MultiHunterGUI:
             tab._auto_save_build()
         self._log("💾 All builds saved to IRL Builds folder")
         messagebox.showinfo("Saved", "All builds saved to IRL Builds folder!")
+    
+    def _open_irl_builds_folder(self):
+        """Open the IRL Builds folder in the system file explorer."""
+        import subprocess
+        import os
+        
+        builds_path = os.path.join(os.path.dirname(__file__), "IRL Builds")
+        if not os.path.exists(builds_path):
+            os.makedirs(builds_path)
+        
+        # Open folder in system file explorer
+        try:
+            if os.name == 'nt':  # Windows
+                os.startfile(builds_path)
+            elif os.name == 'posix':  # macOS/Linux
+                subprocess.run(['xdg-open' if os.uname().sysname != 'Darwin' else 'open', builds_path])
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open folder: {e}")
+        
+        self._log(f"📁 Opened IRL Builds folder: {builds_path}")
 
 
 def main():

@@ -1,4 +1,4 @@
-# Hunter Sim - Build Optimizer GUI
+# Hunter Sim - Build Optimizer GUI v1.3
 
 A graphical interface for the Hunter Sim that **automatically finds optimal talent and attribute builds** by simulating thousands of combinations.
 
@@ -9,6 +9,15 @@ A graphical interface for the Hunter Sim that **automatically finds optimal tale
 💾 **Save/Load Builds**: Save your current build configuration and load it later - no more re-typing everything!
 
 🎯 **Upgrade Advisor**: Not sure what stat to upgrade next? The advisor simulates +1 to each stat and tells you which gives the BEST improvement!
+
+⚔️ **Live Battle Arena**: Watch your hunter fight through stages in real-time! The arena syncs with optimization progress and shows:
+- Hunter portrait on the left side
+- Current enemy being fought on the right
+- 10-enemy queue at the bottom (like the real game!)
+- Stage progression based on best_avg_stage from optimization
+- Hunter-themed backgrounds (Exon-12, Endo Prime, Sirene-6)
+
+🦀 **Rust-Powered Engine**: Optional ultra-fast Rust simulation engine (1000x faster than Python!) - uses 70% of CPU cores for optimal performance without freezing your system.
 
 🎯 **Supports All 3 Hunters**:
 - **Borge** - Melee fighter with crits, helltouch barrier, and trample
@@ -21,6 +30,8 @@ A graphical interface for the Hunter Sim that **automatically finds optimal tale
 - ⚡ **Fastest Clear** - Speed-running builds
 - 💥 **Most Damage** - Maximum DPS builds
 - 🛡️ **Best Survival** - Never die to bosses
+
+🌙 **Dark Theme**: Easy on the eyes with a modern dark interface
 
 🎮 **Easy Input**: Just enter your fixed game data:
 - Main stat upgrade levels (HP, Power, Regen, etc.)
@@ -59,6 +70,17 @@ python gui.py
 
 ### Results Tab
 View the best builds ranked by different criteria and export them
+
+### ⚔️ Battle Arena
+A **live visualization** of your hunter fighting enemies during optimization:
+- **Hunter portrait** on the left side, **enemy** on the right
+- **10-enemy queue** at the bottom shows upcoming enemies in the current stage (just like the real game!)
+- **Stage progression** syncs with optimization progress (based on best_avg_stage)
+- Each hunter has a themed planet background:
+  - **Borge**: Exon-12 (volcanic planet)
+  - **Ozzy**: Endo Prime (tech planet)  
+  - **Knox**: Sirene-6 (ocean planet)
+- When optimization completes, shows "**DEFEATED 💀**" as the hunter falls in battle
 
 ## Understanding the Results
 
