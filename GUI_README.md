@@ -79,6 +79,22 @@ The optimizer tests builds and ranks them by:
 3. **Use more CPU processes** if you have a powerful computer
 4. **Limit max builds** if your level is high (more combinations exist)
 
+## Understanding Optimization Percentage
+
+The optimization percentage shown in results compares each build's simulated performance to your baseline build. Due to the randomness inherent in simulations, you may occasionally see results showing **over 100% optimization** (e.g., "105% of baseline").
+
+**What does this mean?**
+- Simulations involve RNG (random number generation) for crits, procs, enemy spawns, etc.
+- With fewer simulations, results have higher variance
+- A build showing 105% might actually be equal to or slightly worse than baseline
+
+**How to fix it:**
+- **Increase "Simulations per Build"** from the default to 50-100 or higher
+- More simulations = more accurate averages = more reliable optimization percentages
+- If you're seeing wild swings (e.g., builds jumping from 80% to 120%), your simulation count is too low
+
+**Rule of thumb:** If your best builds consistently show >100% optimization compared to your IRL build, increase your simulation count until the baseline stabilizes.
+
 ## Technical Details
 
 - Each level grants: **+1 Talent Point** and **+3 Attribute Points**
