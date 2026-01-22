@@ -115,6 +115,7 @@ Contributions welcome! The main areas for improvement:
 ## 📝 Credits
 
 - Original simulation: [bhnn/hunter-sim](https://github.com/bhnn/hunter-sim)
+- Better Simulation: https://hunter-sim2.netlify.app/home
 - Rust backend & GUI: pirateantalis-cyber
 - CIFI game: [Play Store](https://play.google.com/store/apps/details?id=com.weihnachtsmann.idlefactoryinc)
 
