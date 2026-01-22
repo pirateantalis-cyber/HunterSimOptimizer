@@ -2659,6 +2659,10 @@ class MultiHunterGUI:
         # Schedule next frame (300ms = ~3fps animation)
         self.root.after(300, self._animate_battles)
     
+    def _log_arena(self, msg: str):
+        """Log a message to the arena - shows briefly in effects."""
+        pass  # Silent for now - can add visual log later
+    
     def _init_battle_arena(self):
         """Initialize the battle arena with hunters and enemies using CIFI-accurate mechanics."""
         import random
@@ -2977,9 +2981,55 @@ class MultiHunterGUI:
             is_running = tab.is_running
             
             if is_running and not was_running:
-                # Hunter just started - walk onto field AND RESET ARENA
+                # Hunter just started - walk onto field AND LOAD USER'S BUILD
                 hunter["on_field"] = True
                 hunter["returning_to_bench"] = False
+                
+                # LOAD USER'S BUILD STATS for this hunter
+                try:
+                    config = tab._get_current_config()
+                    stats = config.get("stats", {})
+                    attrs = config.get("attributes", {})
+                    talents = config.get("talents", {})
+                    
+                    # Calculate effective combat stats from build (simplified CIFI formulas)
+                    hp_stat = stats.get("hp", 0)
+                    hunter["max_hp"] = int(43 + hp_stat * 2.5 + (hp_stat / 5) * 0.01 * hp_stat)
+                    hunter["hp"] = hunter["max_hp"]
+                    
+                    pwr_stat = stats.get("power", 0)
+                    hunter["base_damage"] = 3.0 + pwr_stat * 0.5 + (pwr_stat / 10) * 0.01 * pwr_stat
+                    hunter["damage"] = hunter["base_damage"]
+                    
+                    spd_stat = stats.get("speed", 0)
+                    hunter["attack_speed"] = max(0.5, 5.0 - spd_stat * 0.03)
+                    
+                    reg_stat = stats.get("regen", 0)
+                    hunter["regen"] = 0.02 + reg_stat * 0.03
+                    
+                    dr_stat = stats.get("damage_reduction", 0)
+                    hunter["dr"] = min(0.90, dr_stat * 0.0144)
+                    
+                    crit_stat = stats.get("special_chance", 0)
+                    hunter["crit_chance"] = 0.05 + crit_stat * 0.0018
+                    
+                    crit_dmg_stat = stats.get("special_damage", 0)
+                    hunter["crit_damage"] = 1.30 + crit_dmg_stat * 0.01
+                    
+                    # Hunter-specific from attributes
+                    if name == "Borge":
+                        hunter["lifesteal"] = attrs.get("book_of_baal", 0) * 0.0111
+                    elif name == "Ozzy":
+                        effect_stat = stats.get("effect_chance", 0)
+                        hunter["poison_chance"] = 0.04 + effect_stat * 0.005
+                        hunter["poison_damage"] = 1 + talents.get("omen_of_decay", 0) * 0.5
+                    elif name == "Knox":
+                        hunter["attack_range"] = 120  # Ranged
+                        
+                    self._log_arena(f"📊 {name}: HP={hunter['max_hp']:.0f} PWR={hunter['damage']:.1f} SPD={hunter['attack_speed']:.2f}s")
+                except Exception as e:
+                    self._log_arena(f"⚠️ {name} using default stats")
+                
                 # Assign a good field position for this hunter
                 if name == "Borge":
                     hunter["field_position"] = {"x": 100, "y": (self.field_top + self.field_bottom) // 2 - 30}
@@ -2990,23 +3040,20 @@ class MultiHunterGUI:
                     
                 # RESET arena to stage 1 when any new run starts
                 self.arena_stage = 1
-                self.kills_for_next_stage = 15
+                self.kills_for_next_stage = 10  # 10 enemies per stage like real sim
                 self.arena_total_kills = 0
                 
-                # Reset all hunters' kills and stats
-                for h in self.arena_hunters.values():
-                    h["kills"] = 0
-                    h["hp"] = h["max_hp"]
-                    h["level"] = 1
-                    h["xp"] = 0
-                    h["damage"] = h["base_damage"]
+                # Reset this hunter's arena stats
+                hunter["kills"] = 0
+                hunter["level"] = 1
+                hunter["xp"] = 0
                 
-                # Clear enemies and spawn fresh ones
+                # Clear enemies and spawn fresh ones (10 per stage like sim)
                 self.arena_enemies.clear()
                 self.arena_effects.clear()
                 self.arena_projectiles.clear()
                 self.boss_active = False
-                for _ in range(4):
+                for _ in range(3):  # Start with 3 visible enemies
                     self._spawn_enemy()
                     
             elif not is_running and was_running:
@@ -3173,11 +3220,16 @@ class MultiHunterGUI:
                     target_enemy["hp"] -= projectile["damage"]
                     target_enemy["last_attacker"] = projectile["hunter"]
                     
-                    # Show hit effect
+                    # Floating damage number
+                    damage = projectile["damage"]
+                    is_crit = projectile.get("is_crit", False)
+                    dmg_text = f"{damage:.0f}" if not is_crit else f"💥{damage:.0f}"
                     self.arena_effects.append({
-                        "x": target_enemy["x"], "y": target_enemy["y"],
-                        "icon": "💥", "ttl": 5, "is_text": False,
-                        "color": projectile.get("color", "#0D6EFD")
+                        "x": target_enemy["x"] + random.randint(-10, 10), 
+                        "y": target_enemy["y"] - 15,
+                        "icon": dmg_text, "ttl": 18, "is_text": True,
+                        "color": "#FFD700" if is_crit else projectile.get("color", "#0D6EFD"),
+                        "float": True
                     })
                     
                     # Show crit text
@@ -3304,11 +3356,15 @@ class MultiHunterGUI:
                         "icon": attack_icon, "ttl": 5, "is_text": False
                     })
                     
-                    if is_crit:
-                        self.arena_effects.append({
-                            "x": h["x"], "y": h["y"] - 20,
-                            "icon": "💢CRIT!", "ttl": 12, "is_text": True
-                        })
+                    # Floating damage number on hunter
+                    dmg_text = f"-{damage:.0f}" if not is_crit else f"💢-{damage:.0f}"
+                    self.arena_effects.append({
+                        "x": h["x"] + random.randint(-10, 10), 
+                        "y": h["y"] - 15,
+                        "icon": dmg_text, "ttl": 18, "is_text": True,
+                        "color": "#FF4444" if is_crit else "#FF8888",
+                        "float": True
+                    })
                     
                     # Set cooldown
                     enemy["attack_cooldown"] = int(enemy.get("speed", 2.0) * 10)
@@ -3368,61 +3424,9 @@ class MultiHunterGUI:
         for name, hunter in self.arena_hunters.items():
             tab = self.hunter_tabs[name]
             
-            # Sync hunter stats from build when running - use REALISTIC stats
+            # Track optimization progress for visual effects
             if tab.is_running:
-                try:
-                    # Get build config for actual stats
-                    config = tab._get_config()
-                    stats = config.get("stats", {})
-                    
-                    # Attack speed from speed stat (lower = faster attacks)
-                    speed_stat = stats.get("speed", 0)
-                    base_speed = 5.0 - speed_stat * 0.03
-                    hunter["attack_speed"] = max(0.3, base_speed / 2)  # Scale for arena
-                    
-                    # Power from power stat
-                    power_stat = stats.get("power", 0)
-                    base_power = 3.0 + power_stat * 0.5
-                    hunter["damage"] = max(1, base_power / 3)  # Scale for arena
-                    
-                    # HP from hp stat
-                    hp_stat = stats.get("hp", 0)
-                    base_hp = 43.0 + hp_stat * 2.5
-                    if hunter["max_hp"] < base_hp:
-                        hunter["max_hp"] = int(base_hp)
-                        hunter["hp"] = min(hunter["hp"], hunter["max_hp"])
-                    
-                    # Regen from regen stat
-                    regen_stat = stats.get("regen", 0)
-                    hunter["regen"] = 0.02 + regen_stat * 0.03
-                    
-                    # DR from damage_reduction stat
-                    dr_stat = stats.get("damage_reduction", 0)
-                    hunter["dr"] = min(0.90, dr_stat * 0.0144)
-                    
-                    # Crit from special_chance stat
-                    crit_stat = stats.get("special_chance", 0)
-                    hunter["crit_chance"] = 0.05 + crit_stat * 0.0018
-                    
-                    # Crit damage from special_damage stat
-                    crit_dmg_stat = stats.get("special_damage", 0)
-                    hunter["crit_damage"] = 1.30 + crit_dmg_stat * 0.01
-                    
-                    # Lifesteal for Borge from attributes
-                    if name == "Borge":
-                        attrs = config.get("attributes", {})
-                        baal = attrs.get("book_of_baal", 0)
-                        hunter["lifesteal"] = baal * 0.0111
-                    
-                    # Poison for Ozzy from effect_chance
-                    if name == "Ozzy":
-                        effect_stat = stats.get("effect_chance", 0)
-                        hunter["poison_chance"] = 0.04 + effect_stat * 0.005
-                    
-                    # Track optimization progress
-                    hunter["opt_progress"] = getattr(tab, 'progress_var', tk.DoubleVar()).get() / 100.0
-                except Exception:
-                    pass
+                hunter["opt_progress"] = getattr(tab, 'progress_var', tk.DoubleVar()).get() / 100.0
             
             # Get bench position for this hunter
             bench_pos = self.bench_positions[name]
@@ -3583,13 +3587,15 @@ class MultiHunterGUI:
                             "color": attack_color
                         })
                         
-                        # Crit text with color
-                        if is_crit:
-                            self.arena_effects.append({
-                                "x": enemy["x"], "y": enemy["y"] - 20,
-                                "icon": "💥CRIT!", "ttl": 12, "is_text": True,
-                                "color": "#FFD700"  # Gold
-                            })
+                        # Floating damage number
+                        dmg_text = f"{damage:.0f}" if not is_crit else f"💥{damage:.0f}"
+                        self.arena_effects.append({
+                            "x": enemy["x"] + random.randint(-10, 10), 
+                            "y": enemy["y"] - 15,
+                            "icon": dmg_text, "ttl": 18, "is_text": True,
+                            "color": "#FFD700" if is_crit else attack_color,
+                            "float": True  # Will float upward
+                        })
                         
                         enemy["hp"] -= damage
                         enemy["last_attacker"] = name
