@@ -612,25 +612,26 @@ class HunterTab:
                 cb.grid(row=i // 2, column=i % 2, padx=10, pady=5, sticky="w")
                 self.mod_vars[mod_key] = var
         
-        # Gadgets Section (LEFT - after Relics)
-        gadgets_frame = ttk.LabelFrame(self.scrollable_frame, text="🔧 Gadgets")
+        # Gadgets Section (LEFT - after Relics) - Each hunter has their own gadget
+        gadgets_frame = ttk.LabelFrame(self.scrollable_frame, text="🔧 Gadget")
         gadgets_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
         left_row += 1
         
-        gadget_names = {
-            "wrench_of_gore": "Wrench",
-            "zaptron_533": "Zaptron",
-            "anchor_of_ages": "Anchor",
+        # Each hunter has exactly one gadget
+        hunter_gadgets = {
+            "Borge": ("wrench_of_gore", "Wrench of Gore"),
+            "Ozzy": ("zaptron_533", "Zaptron 533"),
+            "Knox": ("anchor_of_ages", "Anchor of Ages"),
         }
-        for i, (gadget_key, gadget_label) in enumerate(gadget_names.items()):
-            frame = ttk.Frame(gadgets_frame)
-            frame.grid(row=0, column=i, padx=4, pady=1, sticky="w")
-            ttk.Label(frame, text=f"{gadget_label}:", width=10).pack(side=tk.LEFT)
-            entry = ttk.Entry(frame, width=4)
-            entry.insert(0, "0")
-            entry.bind('<FocusOut>', lambda e: self._auto_save_build())
-            entry.pack(side=tk.LEFT)
-            self.gadget_entries[gadget_key] = entry
+        gadget_key, gadget_label = hunter_gadgets[self.hunter_name]
+        frame = ttk.Frame(gadgets_frame)
+        frame.grid(row=0, column=0, padx=4, pady=1, sticky="w")
+        ttk.Label(frame, text=f"{gadget_label}:", width=14).pack(side=tk.LEFT)
+        entry = ttk.Entry(frame, width=4)
+        entry.insert(0, "0")
+        entry.bind('<FocusOut>', lambda e: self._auto_save_build())
+        entry.pack(side=tk.LEFT)
+        self.gadget_entries[gadget_key] = entry
         
         # Bonuses Section (RIGHT - after Mods)
         bonuses_frame = ttk.LabelFrame(self.scrollable_frame, text="💎 Global Bonuses")
@@ -1834,8 +1835,8 @@ class HunterTab:
         loots_uncommon = [r.get('loot_uncommon', 0) for r in results_list]
         loots_rare = [r.get('loot_rare', 0) for r in results_list]
         
-        # XP tracking (kills * stage-based XP multiplier)
-        xps = [r.get('total_xp', r['kills'] * (1 + r['final_stage'] * 0.01)) for r in results_list]
+        # XP tracking - use actual total_xp from simulation (WASM formula)
+        xps = [r.get('total_xp', 0) for r in results_list]
         
         loot_per_hours = [(loots[i] / (elapsed_times[i] / 3600)) if elapsed_times[i] > 0 else 0 
                           for i in range(len(loots))]
@@ -2336,8 +2337,30 @@ class MultiHunterGUI:
         arena_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Create battle canvas
-        self.battle_canvas = tk.Canvas(arena_frame, width=350, height=450, bg='#1a1a2e', highlightthickness=2, highlightbackground='#4a4a6a')
+        self.battle_canvas = tk.Canvas(arena_frame, width=350, height=400, bg='#1a1a2e', highlightthickness=2, highlightbackground='#4a4a6a')
         self.battle_canvas.pack(padx=5, pady=5)
+        
+        # ============ LEADERBOARD (below arena) ============
+        leaderboard_frame = ttk.LabelFrame(right_frame, text="🏆 Leaderboard - Completed Runs")
+        leaderboard_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Create leaderboard labels for each hunter
+        self.leaderboard_labels = {}
+        for hunter_name, (icon, color) in [("Borge", ("🛡️", "#DC3545")), 
+                                            ("Knox", ("🔫", "#0D6EFD")), 
+                                            ("Ozzy", ("🐙", "#198754"))]:
+            row_frame = ttk.Frame(leaderboard_frame)
+            row_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            name_label = tk.Label(row_frame, text=f"{icon} {hunter_name}", 
+                                  fg=color, bg='#1a1a2e', font=('Arial', 10, 'bold'), width=10, anchor='w')
+            name_label.pack(side=tk.LEFT, padx=2)
+            
+            stats_label = tk.Label(row_frame, text="Waiting...", 
+                                   fg='#888888', bg='#1a1a2e', font=('Arial', 9), anchor='w')
+            stats_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+            
+            self.leaderboard_labels[hunter_name] = stats_label
         
         # Initialize battle state
         self._init_battle_arena()
@@ -2568,10 +2591,10 @@ class MultiHunterGUI:
         import random
         
         self.arena_width = 350
-        self.arena_height = 450
+        self.arena_height = 400
         
         # Bench positions (bottom of arena) - where hunters rest
-        self.bench_y = self.arena_height - 60  # Bench is near bottom
+        self.bench_y = self.arena_height - 50  # Bench is near bottom
         self.bench_positions = {
             "Borge": {"x": 80, "y": self.bench_y},
             "Knox": {"x": 175, "y": self.bench_y},
@@ -2579,8 +2602,42 @@ class MultiHunterGUI:
         }
         
         # Battle field area (where fighting happens)
-        self.field_top = 60  # Below stage header
-        self.field_bottom = self.arena_height - 100  # Above bench
+        self.field_top = 50  # Below stage header
+        self.field_bottom = self.arena_height - 90  # Above bench
+        
+        # Hunter-specific arena themes
+        self.arena_themes = {
+            "Borge": {
+                "bg_color": "#1a0a0a",  # Dark red
+                "grid_color": "#3a1515",  # Crimson grid
+                "accent_color": "#DC3545",
+                "field_color": "#2a0505",
+                "particles": ["🔥", "💀", "⚔️"],
+                "description": "Crimson Battleground"
+            },
+            "Knox": {
+                "bg_color": "#0a0a1a",  # Dark blue
+                "grid_color": "#151535",  # Navy grid
+                "accent_color": "#0D6EFD",
+                "field_color": "#050520",
+                "particles": ["⚡", "💥", "🎯"],
+                "description": "Tech Arena"
+            },
+            "Ozzy": {
+                "bg_color": "#0a1a0a",  # Dark green
+                "grid_color": "#153515",  # Forest grid
+                "accent_color": "#198754",
+                "field_color": "#052005",
+                "particles": ["🌀", "☠️", "🧪"],
+                "description": "Toxic Swamp"
+            }
+        }
+        
+        # Current active hunter for theming (or mixed if multiple)
+        self.active_arena_theme = None
+        
+        # Track last avg stage for each hunter (for arena stage syncing)
+        self.hunter_last_avg_stage = {"Borge": 0, "Knox": 0, "Ozzy": 0}
         
         # Hunter data with CIFI-like stats - start on bench
         self.arena_hunters = {
@@ -2588,17 +2645,19 @@ class MultiHunterGUI:
                       "hp": 150, "max_hp": 150, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0, 
                       "damage": 3, "base_damage": 3, "lifesteal": 0.15,
                       "attack_timer": 0, "attack_speed": 3.5, "attack_cooldown": 0,
-                      "crit_chance": 0.15, "crit_damage": 1.8, "dr": 0.10,
+                      "crit_chance": 0.15, "crit_damage": 1.8, "dr": 0.10, "regen": 0,
                       "on_field": False, "returning_to_bench": False,
-                      "field_position": {"x": 100, "y": 150}},  # Where they fight from
+                      "field_position": {"x": 100, "y": 130},
+                      "last_avg_stage": 0, "last_max_stage": 0, "last_gen": 0},
             "Knox": {"x": 175, "y": self.bench_y, "dx": 2.5, "dy": -1, "icon": "🔫", "color": "#0D6EFD", 
                      "hp": 80, "max_hp": 80, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0,
-                     "damage": 2, "base_damage": 2, "lifesteal": 0,
+                     "damage": 2, "base_damage": 2, "lifesteal": 0, "regen": 0,
                      "attack_timer": 0, "attack_speed": 1.2, "attack_cooldown": 0,
                      "crit_chance": 0.25, "crit_damage": 2.0, "dr": 0.0,
                      "attack_range": 120,
                      "on_field": False, "returning_to_bench": False,
-                     "field_position": {"x": 175, "y": 200}},
+                     "field_position": {"x": 175, "y": 175},
+                     "last_avg_stage": 0, "last_max_stage": 0, "last_gen": 0},
             "Ozzy": {"x": 270, "y": self.bench_y, "dx": 1.5, "dy": 2, "icon": "🐙", "color": "#198754", 
                      "hp": 100, "max_hp": 100, "kills": 0, "level": 1, "xp": 0, "speed_boost": 0,
                      "damage": 2, "base_damage": 2, "lifesteal": 0, "regen": 0.5,
@@ -2606,7 +2665,8 @@ class MultiHunterGUI:
                      "crit_chance": 0.20, "crit_damage": 1.5, "dr": 0.05,
                      "poison_chance": 0.30, "poison_damage": 1,
                      "on_field": False, "returning_to_bench": False,
-                     "field_position": {"x": 250, "y": 250}},
+                     "field_position": {"x": 250, "y": 220},
+                     "last_avg_stage": 0, "last_max_stage": 0, "last_gen": 0},
         }
         
         # Enemies: list of {x, y, dx, dy, icon, hp, max_hp, id, is_boss, power, speed, poison_stacks}
@@ -2818,12 +2878,13 @@ class MultiHunterGUI:
         })
     
     def _animate_arena(self):
-        """Animate the battle arena."""
+        """Animate the battle arena with hunter-themed visuals."""
         import random
         import math
         
         # Check if any hunter is running
         any_running = any(tab.is_running for tab in self.hunter_tabs.values())
+        running_hunters = [name for name, tab in self.hunter_tabs.items() if tab.is_running]
         
         canvas = self.battle_canvas
         canvas.delete("all")
@@ -2831,6 +2892,33 @@ class MultiHunterGUI:
         # Detect when optimization just completed (was running, now stopped)
         # Victory mode is now triggered per-hunter in the loop below
         self.was_running = any_running
+        
+        # Determine arena theme based on active hunters
+        if len(running_hunters) == 1:
+            theme = self.arena_themes[running_hunters[0]]
+            theme_name = running_hunters[0]
+        elif len(running_hunters) > 1:
+            # Mixed theme - blend colors
+            theme = {
+                "bg_color": "#1a1a1a",
+                "grid_color": "#2a2a2a",
+                "accent_color": "#FFFFFF",
+                "field_color": "#0f0f0f",
+                "particles": ["⚔️", "💥", "✨"],
+                "description": "Battle Royale"
+            }
+            theme_name = "Mixed"
+        else:
+            # No one running - neutral theme
+            theme = {
+                "bg_color": "#1a1a2e",
+                "grid_color": "#2a2a4a",
+                "accent_color": "#888888",
+                "field_color": "#15152e",
+                "particles": ["💤"],
+                "description": "Resting"
+            }
+            theme_name = None
         
         # Check which hunters just started or stopped running
         for name, hunter in self.arena_hunters.items():
@@ -2844,14 +2932,32 @@ class MultiHunterGUI:
                 hunter["returning_to_bench"] = False
                 # Assign a good field position for this hunter
                 if name == "Borge":
-                    hunter["field_position"] = {"x": 100, "y": (self.field_top + self.field_bottom) // 2 - 40}
+                    hunter["field_position"] = {"x": 100, "y": (self.field_top + self.field_bottom) // 2 - 30}
                 elif name == "Knox":
                     hunter["field_position"] = {"x": 175, "y": (self.field_top + self.field_bottom) // 2}
                 else:  # Ozzy
-                    hunter["field_position"] = {"x": 250, "y": (self.field_top + self.field_bottom) // 2 + 40}
+                    hunter["field_position"] = {"x": 250, "y": (self.field_top + self.field_bottom) // 2 + 30}
+                    
+                # Sync arena stage to hunter's best avg stage (scaled down)
+                if hunter.get("last_avg_stage", 0) > 0:
+                    # Use last avg stage / 10 as arena stage (so stage 500 -> arena stage 50)
+                    self.arena_stage = max(1, int(hunter["last_avg_stage"] / 10))
+                    self.kills_for_next_stage = self.arena_stage * 15
+                    
             elif not is_running and was_running:
-                # Hunter just finished - trigger victory and walk back to bench
+                # Hunter just finished - update their results and trigger victory
                 hunter["returning_to_bench"] = True
+                
+                # Get last avg stage from tab results
+                if tab.results:
+                    best_result = max(tab.results, key=lambda r: r.avg_final_stage)
+                    hunter["last_avg_stage"] = best_result.avg_final_stage
+                    hunter["last_max_stage"] = best_result.highest_stage  # Fixed: was max_final_stage
+                    hunter["last_gen"] = len(tab.results)
+                    
+                    # Update leaderboard
+                    self._update_leaderboard(name, hunter)
+                
                 # Trigger victory mode for this hunter's completion
                 if hunter["kills"] > 0:
                     self.victory_mode = True
@@ -2859,44 +2965,61 @@ class MultiHunterGUI:
             
             self.prev_running[name] = is_running
         
-        # Draw background grid
+        # Draw themed background
+        canvas.configure(bg=theme["bg_color"])
+        
+        # Draw themed grid
+        grid_color = theme["grid_color"]
         for i in range(0, self.arena_width, 30):
-            canvas.create_line(i, 0, i, self.arena_height, fill='#2a2a4a', width=1)
+            canvas.create_line(i, 0, i, self.arena_height, fill=grid_color, width=1)
         for i in range(0, self.arena_height, 30):
-            canvas.create_line(0, i, self.arena_width, i, fill='#2a2a4a', width=1)
+            canvas.create_line(0, i, self.arena_width, i, fill=grid_color, width=1)
+        
+        # Draw themed field area with gradient effect
+        field_color = theme["field_color"]
+        canvas.create_rectangle(10, self.field_top - 5, self.arena_width - 10, self.field_bottom + 5,
+                               fill=field_color, outline=theme["accent_color"], width=1)
+        
+        # Add floating theme particles when running
+        if any_running and random.random() < 0.15:
+            particle = random.choice(theme["particles"])
+            px = random.randint(20, self.arena_width - 20)
+            py = random.randint(self.field_top, self.field_bottom)
+            self.arena_effects.append({
+                "x": px, "y": py, "icon": particle, "ttl": 20, "is_text": False,
+                "color": theme["accent_color"], "float": True
+            })
         
         # Draw the bench at the bottom
-        bench_y_top = self.bench_y - 25
-        canvas.create_rectangle(20, bench_y_top, self.arena_width - 20, self.bench_y + 25,
+        bench_y_top = self.bench_y - 20
+        canvas.create_rectangle(20, bench_y_top, self.arena_width - 20, self.bench_y + 20,
                                fill='#3d2b1f', outline='#5c4033', width=3)
-        canvas.create_text(self.arena_width // 2, bench_y_top - 10, text="🪑 BENCH 🪑",
-                          fill='#8B4513', font=('Arial', 9, 'bold'))
+        canvas.create_text(self.arena_width // 2, bench_y_top - 8, text="🪑 BENCH 🪑",
+                          fill='#8B4513', font=('Arial', 8, 'bold'))
         
-        # Draw bench seat lines
+        # Draw bench seat spots
         for bx in [80, 175, 270]:
-            canvas.create_oval(bx-12, self.bench_y-8, bx+12, self.bench_y+8,
+            canvas.create_oval(bx-10, self.bench_y-6, bx+10, self.bench_y+6,
                               fill='#5c4033', outline='#3d2b1f')
         
-        # Draw field boundary
-        canvas.create_rectangle(15, self.field_top - 5, self.arena_width - 15, self.field_bottom + 5,
-                               outline='#4a4a6a', width=2, dash=(5, 3))
-        
-        # Draw title and stage
+        # Draw title and stage - show which hunter's arena it is
         if self.victory_mode:
-            canvas.create_text(self.arena_width // 2, 15, text="🎉 VICTORY! 🎉", 
-                              fill='#FFD700', font=('Arial', 12, 'bold'))
-            canvas.create_text(self.arena_width // 2, 32, 
-                              text=f"Stage {self.arena_stage} Complete! Total Kills: {self.arena_total_kills}", 
-                              fill='#FFFFFF', font=('Arial', 9))
-        elif any_running:
-            canvas.create_text(self.arena_width // 2, 15, text=f"⚔️ STAGE {self.arena_stage} ⚔️", 
+            canvas.create_text(self.arena_width // 2, 12, text="🎉 VICTORY! 🎉", 
                               fill='#FFD700', font=('Arial', 11, 'bold'))
+            canvas.create_text(self.arena_width // 2, 28, 
+                              text=f"Stage {self.arena_stage} | Kills: {self.arena_total_kills}", 
+                              fill='#FFFFFF', font=('Arial', 8))
+        elif any_running:
+            # Show theme name and stage
+            theme_text = f"⚔️ {theme['description']} - Stage {self.arena_stage} ⚔️"
+            canvas.create_text(self.arena_width // 2, 12, text=theme_text, 
+                              fill=theme["accent_color"], font=('Arial', 9, 'bold'))
             # Progress to next stage
             progress = min(1.0, self.arena_total_kills / self.kills_for_next_stage)
-            bar_width = 150
+            bar_width = 140
             bar_x = (self.arena_width - bar_width) // 2
-            canvas.create_rectangle(bar_x, 28, bar_x + bar_width, 38, outline='#4a4a6a', fill='#1a1a2e')
-            canvas.create_rectangle(bar_x, 28, bar_x + bar_width * progress, 38, outline='', fill='#FFD700')
+            canvas.create_rectangle(bar_x, 26, bar_x + bar_width, 34, outline='#4a4a6a', fill='#1a1a2e')
+            canvas.create_rectangle(bar_x, 26, bar_x + bar_width * progress, 34, outline='', fill=theme["accent_color"])
             canvas.create_text(self.arena_width // 2, 33, 
                               text=f"{self.arena_total_kills}/{self.kills_for_next_stage}", 
                               fill='#FFFFFF', font=('Arial', 8))
@@ -3153,18 +3276,60 @@ class MultiHunterGUI:
         for name, hunter in self.arena_hunters.items():
             tab = self.hunter_tabs[name]
             
-            # Sync hunter stats from build when running
-            if tab.is_running and hasattr(tab, 'hunter') and tab.hunter:
+            # Sync hunter stats from build when running - use REALISTIC stats
+            if tab.is_running:
                 try:
-                    # Get actual speed from build (lower = faster attacks)
-                    actual_speed = getattr(tab.hunter, 'speed', 1.0)
-                    hunter["attack_speed"] = max(0.5, actual_speed)  # Cap minimum
-                    # Get power for damage
-                    actual_power = getattr(tab.hunter, 'power', 10)
-                    hunter["damage"] = max(1, int(actual_power / 10))  # Scale down for arena
-                    # Track optimization progress for scaling
+                    # Get build config for actual stats
+                    config = tab._get_config()
+                    stats = config.get("stats", {})
+                    
+                    # Attack speed from speed stat (lower = faster attacks)
+                    speed_stat = stats.get("speed", 0)
+                    base_speed = 5.0 - speed_stat * 0.03
+                    hunter["attack_speed"] = max(0.3, base_speed / 2)  # Scale for arena
+                    
+                    # Power from power stat
+                    power_stat = stats.get("power", 0)
+                    base_power = 3.0 + power_stat * 0.5
+                    hunter["damage"] = max(1, base_power / 3)  # Scale for arena
+                    
+                    # HP from hp stat
+                    hp_stat = stats.get("hp", 0)
+                    base_hp = 43.0 + hp_stat * 2.5
+                    if hunter["max_hp"] < base_hp:
+                        hunter["max_hp"] = int(base_hp)
+                        hunter["hp"] = min(hunter["hp"], hunter["max_hp"])
+                    
+                    # Regen from regen stat
+                    regen_stat = stats.get("regen", 0)
+                    hunter["regen"] = 0.02 + regen_stat * 0.03
+                    
+                    # DR from damage_reduction stat
+                    dr_stat = stats.get("damage_reduction", 0)
+                    hunter["dr"] = min(0.90, dr_stat * 0.0144)
+                    
+                    # Crit from special_chance stat
+                    crit_stat = stats.get("special_chance", 0)
+                    hunter["crit_chance"] = 0.05 + crit_stat * 0.0018
+                    
+                    # Crit damage from special_damage stat
+                    crit_dmg_stat = stats.get("special_damage", 0)
+                    hunter["crit_damage"] = 1.30 + crit_dmg_stat * 0.01
+                    
+                    # Lifesteal for Borge from attributes
+                    if name == "Borge":
+                        attrs = config.get("attributes", {})
+                        baal = attrs.get("book_of_baal", 0)
+                        hunter["lifesteal"] = baal * 0.0111
+                    
+                    # Poison for Ozzy from effect_chance
+                    if name == "Ozzy":
+                        effect_stat = stats.get("effect_chance", 0)
+                        hunter["poison_chance"] = 0.04 + effect_stat * 0.005
+                    
+                    # Track optimization progress
                     hunter["opt_progress"] = getattr(tab, 'progress_var', tk.DoubleVar()).get() / 100.0
-                except:
+                except Exception:
                     pass
             
             # Get bench position for this hunter
@@ -3176,7 +3341,7 @@ class MultiHunterGUI:
                 progress = hunter.get("opt_progress", 0)
                 # As progress increases, hunters fight closer to the top (enemy territory)
                 base_y = field_pos["y"]
-                min_y = self.field_top + 30
+                min_y = self.field_top + 25
                 # Interpolate: at 0% progress, stay at field_pos; at 100%, push toward top
                 field_pos["y"] = int(base_y - (base_y - min_y) * progress * 0.5)
             
@@ -3588,6 +3753,24 @@ class MultiHunterGUI:
         
         # Schedule next frame (50ms = 20fps)
         self.root.after(50, self._animate_arena)
+    
+    def _update_leaderboard(self, hunter_name: str, hunter: dict):
+        """Update the leaderboard with completed run results."""
+        if hunter_name not in self.leaderboard_labels:
+            return
+            
+        label = self.leaderboard_labels[hunter_name]
+        
+        avg_stage = hunter.get("last_avg_stage", 0)
+        max_stage = hunter.get("last_max_stage", 0)
+        gen = hunter.get("last_gen", 0)
+        kills = hunter.get("kills", 0)
+        
+        if avg_stage > 0:
+            text = f"Avg: {avg_stage:.1f} | Max: {max_stage} | Gen: {gen} | Arena Kills: {kills}"
+            label.configure(text=text, fg='#FFFFFF')
+        else:
+            label.configure(text="Waiting...", fg='#888888')
     
     def _apply_global_settings(self):
         """Apply global settings to all hunter tabs."""

@@ -60,6 +60,7 @@ class Hunter:
         self.loot_common: float = 0    # Material 1 (Obsidian/Farahyte Ore/Glacium)
         self.loot_uncommon: float = 0  # Material 2 (Behlium/Galvarium/Quartz)
         self.loot_rare: float = 0      # Material 3 (Hellish-Biomatter/Vectid Crystals/Tesseracts)
+        self.total_xp: float = 0       # XP earned
 
     @classmethod
     def from_file(cls, file_path: str) -> 'Hunter':
@@ -121,6 +122,7 @@ class Hunter:
             'loot_common': self.loot_common,
             'loot_uncommon': self.loot_uncommon,
             'loot_rare': self.loot_rare,
+            'total_xp': self.total_xp,
             'stun_duration_inflicted': self.total_stuntime_inflicted,
         }
 
@@ -262,22 +264,78 @@ class Hunter:
                 raise ValueError(f'Unknown heal source: {source}')
 
     def on_kill(self) -> None:
-        """Actions to take when the hunter kills an enemy. The Hunter() implementation only handles loot.
-        """
-        loot = self.compute_loot()
-        if (self.current_stage % 100 != 0 and self.current_stage > 0) and random.random() < self.effect_chance and (LL := self.talents["call_me_lucky_loot"]):
-            # Talent: Call Me Lucky Loot, cannot proc on bosses
-            loot *= 1 + (self.talents["call_me_lucky_loot"] * 0.2)
-            self.total_effect_procs += 1
-        loot *= (1 + 0.25 * self.gems["attraction_node_#3"])
-        self.total_loot += loot
+        """Actions to take when the hunter kills an enemy. Handles loot and XP based on WASM formulas.
         
-        # Distribute loot to per-resource pools based on drop rate ratios
-        # Common (Material 1) gets more, Rare (Material 3) gets less
-        # Ratios based on CIFI data: approximately 1.0 : 0.94 : 0.70
-        self.loot_common += loot * 0.379     # ~38% of total
-        self.loot_uncommon += loot * 0.357   # ~36% of total
-        self.loot_rare += loot * 0.264       # ~26% of total
+        WASM Loot Formulas (per kill):
+        - Mat1 = stage * 0.3 * 1.686 / 1.4558 * multiplier = stage * 0.347 * multiplier
+        - Mat2 = stage * 0.3 * 1.6 / 1.4558 * multiplier = stage * 0.330 * multiplier
+        - Mat3 = stage * 0.3 * 1.2 / 1.4558 * multiplier = stage * 0.247 * multiplier
+        - XP = stage * 0.1 * 1.1 / 1.4558 * multiplier * xp_bonus = stage * 0.0755 * multiplier * xp_bonus
+        """
+        stage = self.current_stage
+        
+        # Base loot multiplier from talents/attributes/inscryptions
+        loot_mult = self.compute_loot_multiplier()
+        
+        # Call Me Lucky Loot proc (not on bosses)
+        if (stage % 100 != 0 and stage > 0) and random.random() < self.effect_chance:
+            if self.talents["call_me_lucky_loot"] > 0:
+                loot_mult *= 1 + (self.talents["call_me_lucky_loot"] * 0.2)
+                self.total_effect_procs += 1
+        
+        # Gem bonus
+        loot_mult *= (1 + 0.25 * self.gems["attraction_node_#3"])
+        
+        # WASM-based per-resource loot (constants from WASM analysis)
+        # Mat1: stage * 0.3 * avg(1.686) / divisor(1.4558) = stage * 0.347
+        # Mat2: stage * 0.3 * avg(1.6) / divisor(1.4558) = stage * 0.330
+        # Mat3: stage * 0.3 * avg(1.2) / divisor(1.4558) = stage * 0.247
+        mat1 = stage * 0.347 * loot_mult
+        mat2 = stage * 0.330 * loot_mult
+        mat3 = stage * 0.247 * loot_mult
+        
+        self.loot_common += mat1
+        self.loot_uncommon += mat2
+        self.loot_rare += mat3
+        self.total_loot += mat1 + mat2 + mat3
+        
+        # XP calculation: stage * 0.1 * avg(1.1) / divisor(1.4558) = stage * 0.0755
+        xp_bonus = self.get_xp_bonus()
+        xp = stage * 0.0755 * loot_mult * xp_bonus
+        self.total_xp += xp
+
+    def compute_loot_multiplier(self) -> float:
+        """Compute the loot multiplier from talents, attributes, inscryptions, etc.
+        
+        Returns:
+            float: The combined loot multiplier.
+        """
+        mult = 1.0
+        
+        if isinstance(self, Borge):
+            mult *= 1 + self.attributes["timeless_mastery"] * 0.14
+            mult *= 1 + (self.inscryptions.get("i60", 0) * 0.03)
+        elif isinstance(self, Ozzy):
+            mult *= 1 + (self.attributes["timeless_mastery"] * 0.16)
+            mult *= 1 + (self.inscryptions.get("i32", 0) * 0.5)  # i32 = 1.5x loot per level
+        elif isinstance(self, Knox):
+            mult *= 1 + (self.attributes.get("timeless_mastery", 0) * 0.14)
+        
+        return mult
+    
+    def get_xp_bonus(self) -> float:
+        """Get the XP bonus multiplier from inscryptions.
+        
+        Returns:
+            float: The XP bonus multiplier.
+        """
+        xp_bonus = 1.0
+        
+        if isinstance(self, Ozzy):
+            # i33 = 1.75x XP per level for Ozzy
+            xp_bonus *= 1 + (self.inscryptions.get("i33", 0) * 0.75)
+        
+        return xp_bonus
 
     def complete_stage(self, stages: int = 1) -> None:
         """Actions to take when the hunter completes a stage. The Hunter() implementation only handles stage progression.
@@ -290,21 +348,13 @@ class Hunter:
             self.catching_up = False
 
     def compute_loot(self) -> float:
-        """Compute the amount of loot gained from a kill. Affected by stage loot bonus, talents and attributes.
-
+        """DEPRECATED: Loot is now computed per-resource in on_kill().
+        This method is kept for backwards compatibility but returns 0.
+        
         Returns:
-            float: The amount of loot gained.
+            float: 0 (loot is now tracked per-resource)
         """
-        stage_mult = (1.05 ** (self.current_stage+1)) * (5 if self.current_stage >= 101 else 1)
-        if isinstance(self, Borge):
-            base_loot = 1.0 if self.current_stage != 100 else (700 + 500 + 60 + 50)
-            timeless_mastery = 1 + self.attributes["timeless_mastery"] * 0.14
-            additional_multipliers = 1 + (self.inscryptions["i60"] * 0.03)
-        elif isinstance(self, Ozzy):
-            base_loot = 1.0 if self.current_stage != 100 else (400 + 300 + 60 + 50)
-            timeless_mastery = 1 + (self.attributes["timeless_mastery"] * 0.16)
-            additional_multipliers = 1
-        return base_loot * 0.01 * stage_mult * timeless_mastery * additional_multipliers
+        return 0.0
 
     def is_dead(self) -> bool:
         """Check if the hunter is dead.
