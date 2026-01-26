@@ -263,7 +263,7 @@ Contributions welcome! Main areas for improvement:
 - **Original simulation:** [bhnn/hunter-sim](https://github.com/bhnn/hunter-sim)
 - **Better Simulation (WASM):** [hunter-sim2.netlify.app](https://hunter-sim2.netlify.app/home) - The community-trusted site built from official game code. Our tool validates against this to ensure accuracy!
 - **Rust backend & GUI:** pirateantalis-cyber
-- **CIFI game:** [Play Store]([https://play.google.com/store/apps/details?id=com.weihnachtsmann.idlefactoryinc](https://play.google.com/store/apps/details?id=com.OctocubeGamesCompany.CIFI&hl=en_US))
+- **CIFI game:** [Play Store][https://play.google.com/store/apps/details?id=com.weihnachtsmann.idlefactoryinc](https://play.google.com/store/apps/details?id=com.OctocubeGamesCompany.CIFI&hl=en_US)
 
 ---
 
