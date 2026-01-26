@@ -12,7 +12,7 @@ body:
         
         **Please fill out as much as you can** - even partial data is helpful!
         
-        📸 **Where to find these stats**: Open your Attributes page in-game and look at the stats panel on the right side.
+        📸 **Where to find these stats**: Open your Attributes page in-game and scroll down to the stats panel at the bottom.
 
   - type: dropdown
     id: hunter
@@ -39,7 +39,7 @@ body:
     attributes:
       value: |
         ---
-        ## 🎯 Combat Stats (from Attributes Page)
+        ## 🎯 Combat Stats (from Attributes Page - bottom section)
 
   - type: input
     id: enemies_killed_best
@@ -90,7 +90,7 @@ body:
     attributes:
       value: |
         ---
-        ## 💎 Resource Gains (from Attributes Page)
+        ## 💎 Resource Gains (from Attributes Page - bottom section)
         
         **Borge**: Obsidian / Behlium / Hellish-Biomatter
         **Knox**: Glacium / Quartz / Tesseracts  
@@ -173,6 +173,57 @@ body:
       placeholder: "5.9B"
     validations:
       required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        ## 🌟 Global Bonuses (Critical for Loot/XP accuracy!)
+        
+        These multipliers have HUGE impact on loot/XP calculations.
+        Find them in Settings → Bonuses or your Gem/Prestige pages.
+
+  - type: input
+    id: prestige_level
+    attributes:
+      label: Prestige Level
+      description: Your current prestige level (affects loot/XP multipliers massively)
+      placeholder: "50"
+
+  - type: input
+    id: attraction_gem_loot
+    attributes:
+      label: Attraction Gem - Loot Level
+      description: "Your loot gem level (lootBorge/lootOzzy/lootKnox). Formula: 1.07^level"
+      placeholder: "50"
+
+  - type: input
+    id: attraction_gem_xp
+    attributes:
+      label: Attraction Gem - XP Level
+      description: "Your XP gem level (xpBorge/xpOzzy/xpKnox). Formula: 1.07^level"
+      placeholder: "50"
+
+  - type: input
+    id: ultima_multiplier
+    attributes:
+      label: Ultima Multiplier
+      description: Global loot multiplier from Ultima upgrades (if any)
+      placeholder: "1.5"
+
+  - type: input
+    id: traversal_pack
+    attributes:
+      label: Traversal Pack Owned?
+      description: "Do you have the Traversal Pack? (1.25x loot bonus)"
+      placeholder: "Yes or No"
+
+  - type: input
+    id: diamond_loot_level
+    attributes:
+      label: Diamond Loot Booster Level
+      description: "Hunter Loot Booster level (0-10, each level = +2.5%)"
+      placeholder: "10"
 
   - type: markdown
     attributes:
