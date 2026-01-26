@@ -2,3 +2,4 @@ PyYAML==6.0.1
 rich==13.7.0
 setuptools==68.2.2
 tqdm==4.66.1
+Pillow==10.4.0

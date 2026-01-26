@@ -183,6 +183,7 @@ impl BuildConfig {
                 HunterType::Knox => 0.14,
             };
             mult *= 1.0 + (timeless as f64 * rate);
+            
         }
         
         // === SHARD MILESTONE #0 ===
@@ -190,6 +191,7 @@ impl BuildConfig {
         let shard_milestone = self.get_bonus_int("shard_milestone");
         if shard_milestone > 0 {
             mult *= 1.02_f64.powi(shard_milestone);
+            
         }
         
         // === RELIC #7 (Manifestation Core: Titan) ===
@@ -197,6 +199,7 @@ impl BuildConfig {
         let relic7 = self.get_relic("r7").max(self.get_relic("manifestation_core_titan"));
         if relic7 > 0 {
             mult *= 1.05_f64.powi(relic7);
+            
         }
         
         // === RESEARCH #81 ===
@@ -213,25 +216,40 @@ impl BuildConfig {
             _ => 1.0,
         };
         mult *= research_mult;
+        if research81 > 0 {
+            
+        }
         
         // === INSCRYPTIONS (hunter-specific) ===
         match hunter_type {
             HunterType::Borge => {
                 // i14: 1.1^level (max 5)
                 let i14 = self.get_inscr("i14");
-                if i14 > 0 { mult *= 1.1_f64.powi(i14); }
+                if i14 > 0 { 
+                    mult *= 1.1_f64.powi(i14); 
+                    
+                }
                 
                 // i44: 1.08^level (max 10)
                 let i44 = self.get_inscr("i44");
-                if i44 > 0 { mult *= 1.08_f64.powi(i44); }
+                if i44 > 0 { 
+                    mult *= 1.08_f64.powi(i44); 
+                    
+                }
                 
                 // i60: special multi-power (+3% per level to loot)
                 let i60 = self.get_inscr("i60");
-                if i60 > 0 { mult *= 1.0 + (i60 as f64 * 0.03); }
+                if i60 > 0 { 
+                    mult *= 1.0 + (i60 as f64 * 0.03); 
+                    
+                }
                 
                 // i80: 1.1^level (max 10)
                 let i80 = self.get_inscr("i80");
-                if i80 > 0 { mult *= 1.1_f64.powi(i80); }
+                if i80 > 0 { 
+                    mult *= 1.1_f64.powi(i80); 
+                    
+                }
             }
             HunterType::Ozzy => {
                 // i32: 1.5^level (max 8)
@@ -247,6 +265,7 @@ impl BuildConfig {
             }
         }
         
+        
         // === GADGETS ===
         // Compound formula: (1 + baseValue)^level * tierMultiplier^(level/tierStep)
         // wrench/zaptron/anchor: baseValue=0.005, tierStep=10, tierMultiplier=1.02
@@ -261,15 +280,18 @@ impl BuildConfig {
         if hunter_type == HunterType::Borge {
             let wrench_level = self.get_gadget("wrench").max(self.get_gadget("wrench_of_gore"));
             mult *= gadget_loot(wrench_level);
+            
         }
         // Zaptron (Ozzy loot) - supports both 'zaptron' and 'zaptron_533' keys
         if hunter_type == HunterType::Ozzy {
             let zaptron_level = self.get_gadget("zaptron").max(self.get_gadget("zaptron_533"));
             mult *= gadget_loot(zaptron_level);
+            
         }
         // Anchor (all hunters) - supports both 'anchor' and 'titan_anchor' keys
         let anchor_level = self.get_gadget("anchor").max(self.get_gadget("titan_anchor"));
         mult *= gadget_loot(anchor_level);
+        
         
         // === LOOP MODS ===
         // Scavenger's Advantage: 1.05^level (max 25) - Borge

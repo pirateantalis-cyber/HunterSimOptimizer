@@ -22,6 +22,7 @@ pub struct SimResult {
     pub multistrikes: i32,
     pub extra_damage_from_ms: f64,
     pub evades: i32,
+    pub enemy_attacks: i32,  // Total incoming enemy attacks
     pub regenerated_hp: f64,
     pub lifesteal: f64,
     pub mitigated_damage: f64,
@@ -36,6 +37,8 @@ pub struct SimResult {
     pub echo_bullets: i32,
     pub unfair_advantage_healing: f64,
     pub life_of_the_hunt_healing: f64,
+    // Debug stats
+    pub on_kill_calls: i32,
 }
 
 /// Aggregated statistics from multiple simulation runs
@@ -57,8 +60,14 @@ pub struct AggregatedStats {
     pub avg_crits: f64,
     pub avg_kills: f64,
     pub avg_evades: f64,
+    pub avg_trickster_evades: f64,  // Trickster evades (Ozzy)
+    pub avg_enemy_attacks: f64,  // Total incoming enemy attacks
     pub avg_effect_procs: f64,
     pub avg_stun_duration: f64,
+    pub avg_trample_kills: f64,
+    pub avg_loth_healing: f64,
+    pub avg_ua_healing: f64,
+    pub avg_regen: f64,
     pub survival_rate: f64,  // Legacy: % of runs that didn't die exactly at a boss stage
     // Boss milestone survival rates - % of runs that PASSED each boss
     pub boss1_survival: f64,  // % that reached stage > 100
@@ -71,6 +80,7 @@ pub struct AggregatedStats {
     pub avg_loot_uncommon: f64,
     pub avg_loot_rare: f64,
     pub avg_xp: f64,
+    pub avg_on_kill_calls: f64,  // DEBUG: on_kill calls per run
 }
 
 impl AggregatedStats {
@@ -132,8 +142,14 @@ impl AggregatedStats {
             avg_crits: results.iter().map(|r| r.crits as f64).sum::<f64>() / n,
             avg_kills: results.iter().map(|r| r.kills as f64).sum::<f64>() / n,
             avg_evades: results.iter().map(|r| r.evades as f64).sum::<f64>() / n,
+            avg_trickster_evades: results.iter().map(|r| r.trickster_evades as f64).sum::<f64>() / n,
+            avg_enemy_attacks: results.iter().map(|r| r.enemy_attacks as f64).sum::<f64>() / n,
             avg_effect_procs: results.iter().map(|r| r.effect_procs as f64).sum::<f64>() / n,
             avg_stun_duration: results.iter().map(|r| r.stun_duration_inflicted).sum::<f64>() / n,
+            avg_trample_kills: results.iter().map(|r| r.trample_kills as f64).sum::<f64>() / n,
+            avg_loth_healing: results.iter().map(|r| r.life_of_the_hunt_healing).sum::<f64>() / n,
+            avg_ua_healing: results.iter().map(|r| r.unfair_advantage_healing).sum::<f64>() / n,
+            avg_regen: results.iter().map(|r| r.regenerated_hp).sum::<f64>() / n,
             survival_rate: 1.0 - (boss_deaths as f64 / n),
             boss1_survival: boss1_passed as f64 / n,
             boss2_survival: boss2_passed as f64 / n,
@@ -144,6 +160,7 @@ impl AggregatedStats {
             avg_loot_uncommon: results.iter().map(|r| r.loot_uncommon).sum::<f64>() / n,
             avg_loot_rare: results.iter().map(|r| r.loot_rare).sum::<f64>() / n,
             avg_xp: results.iter().map(|r| r.total_xp).sum::<f64>() / n,
+            avg_on_kill_calls: results.iter().map(|r| r.on_kill_calls as f64).sum::<f64>() / n,
         }
     }
 }

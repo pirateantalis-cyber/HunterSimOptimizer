@@ -1,16 +1,141 @@
 //! Python bindings for the Hunter Simulator using PyO3
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyAny};
 use crate::config::{BuildConfig, HunterType, Meta};
 use crate::simulation::run_and_aggregate;
 use crate::build_generator::{BuildGenerator, AttributeInfo, TalentInfo};
 use std::collections::HashMap;
 
-/// Python-callable simulation function
+/// Helper to convert PyDict to HashMap<String, i32>
+fn pydict_to_hashmap_i32_global(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, i32>> {
+    let mut map = HashMap::new();
+    for (key, value) in dict.iter() {
+        let k: String = key.extract()?;
+        let v: i32 = value.extract()?;
+        map.insert(k, v);
+    }
+    Ok(map)
+}
+
+/// Helper to convert PyDict to HashMap<String, bool>
+fn pydict_to_hashmap_bool_global(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, bool>> {
+    let mut map = HashMap::new();
+    for (key, value) in dict.iter() {
+        let k: String = key.extract()?;
+        let v: bool = value.extract()?;
+        map.insert(k, v);
+    }
+    Ok(map)
+}
+
+/// Helper to convert a Python value to serde_json::Value
+fn py_to_json_value(py_value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    // Try extracting as various types
+    if let Ok(v) = py_value.extract::<bool>() {
+        return Ok(serde_json::Value::Bool(v));
+    }
+    if let Ok(v) = py_value.extract::<i64>() {
+        return Ok(serde_json::Value::Number(v.into()));
+    }
+    if let Ok(v) = py_value.extract::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(v) {
+            return Ok(serde_json::Value::Number(n));
+        }
+    }
+    if let Ok(v) = py_value.extract::<String>() {
+        return Ok(serde_json::Value::String(v));
+    }
+    // Default to null for unhandled types
+    Ok(serde_json::Value::Null)
+}
+
+/// Helper to convert PyDict to HashMap<String, serde_json::Value>
+fn pydict_to_hashmap_json_global(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, serde_json::Value>> {
+    let mut map = HashMap::new();
+    for (key, value) in dict.iter() {
+        let k: String = key.extract()?;
+        let v = py_to_json_value(&value)?;
+        map.insert(k, v);
+    }
+    Ok(map)
+}
+
+/// Python-callable simulation function - accepts individual keyword arguments
+/// Returns a dict with stats for GUI compatibility
+#[pyfunction]
+#[pyo3(signature = (hunter, level, stats, talents, attributes, inscryptions=None, mods=None, relics=None, gems=None, gadgets=None, bonuses=None, num_sims=100, parallel=true))]
+fn simulate(
+    py: Python<'_>,
+    hunter: &str,
+    level: i32,
+    stats: &Bound<'_, PyDict>,
+    talents: &Bound<'_, PyDict>,
+    attributes: &Bound<'_, PyDict>,
+    inscryptions: Option<&Bound<'_, PyDict>>,
+    mods: Option<&Bound<'_, PyDict>>,
+    relics: Option<&Bound<'_, PyDict>>,
+    gems: Option<&Bound<'_, PyDict>>,
+    gadgets: Option<&Bound<'_, PyDict>>,
+    bonuses: Option<&Bound<'_, PyDict>>,
+    num_sims: usize,
+    parallel: bool,
+) -> PyResult<PyObject> {
+    let hunter_type = match hunter.to_lowercase().as_str() {
+        "borge" => HunterType::Borge,
+        "ozzy" => HunterType::Ozzy,
+        "knox" => HunterType::Knox,
+        _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            format!("Invalid hunter type: {}", hunter)
+        )),
+    };
+    
+    let config = BuildConfig {
+        meta: Some(Meta {
+            hunter: hunter_type,
+            level,
+        }),
+        hunter: None,
+        level: None,
+        stats: pydict_to_hashmap_i32_global(stats)?,
+        talents: pydict_to_hashmap_i32_global(talents)?,
+        attributes: pydict_to_hashmap_i32_global(attributes)?,
+        inscryptions: inscryptions.map(|d| pydict_to_hashmap_i32_global(d)).transpose()?.unwrap_or_default(),
+        mods: mods.map(|d| pydict_to_hashmap_bool_global(d)).transpose()?.unwrap_or_default(),
+        relics: relics.map(|d| pydict_to_hashmap_i32_global(d)).transpose()?.unwrap_or_default(),
+        gems: gems.map(|d| pydict_to_hashmap_i32_global(d)).transpose()?.unwrap_or_default(),
+        gadgets: gadgets.map(|d| pydict_to_hashmap_i32_global(d)).transpose()?.unwrap_or_default(),
+        bonuses: bonuses.map(|d| pydict_to_hashmap_json_global(d)).transpose()?.unwrap_or_default(),
+    };
+    
+    // Release GIL during computation to prevent GUI freezing
+    let sim_result = py.allow_threads(|| run_and_aggregate(&config, num_sims, parallel));
+    
+    // Convert to Python dict for GUI compatibility - flat structure expected by GUI
+    let result_dict = PyDict::new(py);
+    
+    result_dict.set_item("avg_stage", sim_result.avg_stage)?;
+    result_dict.set_item("max_stage", sim_result.max_stage)?;
+    result_dict.set_item("min_stage", sim_result.min_stage)?;
+    result_dict.set_item("avg_loot_per_hour", sim_result.avg_loot_per_hour)?;
+    result_dict.set_item("avg_damage", sim_result.avg_damage)?;
+    result_dict.set_item("avg_kills", sim_result.avg_kills)?;
+    result_dict.set_item("avg_time", sim_result.avg_time)?;
+    result_dict.set_item("avg_damage_taken", sim_result.avg_damage_taken)?;
+    result_dict.set_item("survival_rate", sim_result.survival_rate)?;
+    result_dict.set_item("boss1_survival", sim_result.boss1_survival)?;
+    result_dict.set_item("boss2_survival", sim_result.boss2_survival)?;
+    result_dict.set_item("boss3_survival", sim_result.boss3_survival)?;
+    result_dict.set_item("boss4_survival", sim_result.boss4_survival)?;
+    result_dict.set_item("boss5_survival", sim_result.boss5_survival)?;
+    
+    Ok(result_dict.into())
+}
+
+/// Python-callable simulation function from JSON string
 #[pyfunction]
 #[pyo3(signature = (config_json, num_sims, parallel=false))]
-fn simulate(py: Python<'_>, config_json: &str, num_sims: usize, parallel: bool) -> PyResult<String> {
+fn simulate_json(py: Python<'_>, config_json: &str, num_sims: usize, parallel: bool) -> PyResult<String> {
     let config: BuildConfig = serde_json::from_str(config_json)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid config JSON: {}", e)))?;
     
@@ -62,26 +187,6 @@ fn create_config(
         )),
     };
     
-    fn pydict_to_hashmap_i32(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, i32>> {
-        let mut map = HashMap::new();
-        for (key, value) in dict.iter() {
-            let k: String = key.extract()?;
-            let v: i32 = value.extract()?;
-            map.insert(k, v);
-        }
-        Ok(map)
-    }
-    
-    fn pydict_to_hashmap_bool(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, bool>> {
-        let mut map = HashMap::new();
-        for (key, value) in dict.iter() {
-            let k: String = key.extract()?;
-            let v: bool = value.extract()?;
-            map.insert(k, v);
-        }
-        Ok(map)
-    }
-    
     let config = BuildConfig {
         meta: Some(Meta {
             hunter: hunter_type,
@@ -89,13 +194,13 @@ fn create_config(
         }),
         hunter: None,
         level: None,
-        stats: pydict_to_hashmap_i32(stats)?,
-        talents: pydict_to_hashmap_i32(talents)?,
-        attributes: pydict_to_hashmap_i32(attributes)?,
-        inscryptions: inscryptions.map(|d| pydict_to_hashmap_i32(d)).transpose()?.unwrap_or_default(),
-        mods: mods.map(|d| pydict_to_hashmap_bool(d)).transpose()?.unwrap_or_default(),
-        relics: relics.map(|d| pydict_to_hashmap_i32(d)).transpose()?.unwrap_or_default(),
-        gems: gems.map(|d| pydict_to_hashmap_i32(d)).transpose()?.unwrap_or_default(),
+        stats: pydict_to_hashmap_i32_global(stats)?,
+        talents: pydict_to_hashmap_i32_global(talents)?,
+        attributes: pydict_to_hashmap_i32_global(attributes)?,
+        inscryptions: inscryptions.map(|d| pydict_to_hashmap_i32_global(d)).transpose()?.unwrap_or_default(),
+        mods: mods.map(|d| pydict_to_hashmap_bool_global(d)).transpose()?.unwrap_or_default(),
+        relics: relics.map(|d| pydict_to_hashmap_i32_global(d)).transpose()?.unwrap_or_default(),
+        gems: gems.map(|d| pydict_to_hashmap_i32_global(d)).transpose()?.unwrap_or_default(),
         gadgets: HashMap::new(),
         bonuses: HashMap::new(),
     };
@@ -118,6 +223,38 @@ fn get_available_cores() -> PyResult<usize> {
     Ok(std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1))
+}
+
+/// Get hunter stats from a config file for debugging
+#[pyfunction]
+fn get_hunter_stats(config_path: &str) -> PyResult<String> {
+    use crate::hunter::Hunter;
+    
+    let config = BuildConfig::from_file(config_path)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to load config: {}", e)))?;
+    
+    let hunter = Hunter::from_config(&config);
+    
+    // Build a JSON object with all stats
+    let stats = serde_json::json!({
+        "hunter_type": format!("{:?}", hunter.hunter_type),
+        "level": hunter.level,
+        "max_hp": hunter.max_hp,
+        "power": hunter.power,
+        "regen": hunter.regen,
+        "damage_reduction": hunter.damage_reduction,
+        "evade_chance": hunter.evade_chance,
+        "effect_chance": hunter.effect_chance,
+        "special_chance": hunter.special_chance,
+        "special_damage": hunter.special_damage,
+        "speed": hunter.speed,
+        "lifesteal": hunter.lifesteal,
+        "loot_mult": hunter.loot_mult,
+        "xp_mult": hunter.xp_mult,
+        "max_revives": hunter.max_revives,
+    });
+    
+    Ok(stats.to_string())
 }
 
 /// Python-callable batch simulation function - simulate multiple configs at once
@@ -236,13 +373,15 @@ fn generate_builds(
 
 /// Python module definition
 #[pymodule]
-fn hunter_sim_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rust_sim(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate_json, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_from_file, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_batch, m)?)?;
     m.add_function(wrap_pyfunction!(create_config, m)?)?;
     m.add_function(wrap_pyfunction!(get_thread_count, m)?)?;
     m.add_function(wrap_pyfunction!(get_available_cores, m)?)?;
+    m.add_function(wrap_pyfunction!(get_hunter_stats, m)?)?;
     m.add_function(wrap_pyfunction!(generate_builds, m)?)?;
     Ok(())
 }

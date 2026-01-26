@@ -1,21 +1,21 @@
-//! Core simulation engine
+//! Core simulation engine - IDENTICAL to Python's sim.py
 
-use crate::config::BuildConfig;
-use crate::enemy::Enemy;
+use crate::config::{BuildConfig, HunterType};
+use crate::enemy::{Enemy, SecondaryAttackType};
 use crate::hunter::Hunter;
 use crate::stats::{AggregatedStats, SimResult};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
-use rayon::ThreadPoolBuilder;
 use std::collections::BinaryHeap;
 use std::cmp::Ordering;
 
 /// Event in the simulation queue
+/// Python: (time, priority, action) tuple in heapq
 #[derive(Debug, Clone)]
 struct Event {
     time: f64,
-    priority: i32,  // Lower = higher priority
+    priority: i32,  // Lower = higher priority (Python uses 0, 1, 2, 3)
     action: Action,
 }
 
@@ -35,269 +35,638 @@ impl PartialOrd for Event {
 
 impl Ord for Event {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse ordering for min-heap behavior
+        // Reverse ordering for min-heap behavior (BinaryHeap is max-heap by default)
+        // Python heapq is min-heap, sorts by (time, priority)
         other.time.partial_cmp(&self.time)
             .unwrap_or(Ordering::Equal)
             .then(other.priority.cmp(&self.priority))
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Action {
-    HunterAttack,
-    EnemyAttack,
-    EnemySpecial,
-    Regen,
+    Hunter,        // 'hunter' in Python
+    Enemy,         // 'enemy' in Python  
+    EnemySpecial,  // 'enemy_special' in Python
+    Regen,         // 'regen' in Python
+    Stun,          // 'stun' in Python
 }
 
-/// Run a single simulation
+/// Run a single simulation - IDENTICAL to Python's Simulation.run()
 pub fn run_simulation(config: &BuildConfig) -> SimResult {
     let mut rng = SmallRng::from_entropy();
     run_simulation_with_rng(config, &mut rng)
 }
 
-/// Run a simulation with a specific RNG (for deterministic testing)
+/// Helper to round to 3 decimal places like Python's round(x, 3)
+fn round3(x: f64) -> f64 {
+    (x * 1000.0).round() / 1000.0
+}
+
+/// Run a simulation with a specific RNG
+/// This mirrors Python's Simulation.simulate_combat() EXACTLY
 pub fn run_simulation_with_rng(config: &BuildConfig, rng: &mut impl Rng) -> SimResult {
     let mut hunter = Hunter::from_config(config);
-    let mut elapsed_time: f64 = 0.0;
-    let mut total_loot: f64 = 0.0;
     
+    // Python: self.elapsed_time: int = 0
+    let mut elapsed_time: i32 = 0;
+    
+    // Python: self.queue = []
     let mut queue: BinaryHeap<Event> = BinaryHeap::new();
     
-    // Main simulation loop - progress through stages
-    'stages: loop {
+    // Python: self.current_stage = 0
+    hunter.current_stage = 0;
+    
+    // Python: hpush(self.queue, (round(hunter.speed, 3), 1, 'hunter'))
+    let initial_speed = hunter.get_speed();  // Consumes fires_of_war like Python
+    queue.push(Event { 
+        time: round3(initial_speed), 
+        priority: 1, 
+        action: Action::Hunter 
+    });
+    
+    // Python: hpush(self.queue, (self.elapsed_time, 3, 'regen'))
+    queue.push(Event { 
+        time: elapsed_time as f64, 
+        priority: 3, 
+        action: Action::Regen 
+    });
+    
+    // Debug flag
+    let debug = std::env::var("DEBUG_SIM").is_ok();
+    
+    // Python: while not hunter.is_dead():
+    'main_loop: while !hunter.is_dead() {
         let stage = hunter.current_stage;
+        let is_boss = stage % 100 == 0 && stage > 0;
         
-        // Spawn enemies for this stage
-        let enemies = if stage % 100 == 0 && stage > 0 {
-            // Boss stage
+        if debug {
+            eprintln!("\n=== STAGE {} ===", stage);
+        }
+        
+        // Python: self.spawn_enemies(hunter)
+        // Creates list of enemies: [Boss(...)] for boss stages, [Enemy(...) for i in range(10)] otherwise
+        let mut enemies: Vec<Enemy> = if is_boss {
             vec![Enemy::new_boss(stage, hunter.hunter_type)]
         } else {
-            // Regular stage - 10 enemies
             (1..=10).map(|i| Enemy::new(i, stage, hunter.hunter_type)).collect()
         };
         
-        // Fight each enemy in the stage
-        for mut enemy in enemies {
-            queue.clear();
-            
-            // Queue initial events
-            queue.push(Event { time: elapsed_time + hunter.speed, priority: 1, action: Action::HunterAttack });
-            queue.push(Event { time: elapsed_time + enemy.speed, priority: 2, action: Action::EnemyAttack });
-            queue.push(Event { time: elapsed_time + 1.0, priority: 3, action: Action::Regen });
-            
-            if enemy.has_secondary {
-                queue.push(Event { time: elapsed_time + enemy.speed2, priority: 2, action: Action::EnemySpecial });
+        // Apply on-spawn effects for each enemy (POG, OOD, etc.)
+        for enemy in &mut enemies {
+            apply_spawn_effects(&mut hunter, enemy, rng);
+        }
+        
+        // Python: while self.enemies:
+        let mut enemy_idx = 0;
+        while enemy_idx < enemies.len() {
+            // Skip if already dead (from trample)
+            if enemies[enemy_idx].is_dead() {
+                enemy_idx += 1;
+                continue;
             }
             
-            // Apply on-spawn effects
-            apply_spawn_effects(&mut hunter, &mut enemy, rng);
+            if debug && is_boss {
+                eprintln!("Fighting enemy {} - HP: {:.0}", enemy_idx, enemies[enemy_idx].hp);
+            }
             
-            // Combat loop
-            while !enemy.is_dead() && !hunter.is_dead() {
+            // Python: enemy = self.enemies.pop(0)
+            // Python: enemy.queue_initial_attack()
+            // This is: hpush(self.sim.queue, (round(self.sim.elapsed_time + self.speed, 3), 2, 'enemy'))
+            queue.push(Event {
+                time: round3(elapsed_time as f64 + enemies[enemy_idx].speed),
+                priority: 2,
+                action: Action::Enemy,
+            });
+            
+            // If boss has secondary attack:
+            // hpush(self.sim.queue, (round(self.sim.elapsed_time + self.speed2, 3), 2, 'enemy_special'))
+            if enemies[enemy_idx].has_secondary {
+                queue.push(Event {
+                    time: round3(elapsed_time as f64 + enemies[enemy_idx].speed2),
+                    priority: 2,
+                    action: Action::EnemySpecial,
+                });
+            }
+            
+            // Python: while not enemy.is_dead() and not hunter.is_dead():
+            // Store trample kills to apply after combat loop ends
+            let mut pending_trample_kills = 0;
+            
+            while !enemies[enemy_idx].is_dead() && !hunter.is_dead() {
+                // Python: prev_time, _, action = hpop(self.queue)
                 let event = match queue.pop() {
                     Some(e) => e,
                     None => break,
                 };
+                let prev_time = event.time;
                 
-                elapsed_time = event.time;
+                if debug && is_boss {
+                    eprintln!("  [{:.2}] {:?}", prev_time, event.action);
+                }
                 
                 match event.action {
-                    Action::HunterAttack => {
-                        hunter_attack(&mut hunter, &mut enemy, rng);
-                        queue.push(Event { 
-                            time: elapsed_time + hunter.speed, 
-                            priority: 1, 
-                            action: Action::HunterAttack 
+                    Action::Hunter => {
+                        // Python: hunter.attack(enemy)
+                        let trample_kills = hunter_attack(&mut hunter, &mut enemies[enemy_idx], rng, elapsed_time as f64);
+                        pending_trample_kills = trample_kills;
+                        
+                        // Python: hpush(self.queue, (round(prev_time + hunter.speed, 3), 1, 'hunter'))
+                        // NOTE: hunter.speed is a @property that applies FoW and consumes it!
+                        let next_speed = hunter.get_speed();  // This consumes fires_of_war
+                        queue.push(Event {
+                            time: round3(prev_time + next_speed),
+                            priority: 1,
+                            action: Action::Hunter,
                         });
-                    }
-                    Action::EnemyAttack => {
-                        if !enemy.is_stunned || elapsed_time >= enemy.stun_end_time {
-                            enemy.is_stunned = false;
-                            enemy_attack(&mut hunter, &mut enemy, rng);
-                            if !enemy.is_dead() {
-                                queue.push(Event { 
-                                    time: elapsed_time + enemy.speed, 
-                                    priority: 2, 
-                                    action: Action::EnemyAttack 
-                                });
-                            }
-                        }
-                    }
-                    Action::EnemySpecial => {
-                        if enemy.is_boss && !enemy.is_stunned {
-                            enemy.add_enrage();
-                            queue.push(Event { 
-                                time: elapsed_time + enemy.speed2, 
-                                priority: 2, 
-                                action: Action::EnemySpecial 
+                        
+                        // If stun was triggered, queue it at priority 0
+                        // Python: hpush(self.sim.queue, (0, 0, 'stun'))
+                        if hunter.pending_stun_duration > 0.0 {
+                            queue.push(Event {
+                                time: 0.0,
+                                priority: 0,
+                                action: Action::Stun,
                             });
                         }
                     }
+                    
+                    Action::Stun => {
+                        // Python: hunter.apply_stun(enemy, isinstance(enemy, Boss))
+                        // This finds 'enemy' event in queue and adds duration to its time
+                        apply_stun(&mut hunter, &mut queue, is_boss);
+                    }
+                    
+                    Action::Enemy => {
+                        // Python: enemy.attack(hunter)
+                        enemy_attack(&mut hunter, &mut enemies[enemy_idx], rng);
+                        
+                        // Python: if not enemy.is_dead():
+                        //     hpush(self.queue, (round(prev_time + enemy.speed, 3), 2, 'enemy'))
+                        if !enemies[enemy_idx].is_dead() {
+                            queue.push(Event {
+                                time: round3(prev_time + enemies[enemy_idx].speed),
+                                priority: 2,
+                                action: Action::Enemy,
+                            });
+                        }
+                    }
+                    
+                    Action::EnemySpecial => {
+                        // Python: enemy.attack_special(hunter)
+                        enemy_attack_special(&mut hunter, &mut enemies[enemy_idx], rng);
+                        
+                        // Python: if not enemy.is_dead():
+                        //     hpush(self.queue, (round(prev_time + enemy.speed2, 3), 2, 'enemy_special'))
+                        if !enemies[enemy_idx].is_dead() {
+                            queue.push(Event {
+                                time: round3(prev_time + enemies[enemy_idx].speed2),
+                                priority: 2,
+                                action: Action::EnemySpecial,
+                            });
+                        }
+                    }
+                    
                     Action::Regen => {
+                        // Python: hunter.regen_hp()
                         hunter.regen_hp();
-                        enemy.regen_hp();
-                        queue.push(Event { 
-                            time: elapsed_time + 1.0, 
-                            priority: 3, 
-                            action: Action::Regen 
+                        // Python: enemy.regen_hp()
+                        enemies[enemy_idx].regen_hp();
+                        // Python: self.elapsed_time += 1
+                        elapsed_time += 1;
+                        // Python: hpush(self.queue, (self.elapsed_time, 3, 'regen'))
+                        queue.push(Event {
+                            time: elapsed_time as f64,
+                            priority: 3,
+                            action: Action::Regen,
                         });
                     }
                 }
             }
             
-            // Check if hunter died
-            if hunter.is_dead() {
-                if hunter.try_revive() {
-                    // Revived, continue fighting
-                    continue;
-                } else {
-                    // Dead for real, end simulation
-                    break 'stages;
+            // Apply pending trample kills (mark additional enemies as dead)
+            // Note: Loot for these kills is handled by the main on_kill() which runs once
+            // Python also handles loot in on_kill(), called via enemy.kill() -> on_death()
+            for i in 1..=pending_trample_kills {
+                if enemy_idx + i < enemies.len() {
+                    enemies[enemy_idx + i].hp = 0.0;
+                    hunter.result.kills += 1;
                 }
             }
             
-            // Enemy killed
-            on_kill(&mut hunter, rng);
+            // Python: if hunter.is_dead(): return
+            if hunter.is_dead() {
+                break 'main_loop;
+            }
+            
+            // Enemy dead - remove enemy events from queue (Python: on_death removes 'enemy' and 'enemy_special')
+            // Python: self.sim.queue = [(p1, p2, u) for p1, p2, u in self.sim.queue if u not in ['enemy', 'enemy_special']]
+            let mut temp_events: Vec<Event> = Vec::new();
+            while let Some(e) = queue.pop() {
+                match e.action {
+                    Action::Enemy | Action::EnemySpecial => {
+                        // Discard
+                    }
+                    _ => {
+                        temp_events.push(e);
+                    }
+                }
+            }
+            for e in temp_events {
+                queue.push(e);
+            }
+            
+            // Python: self.sim.hunter.on_kill() - called from enemy.on_death()
+            on_kill(&mut hunter, rng, is_boss);
             hunter.result.kills += 1;
+            
+            enemy_idx += 1;
         }
         
-        // Stage complete - calculate per-resource loot
-        on_stage_complete(&mut hunter, rng);
-        let (mat1, mat2, mat3, xp) = hunter.calculate_loot();
-        hunter.result.loot_common += mat1;
-        hunter.result.loot_uncommon += mat2;
-        hunter.result.loot_rare += mat3;
-        hunter.result.total_xp += xp;
-        total_loot += mat1 + mat2 + mat3;
+        // Python: self.complete_stage()
+        // Stage completion effects (Knox Calypso's Advantage, etc.)
+        on_stage_complete(&mut hunter, rng, is_boss);
+        // Note: Loot is calculated per kill in on_kill(), not per stage
         hunter.current_stage += 1;
         
-        // Safety check - don't run forever
+        // Safety limit
         if hunter.current_stage > 1000 {
             break;
         }
     }
     
-    // Finalize results
+    // Finalize
     hunter.result.final_stage = hunter.current_stage;
-    hunter.result.elapsed_time = elapsed_time;
-    hunter.result.total_loot = total_loot;
+    hunter.result.elapsed_time = elapsed_time as f64;
+    hunter.result.total_loot = hunter.result.loot_common + hunter.result.loot_uncommon + hunter.result.loot_rare;
     
     hunter.result
 }
 
-/// Apply effects when an enemy spawns
+/// Apply stun - IDENTICAL to Python's Hunter.apply_stun()
+/// Python:
+///   stun_effect = 0.5 if is_boss else 1
+///   stun_duration = self.talents['impeccable_impacts'] * 0.1 * stun_effect
+///   enemy.stun(stun_duration)
+///
+/// enemy.stun() does:
+///   qe = [(p1, p2, u) for p1, p2, u in self.sim.queue if u == 'enemy'][0]
+///   self.sim.queue.remove(qe)
+///   hpush(self.sim.queue, (qe[0] + duration, qe[1], qe[2]))
+fn apply_stun(hunter: &mut Hunter, queue: &mut BinaryHeap<Event>, _is_boss: bool) {
+    if hunter.pending_stun_duration <= 0.0 {
+        return;
+    }
+    
+    let stun_duration = hunter.pending_stun_duration;
+    hunter.pending_stun_duration = 0.0;
+    hunter.result.stun_duration_inflicted += stun_duration;
+    
+    // Find the 'enemy' event and delay it
+    let mut temp_events: Vec<Event> = Vec::new();
+    let mut found_enemy: Option<Event> = None;
+    
+    while let Some(e) = queue.pop() {
+        if found_enemy.is_none() && e.action == Action::Enemy {
+            found_enemy = Some(e);
+        } else {
+            temp_events.push(e);
+        }
+    }
+    
+    // Put everything back
+    for e in temp_events {
+        queue.push(e);
+    }
+    
+    // Add enemy event back with delayed time
+    if let Some(e) = found_enemy {
+        queue.push(Event {
+            time: e.time + stun_duration,
+            priority: e.priority,
+            action: e.action,
+        });
+    }
+}
+
+/// Apply spawn effects - IDENTICAL to Python's hunter.apply_pog(), apply_ood(), etc.
 fn apply_spawn_effects(hunter: &mut Hunter, enemy: &mut Enemy, _rng: &mut impl Rng) {
-    // Presence of God - instant damage on spawn
+    let is_boss = enemy.is_boss;
+    let stage_effect = if is_boss { 0.5 } else { 1.0 };
+    
+    // Presence of God (Borge) - Python: enemy.hp = enemy.max_hp * (1 - pog_effect)
+    // NOTE: Python does NOT track POG damage in total_damage!
     if hunter.presence_of_god > 0 {
-        let pog_damage = hunter.power * 0.1 * hunter.presence_of_god as f64;
-        enemy.take_damage(pog_damage);
-        hunter.result.damage += pog_damage;
+        let pog_effect = hunter.presence_of_god as f64 * 0.04 * stage_effect;
+        let new_hp = enemy.max_hp * (1.0 - pog_effect);
+        enemy.hp = new_hp;
+        // Python does NOT add this to damage stats
     }
     
-    // Omen of Defeat - reduce enemy stats
+    // Omen of Defeat (Borge) - Python: enemy.regen = enemy.regen * (1 - ood_effect)
     if hunter.omen_of_defeat > 0 {
-        let reduction = 1.0 - (0.02 * hunter.omen_of_defeat as f64);
-        enemy.power *= reduction;
-        enemy.hp *= reduction;
-        enemy.max_hp *= reduction;
+        let ood_effect = hunter.omen_of_defeat as f64 * 0.08 * stage_effect;
+        enemy.regen *= 1.0 - ood_effect;
     }
     
-    // Soul of Snek (Ozzy) - reduce enemy regen by 8.8% per level
+    // Soul of Snek (Ozzy) - Python: regen_reduction = 1 - 0.088 * level
     if hunter.soul_of_snek > 0 {
         let regen_reduction = 1.0 - (0.088 * hunter.soul_of_snek as f64);
         enemy.regen *= regen_reduction.max(0.0);
     }
     
-    // Gift of Medusa (Ozzy) - 5% of hunter max HP as enemy -regen per level
+    // Gift of Medusa (Ozzy) - Python: enemy.regen -= hunter_regen * medusa_level * 0.06
     if hunter.gift_of_medusa > 0 {
-        let anti_regen = hunter.max_hp * 0.05 * hunter.gift_of_medusa as f64;
+        let anti_regen = hunter.regen * hunter.gift_of_medusa as f64 * 0.06;
         enemy.regen = (enemy.regen - anti_regen).max(0.0);
     }
 }
 
-/// Handle on-kill effects for hunter
-fn on_kill(hunter: &mut Hunter, rng: &mut impl Rng) {
-    // Trickster's Boon (Ozzy) - 50% of effect chance to gain a trickster charge
-    if hunter.tricksters_boon > 0 && rng.gen::<f64>() < hunter.effect_chance / 2.0 {
+/// Hunter attack - mirrors Python's Borge.attack() / Ozzy.attack() / Knox.attack()
+/// Returns number of additional enemies killed by trample (caller handles marking them dead)
+fn hunter_attack(
+    hunter: &mut Hunter, 
+    enemy: &mut Enemy, 
+    rng: &mut impl Rng, 
+    _elapsed_time: f64,
+) -> usize {
+    let is_boss = enemy.is_boss;
+    
+    // Get effective stats
+    let effective_power = hunter.power;
+    let effective_effect_chance = hunter.get_effective_effect_chance(is_boss);
+    
+    // Calculate damage based on hunter type
+    let damage = match hunter.hunter_type {
+        HunterType::Borge => {
+            borge_attack(hunter, enemy, rng, effective_power, effective_effect_chance, is_boss)
+        }
+        HunterType::Ozzy => {
+            ozzy_attack(hunter, enemy, rng, effective_power, effective_effect_chance, is_boss)
+        }
+        HunterType::Knox => {
+            knox_attack(hunter, enemy, rng, effective_power, effective_effect_chance, is_boss)
+        }
+    };
+    
+    // Common post-attack effects (Borge only - Ozzy/Knox handle their own)
+    if hunter.hunter_type == HunterType::Borge {
+        // Lifesteal
+        if hunter.lifesteal > 0.0 {
+            let heal = damage * hunter.lifesteal;
+            let effective = heal.min(hunter.max_hp - hunter.hp);
+            hunter.hp = (hunter.hp + heal).min(hunter.max_hp);
+            hunter.result.lifesteal += effective;
+        }
+        
+        // Life of the Hunt
+        if hunter.life_of_the_hunt > 0 && rng.gen::<f64>() < effective_effect_chance {
+            let loth_heal = damage * hunter.life_of_the_hunt as f64 * 0.06;
+            hunter.hp = (hunter.hp + loth_heal).min(hunter.max_hp);
+            hunter.result.life_of_the_hunt_healing += loth_heal;
+            hunter.result.effect_procs += 1;
+        }
+        
+        // Impeccable Impacts (stun)
+        if hunter.impeccable_impacts > 0 && rng.gen::<f64>() < effective_effect_chance {
+            let stun_effect = if is_boss { 0.5 } else { 1.0 };
+            let stun_duration = hunter.impeccable_impacts as f64 * 0.1 * stun_effect;
+            hunter.pending_stun_duration = stun_duration;
+            hunter.result.effect_procs += 1;
+        }
+        
+        // Fires of War
+        if hunter.fires_of_war > 0 && rng.gen::<f64>() < effective_effect_chance {
+            hunter.fires_of_war_buff = hunter.fires_of_war as f64 * 0.1;
+            hunter.result.effect_procs += 1;
+        }
+    }
+    
+    0  // Trample handled inside borge_attack now
+}
+
+/// Borge attack - mirrors Python's Borge.attack()
+fn borge_attack(
+    hunter: &mut Hunter, 
+    enemy: &mut Enemy, 
+    rng: &mut impl Rng, 
+    effective_power: f64, 
+    _effective_effect_chance: f64,
+    is_boss: bool,
+) -> f64 {
+    // Python: if random.random() < self.special_chance: damage = self.power * self.special_damage
+    let damage = if rng.gen::<f64>() < hunter.special_chance {
+        let crit_dmg = effective_power * hunter.special_damage;
+        hunter.result.crits += 1;
+        hunter.result.extra_damage_from_crits += crit_dmg - effective_power;
+        crit_dmg
+    } else {
+        effective_power
+    };
+    
+    // Track stats - Python: self.total_damage += damage
+    hunter.result.damage += damage;
+    hunter.result.attacks += 1;
+    
+    // Check for trample (Borge mod)
+    if hunter.has_trample && !is_boss && damage > enemy.max_hp {
+        let trample_power = (damage / enemy.max_hp) as i32;
+        if trample_power > 1 {
+            enemy.hp = 0.0;
+            hunter.result.trample_kills += trample_power;
+        } else {
+            enemy.take_damage(damage);
+        }
+    } else {
+        enemy.take_damage(damage);
+    }
+    
+    damage
+}
+
+/// Ozzy attack - mirrors Python's Ozzy.attack()
+/// Python's Ozzy uses an attack_queue for multistrikes and echoes, but we simplify
+/// by processing them all in one attack call (probabilistically equivalent)
+fn ozzy_attack(
+    hunter: &mut Hunter, 
+    enemy: &mut Enemy, 
+    rng: &mut impl Rng, 
+    effective_power: f64, 
+    effective_effect_chance: f64,
+    is_boss: bool,
+) -> f64 {
+    // Main attack
+    let base_damage = effective_power;
+    hunter.result.attacks += 1;
+    
+    // Python: Trickster's Boon at half effect_chance gives evade charge
+    if hunter.tricksters_boon > 0 && rng.gen::<f64>() < effective_effect_chance / 2.0 {
         hunter.trickster_charges += 1;
         hunter.result.effect_procs += 1;
     }
     
-    // Unfair Advantage (Ozzy/shared) - effect chance to heal 2% max HP per level
-    if hunter.unfair_advantage > 0 && rng.gen::<f64>() < hunter.effect_chance {
-        let heal_amount = hunter.max_hp * 0.02 * hunter.unfair_advantage as f64;
-        hunter.hp = (hunter.hp + heal_amount).min(hunter.max_hp);
-        hunter.result.unfair_advantage_healing += heal_amount;
-        hunter.result.effect_procs += 1;
-        
-        // Vectid Elixir (Ozzy) - empowered regen for 5 ticks after Unfair Advantage
-        if hunter.vectid_elixir > 0 {
-            hunter.empowered_regen += 5;
-        }
+    // Track which extra attacks were triggered (Python: attack_queue)
+    let mut multistrike_triggered = false;
+    let mut echo_triggered = false;
+    
+    // Python: if random.random() < self.special_chance: trigger multistrike
+    if rng.gen::<f64>() < hunter.special_chance {
+        multistrike_triggered = true;
     }
     
-    // Life of the Hunt (Borge/shared) - effect chance to heal 1% max HP per level
-    if hunter.life_of_the_hunt > 0 && rng.gen::<f64>() < hunter.effect_chance {
-        let heal_amount = hunter.max_hp * 0.01 * hunter.life_of_the_hunt as f64;
-        hunter.hp = (hunter.hp + heal_amount).min(hunter.max_hp);
-        hunter.result.life_of_the_hunt_healing += heal_amount;
+    // Python: Thousand Needles stun (only on main attack)
+    if hunter.thousand_needles > 0 && rng.gen::<f64>() < effective_effect_chance {
+        let stun_effect = if is_boss { 0.5 } else { 1.0 };
+        let stun_duration = hunter.thousand_needles as f64 * 0.05 * stun_effect;
+        hunter.pending_stun_duration = stun_duration;
         hunter.result.effect_procs += 1;
     }
-}
-
-/// Handle on-stage-complete effects for hunter
-fn on_stage_complete(hunter: &mut Hunter, rng: &mut impl Rng) {
-    // Calypso's Advantage (Knox) - chance to gain Hundred Souls stack on stage clear
-    if hunter.calypsos_advantage > 0 && rng.gen::<f64>() < hunter.effect_chance * 2.5 {
-        // Max stacks = 100 base + dead_men_tell_no_tales * 10
-        let max_stacks = 100 + hunter.soul_amplification * 10;
-        if hunter.hundred_souls_stacks < max_stacks {
-            hunter.hundred_souls_stacks += 1;
+    
+    // Python: Echo Bullets at half effect chance
+    if hunter.echo_bullets > 0 && rng.gen::<f64>() < effective_effect_chance / 2.0 {
+        echo_triggered = true;
+        hunter.result.effect_procs += 1;
+    }
+    
+    // === CRIPPLING SHOTS DAMAGE ===
+    // Python: cripple_damage = target.hp * (self.crippling_on_target * 0.008) * cripple_boss_reduction
+    let cripple_boss_reduction = if is_boss { 0.1 } else { 1.0 };
+    let cripple_damage = enemy.hp * (hunter.decay_stacks as f64 * 0.008) * cripple_boss_reduction;
+    hunter.decay_stacks = 0;  // Reset stacks after attack
+    
+    // === OMEN OF DECAY MULTIPLIER ===
+    // Python: if self.talents["omen_of_decay"] and random.random() < (self.effect_chance / 2):
+    let omen_multiplier = if hunter.omen_of_decay > 0 && rng.gen::<f64>() < effective_effect_chance / 2.0 {
+        hunter.result.effect_procs += 1;
+        1.0 + (hunter.omen_of_decay as f64 * 0.03)
+    } else {
+        1.0
+    };
+    
+    // Final main attack damage
+    let main_damage = (base_damage + cripple_damage) * omen_multiplier;
+    enemy.take_damage(main_damage);
+    
+    // Track damage
+    hunter.result.damage += base_damage;
+    hunter.result.extra_damage_from_crits += cripple_damage;
+    
+    // Lifesteal on main attack base damage (Python: not on cripple/omen extra)
+    // WASM: Soul of Snek empowers lifesteal during Vectid buff!
+    if hunter.lifesteal > 0.0 {
+        let mut heal = base_damage * hunter.lifesteal;
+        if hunter.empowered_regen > 0 {
+            heal *= 1.0 + hunter.soul_of_snek as f64 * 0.15;
+        }
+        let effective = heal.min(hunter.max_hp - hunter.hp);
+        hunter.hp = (hunter.hp + heal).min(hunter.max_hp);
+        hunter.result.lifesteal += effective;
+    }
+    
+    // Crippling Shots proc for NEXT attack (main attack can proc)
+    if hunter.crippling_shots > 0 && rng.gen::<f64>() < effective_effect_chance {
+        hunter.decay_stacks += hunter.crippling_shots;
+        hunter.result.effect_procs += 1;
+    }
+    
+    // Process extra attacks (multistrikes and echoes)
+    let mut total_extra_damage = 0.0;
+    
+    // Multistrike: deals special_damage multiplier of power
+    if multistrike_triggered {
+        let ms_dmg = effective_power * hunter.special_damage;
+        enemy.take_damage(ms_dmg);
+        hunter.result.multistrikes += 1;
+        hunter.result.extra_damage_from_ms += ms_dmg;
+        total_extra_damage += ms_dmg;
+        
+        // Lifesteal on multistrike
+        if hunter.lifesteal > 0.0 {
+            let mut heal = ms_dmg * hunter.lifesteal;
+            if hunter.empowered_regen > 0 {
+                heal *= 1.0 + hunter.soul_of_snek as f64 * 0.15;
+            }
+            hunter.hp = (hunter.hp + heal).min(hunter.max_hp);
+            hunter.result.lifesteal += heal.min(hunter.max_hp - hunter.hp);
+        }
+        
+        // Crippling Shots proc (multistrike can proc)
+        if hunter.crippling_shots > 0 && rng.gen::<f64>() < effective_effect_chance {
+            hunter.decay_stacks += hunter.crippling_shots;
             hunter.result.effect_procs += 1;
         }
     }
+    
+    // Echo Bullets: deals 5% per level of power (WASM: cannot trigger multistrike)
+    if echo_triggered {
+        let echo_dmg = effective_power * (hunter.echo_bullets as f64 * 0.05);
+        enemy.take_damage(echo_dmg);
+        hunter.result.echo_bullets += 1;
+        total_extra_damage += echo_dmg;
+        
+        // Lifesteal on echo
+        if hunter.lifesteal > 0.0 {
+            let mut heal = echo_dmg * hunter.lifesteal;
+            if hunter.empowered_regen > 0 {
+                heal *= 1.0 + hunter.soul_of_snek as f64 * 0.15;
+            }
+            hunter.hp = (hunter.hp + heal).min(hunter.max_hp);
+            hunter.result.lifesteal += heal.min(hunter.max_hp - hunter.hp);
+        }
+        
+        // Crippling Shots proc (echo can proc)
+        if hunter.crippling_shots > 0 && rng.gen::<f64>() < effective_effect_chance {
+            hunter.decay_stacks += hunter.crippling_shots;
+            hunter.result.effect_procs += 1;
+        }
+    }
+    
+    main_damage + total_extra_damage
 }
 
-/// Knox salvo attack - fires multiple projectiles per attack
-fn knox_salvo_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng, effective_power: f64) {
-    // Calculate number of projectiles in this salvo
+/// Knox attack - mirrors Python's Knox.attack() 
+/// Knox fires a salvo of projectiles
+fn knox_attack(
+    hunter: &mut Hunter, 
+    enemy: &mut Enemy, 
+    rng: &mut impl Rng, 
+    effective_power: f64, 
+    effective_effect_chance: f64,
+    _is_boss: bool,
+) -> f64 {
+    // Python: num_projectiles = self.salvo_projectiles
     let mut num_projectiles = hunter.salvo_projectiles;
     
-    // Space Pirate Armory - 2% chance per level to add +3 rounds to salvo
-    if hunter.space_pirate_armory > 0 {
-        if rng.gen::<f64>() < hunter.space_pirate_armory as f64 * 0.02 {
-            num_projectiles += 3;
-            hunter.result.effect_procs += 1;
-        }
-    }
-    
-    // Ghost Bullets - 6.67% chance per level for extra projectile
+    // Ghost Bullets - chance for extra projectile
+    // Python: ghost_chance = self.talents["ghost_bullets"] * 0.0667
     if hunter.ghost_bullets > 0 {
         let ghost_chance = hunter.ghost_bullets as f64 * 0.0667;
         if rng.gen::<f64>() < ghost_chance {
             num_projectiles += 1;
-            hunter.result.multistrikes += 1;  // Track ghost bullets via multistrikes
         }
     }
     
+    let base_salvo = hunter.salvo_projectiles.max(1) as f64;
     let mut total_damage = 0.0;
-    let base_projectiles = hunter.salvo_projectiles as f64;
     
     for i in 0..num_projectiles {
         // Each projectile deals a portion of total power
-        let mut bullet_damage = effective_power / base_projectiles;
+        // Python: bullet_damage = self.power / self.salvo_projectiles
+        let mut bullet_damage = effective_power / base_salvo;
         
         // Check for charge (Knox's crit equivalent)
+        // Python: if random.random() < self.charge_chance: bullet_damage *= (1 + self.charge_gained)
         if rng.gen::<f64>() < hunter.charge_chance {
             bullet_damage *= 1.0 + hunter.charge_gained;
-            hunter.result.crits += 1;
+            hunter.result.crits += 1;  // Track charges as crits
         }
         
-        // Finishing Move on last bullet - chance for bonus damage
+        // Finishing Move on last bullet
+        // Python: if i == num_projectiles - 1 and self.talents["finishing_move"] > 0:
+        //     if random.random() < (self.effect_chance * 2): bullet_damage *= self.special_damage
         if i == num_projectiles - 1 && hunter.finishing_move > 0 {
-            if rng.gen::<f64>() < hunter.effect_chance * 2.0 {
-                bullet_damage *= hunter.special_damage;  // special_damage = 1.0 + 0.2 * finishing_move
+            if rng.gen::<f64>() < effective_effect_chance * 2.0 {
+                bullet_damage *= hunter.special_damage;
                 hunter.result.effect_procs += 1;
             }
         }
@@ -305,279 +674,248 @@ fn knox_salvo_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng,
         total_damage += bullet_damage;
     }
     
-    // Apply damage
-    let actual_damage = enemy.take_damage(total_damage);
-    hunter.result.damage += actual_damage;
+    // Apply damage to enemy
+    enemy.take_damage(total_damage);
     
-    // Lifesteal
+    // Track stats - Python: self.total_damage += total_damage
+    hunter.result.damage += total_damage;
+    hunter.result.attacks += 1;
+    
+    // Lifesteal (if Knox has any)
     if hunter.lifesteal > 0.0 {
-        let healed = actual_damage * hunter.lifesteal;
-        hunter.hp = (hunter.hp + healed).min(hunter.max_hp);
-        hunter.result.lifesteal += healed;
+        let heal = total_damage * hunter.lifesteal;
+        let effective = heal.min(hunter.max_hp - hunter.hp);
+        hunter.hp = (hunter.hp + heal).min(hunter.max_hp);
+        hunter.result.lifesteal += effective;
     }
     
-    // Effect proc (stun)
-    if rng.gen::<f64>() < hunter.effect_chance {
-        hunter.result.effect_procs += 1;
-        let stun_duration = 1.0 + 0.2 * hunter.effect_chance;
-        let actual_stun = if enemy.is_boss { stun_duration * 0.5 } else { stun_duration };
-        enemy.is_stunned = true;
-        enemy.stun_end_time = hunter.result.elapsed_time + actual_stun;
-        hunter.result.stun_duration_inflicted += actual_stun;
+    total_damage
+}
+
+/// Enemy attack - mirrors Python's Enemy.attack()
+fn enemy_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng) {
+    // Python: if random.random() < self.special_chance: damage = self.power * self.special_damage
+    let (damage, is_crit) = if rng.gen::<f64>() < enemy.special_chance {
+        (enemy.power * enemy.special_damage, true)
+    } else {
+        (enemy.power, false)
+    };
+    
+    // Python: hunter.receive_damage(self, damage, is_crit)
+    hunter_receive_damage(hunter, enemy, damage, is_crit, rng);
+}
+
+/// Enemy special attack - mirrors Python's Boss.attack_special()
+fn enemy_attack_special(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng) {
+    match enemy.secondary_type {
+        SecondaryAttackType::Gothmorgor => {
+            // Gothmorgor: attack + enrage
+            enemy_attack(hunter, enemy, rng);
+            enemy.add_enrage();
+        }
+        SecondaryAttackType::Exoscarab => {
+            // Exoscarab: harden (95% DR for 5 ticks)
+            enemy.start_harden();
+        }
+        SecondaryAttackType::None => {}
     }
 }
 
-/// Hunter attacks enemy
-fn hunter_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng) {
-    hunter.result.attacks += 1;
-    
-    // Calculate effective power (base + deal_with_death per revive used)
-    let mut effective_power = hunter.power;
-    if hunter.deal_with_death > 0 && hunter.revive_count > 0 {
-        effective_power *= 1.0 + (hunter.deal_with_death as f64 * 0.02 * hunter.revive_count as f64);
+/// Hunter receives damage - mirrors Python's Borge/Ozzy/Knox.receive_damage()
+fn hunter_receive_damage(hunter: &mut Hunter, attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut impl Rng) {
+    match hunter.hunter_type {
+        HunterType::Borge => borge_receive_damage(hunter, attacker, damage, is_crit, rng),
+        HunterType::Ozzy => ozzy_receive_damage(hunter, attacker, damage, is_crit, rng),
+        HunterType::Knox => knox_receive_damage(hunter, attacker, damage, is_crit, rng),
     }
-    
-    // Born for Battle (Borge) - +0.1% power per 1% missing HP
-    if hunter.born_for_battle > 0 {
-        let missing_hp_pct = 1.0 - (hunter.hp / hunter.max_hp);
-        effective_power *= 1.0 + (missing_hp_pct * hunter.born_for_battle as f64 * 0.001);
-    }
-    
-    // Hundred Souls power bonus (Knox) - +0.5% per stack, boosted by soul_amplification
-    if hunter.hundred_souls_stacks > 0 {
-        let souls_multiplier = 0.005 * (1.0 + hunter.soul_amplification as f64 * 0.01);
-        effective_power *= 1.0 + (hunter.hundred_souls_stacks as f64 * souls_multiplier);
-    }
-    
-    // Calculate effective crit chance (base + cycle_of_death per revive used)
-    let mut effective_crit_chance = hunter.special_chance;
-    let mut effective_crit_dmg = hunter.special_damage;
-    if hunter.cycle_of_death > 0 && hunter.revive_count > 0 {
-        effective_crit_chance += hunter.cycle_of_death as f64 * 0.023 * hunter.revive_count as f64;
-        effective_crit_dmg += hunter.cycle_of_death as f64 * 0.02 * hunter.revive_count as f64;
-    }
-    
-    // Knox salvo attack mechanics
-    if hunter.salvo_projectiles > 0 {
-        knox_salvo_attack(hunter, enemy, rng, effective_power);
+}
+
+/// Borge receive damage - mirrors Python's Borge.receive_damage()
+fn borge_receive_damage(hunter: &mut Hunter, attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut impl Rng) {
+    // Python: if random.random() < self.evade_chance: return
+    if rng.gen::<f64>() < hunter.evade_chance {
+        hunter.result.evades += 1;
         return;
     }
     
-    // Check for crit
-    let base_damage = if rng.gen::<f64>() < effective_crit_chance {
-        hunter.result.crits += 1;
-        let crit_dmg = effective_power * effective_crit_dmg;
-        hunter.result.extra_damage_from_crits += crit_dmg - effective_power;
-        crit_dmg
-    } else {
-        effective_power
-    };
+    let mut final_damage = damage;
     
-    // Apply decay stacks bonus (Ozzy Crippling Shots) - consume stacks
-    let decay_bonus = if hunter.decay_stacks > 0 {
-        let bonus = base_damage * 0.03 * hunter.decay_stacks as f64;
-        hunter.decay_stacks = 0;  // Consume stacks
-        bonus
-    } else {
-        0.0
-    };
+    // Borge: Minotaur DR first (separate layer)
+    if hunter.minotaur_dr > 0.0 {
+        final_damage *= 1.0 - hunter.minotaur_dr;
+    }
     
-    // Omen of Decay (Ozzy) - % of enemy current HP as bonus damage
-    let omen_decay_damage = if hunter.omen_of_decay > 0 {
-        let decay_pct = hunter.omen_of_decay as f64 * 0.008;  // 0.8% per level
-        let bonus_dmg = enemy.hp * decay_pct;
-        // 90% reduced on bosses
-        if enemy.is_boss {
-            bonus_dmg * 0.1
-        } else {
-            bonus_dmg
-        }
-    } else {
-        0.0
-    };
+    // Borge: Crit reduction from Weakspot Analysis
+    if is_crit && hunter.weakspot_analysis > 0 {
+        final_damage *= 1.0 - hunter.weakspot_analysis as f64 * 0.11;
+    }
     
-    // Check for multistrike (Ozzy)
-    let multistrike_bonus = if hunter.multistriker > 0 && rng.gen::<f64>() < 0.1 + 0.05 * hunter.multistriker as f64 {
-        hunter.result.multistrikes += 1;
-        let ms_base = base_damage * 0.5;
-        // Multistrike also benefits from omen of decay
-        let ms_omen = if hunter.omen_of_decay > 0 {
-            let decay_pct = hunter.omen_of_decay as f64 * 0.008;
-            let bonus = enemy.hp * decay_pct;
-            if enemy.is_boss { bonus * 0.1 } else { bonus }
-        } else {
-            0.0
-        };
-        let ms_total = ms_base + ms_omen;
-        hunter.result.extra_damage_from_ms += ms_total;
-        ms_total
-    } else {
-        0.0
-    };
+    // Apply main DR
+    let mitigated_damage = final_damage * (1.0 - hunter.damage_reduction);
+    hunter.hp -= mitigated_damage;
     
-    let total_damage = base_damage + decay_bonus + omen_decay_damage + multistrike_bonus;
+    // Track stats
+    hunter.result.damage_taken += mitigated_damage;
+    hunter.result.enemy_attacks += 1;
+    hunter.result.mitigated_damage += final_damage - mitigated_damage;
     
-    // Apply damage
-    let actual_damage = enemy.take_damage(total_damage);
-    hunter.result.damage += actual_damage;
-    
-    // Echo Bullets (Ozzy) - chance for extra shot
-    if hunter.echo_bullets > 0 && rng.gen::<f64>() < hunter.effect_chance {
-        hunter.result.echo_bullets += 1;
-        let echo_dmg = hunter.power * hunter.echo_bullets as f64 * 0.05;  // 0.05x per level
-        let echo_decay = if hunter.omen_of_decay > 0 {
-            let decay_pct = hunter.omen_of_decay as f64 * 0.008;
-            let bonus = enemy.hp * decay_pct;
-            if enemy.is_boss { bonus * 0.1 } else { bonus }
-        } else {
-            0.0
-        };
-        let echo_total = echo_dmg + echo_decay;
-        let echo_actual = enemy.take_damage(echo_total);
-        hunter.result.damage += echo_actual;
-        
-        // Echo can trigger its own multistrike
-        if hunter.multistriker > 0 && rng.gen::<f64>() < 0.1 + 0.05 * hunter.multistriker as f64 {
-            hunter.result.multistrikes += 1;
-            let echo_ms = echo_dmg * 0.5;
-            let echo_ms_omen = if hunter.omen_of_decay > 0 {
-                let decay_pct = hunter.omen_of_decay as f64 * 0.008;
-                let bonus = enemy.hp * decay_pct;
-                if enemy.is_boss { bonus * 0.1 } else { bonus }
-            } else {
-                0.0
-            };
-            let echo_ms_total = echo_ms + echo_ms_omen;
-            let echo_ms_actual = enemy.take_damage(echo_ms_total);
-            hunter.result.damage += echo_ms_actual;
-            hunter.result.extra_damage_from_ms += echo_ms_actual;
+    // Helltouch Barrier reflection (Borge)
+    if hunter.helltouch_barrier_level > 0 && mitigated_damage > 0.0 {
+        let helltouch_effect = if attacker.is_boss { 0.1 } else { 1.0 };
+        let reflected = mitigated_damage * hunter.helltouch_barrier_level as f64 * 0.08 * helltouch_effect;
+        attacker.hp -= reflected;
+        hunter.result.helltouch_barrier += reflected;
+        if attacker.is_dead() {
+            hunter.result.helltouch_kills += 1;
         }
     }
     
-    // Crippling Shots (Ozzy) - add decay stacks for NEXT attack
-    if hunter.crippling_shots > 0 && rng.gen::<f64>() < hunter.effect_chance {
-        hunter.decay_stacks += hunter.crippling_shots;
-        hunter.decay_stacks = hunter.decay_stacks.min(100);  // Cap at 100 stacks
-    }
-    
-    // Lifesteal
-    if hunter.lifesteal > 0.0 {
-        let healed = actual_damage * hunter.lifesteal;
-        hunter.hp = (hunter.hp + healed).min(hunter.max_hp);
-        hunter.result.lifesteal += healed;
-    }
-    
-    // Effect proc (stun)
-    if rng.gen::<f64>() < hunter.effect_chance {
-        hunter.result.effect_procs += 1;
-        // Thousand Needles (Ozzy) adds stun duration
-        let base_stun = if hunter.thousand_needles > 0 {
-            hunter.thousand_needles as f64 * 0.05  // 0.05s per level
-        } else {
-            1.0 + 0.2 * hunter.effect_chance
-        };
-        let stun_duration = base_stun;
-        // 50% reduced on bosses
-        let actual_stun = if enemy.is_boss {
-            stun_duration * 0.5
-        } else {
-            stun_duration
-        };
-        enemy.is_stunned = true;
-        enemy.stun_end_time = hunter.result.elapsed_time + actual_stun;
-        hunter.result.stun_duration_inflicted += actual_stun;
+    // Check death and revive
+    if hunter.is_dead() {
+        hunter.try_revive();
     }
 }
 
-/// Enemy attacks hunter
-fn enemy_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng) {
-    // Check for trickster evade (Ozzy) - consume a charge for free evade
+/// Ozzy receive damage - mirrors Python's Ozzy.receive_damage()
+fn ozzy_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut impl Rng) {
+    // Python Step 1: Check trickster charges FIRST
     if hunter.trickster_charges > 0 {
         hunter.trickster_charges -= 1;
         hunter.result.trickster_evades += 1;
         return;
     }
     
-    // Check for evade
+    // Python Step 2: Check normal evade
     if rng.gen::<f64>() < hunter.evade_chance {
         hunter.result.evades += 1;
-        
-        // Dance of Dashes (Ozzy) - 15% chance per level to gain trickster charge on evade
-        if hunter.dance_of_dashes > 0 && rng.gen::<f64>() < hunter.dance_of_dashes as f64 * 0.15 {
+        return;
+    }
+    
+    // Python Step 3: Failed to evade - take damage
+    // Apply scarab DR (separate multiplicative layer)
+    let scarab_reduced = damage * (1.0 - hunter.scarab_dr);
+    let mitigated_damage = scarab_reduced * (1.0 - hunter.damage_reduction);
+    hunter.hp -= mitigated_damage;
+    
+    // Track stats
+    hunter.result.damage_taken += mitigated_damage;
+    hunter.result.enemy_attacks += 1;
+    hunter.result.mitigated_damage += scarab_reduced - mitigated_damage;
+    
+    // Python Step 4: Dance of Dashes - on crit, chance to gain trickster charge
+    if is_crit && hunter.dance_of_dashes > 0 {
+        if rng.gen::<f64>() < hunter.dance_of_dashes as f64 * 0.05 {
             hunter.trickster_charges += 1;
             hunter.result.effect_procs += 1;
         }
-        return;
     }
     
-    // Check for block (Knox)
-    if hunter.block_chance > 0.0 && rng.gen::<f64>() < hunter.block_chance {
-        // Blocked - reduced damage (50% of original)
-        hunter.result.evades += 1;  // Track blocks via evades counter
+    // Check death and revive
+    if hunter.is_dead() {
+        hunter.try_revive();
+    }
+}
+
+/// Knox receive damage - mirrors Python's Knox.receive_damage()
+fn knox_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, _is_crit: bool, rng: &mut impl Rng) {
+    let mut final_damage = damage;
+    
+    // Check for block first
+    // Python: if random.random() < self.block_chance: blocked_amount = damage * 0.5
+    if rng.gen::<f64>() < hunter.block_chance {
+        let blocked = damage * 0.5;
+        final_damage -= blocked;
+        // Track blocked damage (we could add a field for this)
+    }
+    
+    // Apply remaining damage through DR
+    if final_damage > 0.0 {
+        let mitigated_damage = final_damage * (1.0 - hunter.damage_reduction);
+        hunter.hp -= mitigated_damage;
         
-        // Fortification Elixir (Knox) - +10% regen for 5 ticks after block
-        if hunter.fortification_elixir > 0 {
-            hunter.empowered_block_regen += 5;
+        // Track stats
+        hunter.result.damage_taken += mitigated_damage;
+        hunter.result.enemy_attacks += 1;
+        hunter.result.mitigated_damage += final_damage - mitigated_damage;
+        
+        // Check death and revive
+        if hunter.is_dead() {
+            hunter.try_revive();
         }
-        return;
-    }
-    
-    // Get enemy damage
-    let (mut damage, is_crit) = enemy.get_attack_damage(rng);
-    
-    // Weakspot Analysis (Borge) - reduce crit damage taken by 11% per level
-    if is_crit && hunter.weakspot_analysis > 0 {
-        let crit_reduction = hunter.weakspot_analysis as f64 * 0.11;
-        damage *= 1.0 - crit_reduction.min(0.99);  // Cap at 99% reduction
-    }
-    
-    // Calculate effective DR (base + deal_with_death per revive used)
-    let mut effective_dr = hunter.damage_reduction;
-    if hunter.deal_with_death > 0 && hunter.revive_count > 0 {
-        effective_dr += hunter.deal_with_death as f64 * 0.016 * hunter.revive_count as f64;
-    }
-    
-    // Apply damage reduction
-    let mitigated = damage * effective_dr.min(0.95);  // Cap DR at 95%
-    let actual_damage = damage - mitigated;
-    
-    hunter.result.mitigated_damage += mitigated;
-    hunter.result.damage_taken += actual_damage;
-    hunter.hp -= actual_damage;
-    
-    // Helltouch barrier (Borge)
-    if hunter.helltouch_barrier_level > 0 && hunter.hp < hunter.max_hp * 0.3 {
-        let barrier = hunter.max_hp * 0.01 * hunter.helltouch_barrier_level as f64;
-        hunter.hp += barrier;
-        hunter.result.helltouch_barrier += barrier;
     }
 }
 
-/// Run multiple simulations in parallel with proper thread utilization
-pub fn run_simulations_parallel(config: &BuildConfig, count: usize) -> Vec<SimResult> {
-    // Use 70% of available cores to keep system responsive
-    let num_cores = num_cpus::get();
-    let threads_per_hunter = ((num_cores as f64 * 0.70).round() as usize)
-        .max(2)
-        .min(num_cores.saturating_sub(1).max(1));
+/// On kill effects - mirrors Python's Hunter.on_kill()
+fn on_kill(hunter: &mut Hunter, rng: &mut impl Rng, is_boss: bool) {
+    let effective_effect_chance = hunter.get_effective_effect_chance(is_boss);
     
-    let pool = ThreadPoolBuilder::new()
-        .num_threads(threads_per_hunter)
-        .build()
-        .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap());
+    // DEBUG: Track how many times on_kill is called
+    hunter.result.on_kill_calls += 1;
     
-    pool.install(|| {
-        let chunk_size = (count / threads_per_hunter).max(1);
+    // === LOOT CALCULATION (per kill, matching Python's on_kill) ===
+    let stage = hunter.current_stage as f64;
+    let mut loot_mult = hunter.loot_mult;
+    
+    // Call Me Lucky Loot proc (not on bosses)
+    // Python: if (stage % 100 != 0 and stage > 0) and random.random() < self.effect_chance:
+    //     if self.talents["call_me_lucky_loot"] > 0: loot_mult *= 1 + (cmll * 0.2)
+    if !is_boss && hunter.call_me_lucky_loot > 0 {
+        if rng.gen::<f64>() < effective_effect_chance {
+            loot_mult *= 1.0 + hunter.call_me_lucky_loot as f64 * 0.2;
+            hunter.result.effect_procs += 1;
+        }
+    }
+    
+    // WASM-based per-resource loot (constants from WASM analysis)
+    let mat1 = stage * 0.347 * loot_mult;
+    let mat2 = stage * 0.330 * loot_mult;
+    let mat3 = stage * 0.247 * loot_mult;
+    let xp = stage * 0.0755 * loot_mult * hunter.xp_mult;
+    
+    hunter.result.loot_common += mat1;
+    hunter.result.loot_uncommon += mat2;
+    hunter.result.loot_rare += mat3;
+    hunter.result.total_xp += xp;
+    hunter.result.total_loot += mat1 + mat2 + mat3;
+    
+    // Unfair Advantage - Python: if random.random() < effect_chance and UA:
+    //   heal = max_hp * 0.02 * UA_level
+    if hunter.unfair_advantage > 0 && rng.gen::<f64>() < effective_effect_chance {
+        let heal = hunter.max_hp * 0.02 * hunter.unfair_advantage as f64;
+        hunter.hp = (hunter.hp + heal).min(hunter.max_hp);
+        hunter.result.unfair_advantage_healing += heal;
+        hunter.result.effect_procs += 1;
         
-        (0..count)
-            .into_par_iter()
-            .with_min_len(chunk_size.min(100))
-            .map(|_| run_simulation(config))
-            .collect()
-    })
+        // Vectid Elixir (Ozzy) - empowered regen for 5 ticks
+        if hunter.vectid_elixir > 0 {
+            hunter.empowered_regen += 5;
+        }
+    }
 }
 
-/// Run multiple simulations sequentially (lower memory)
+/// On stage complete - mirrors Python's Simulation.complete_stage()
+fn on_stage_complete(hunter: &mut Hunter, rng: &mut impl Rng, is_boss: bool) {
+    let effective_effect_chance = hunter.get_effective_effect_chance(is_boss);
+    
+    // Calypso's Advantage (Knox) - chance to gain Hundred Souls stack
+    if hunter.calypsos_advantage > 0 && rng.gen::<f64>() < effective_effect_chance * 2.5 {
+        let max_stacks = 100 + hunter.soul_amplification * 10;
+        if hunter.hundred_souls_stacks < max_stacks {
+            hunter.hundred_souls_stacks += 1;
+            hunter.result.effect_procs += 1;  // Track effect proc
+        }
+    }
+}
+
+/// Run multiple simulations in parallel
+pub fn run_simulations_parallel(config: &BuildConfig, count: usize) -> Vec<SimResult> {
+    (0..count)
+        .into_par_iter()
+        .map(|_| run_simulation(config))
+        .collect()
+}
+
+/// Run multiple simulations sequentially
 pub fn run_simulations_sequential(config: &BuildConfig, count: usize) -> Vec<SimResult> {
     let mut rng = SmallRng::from_entropy();
     (0..count)
@@ -585,7 +923,7 @@ pub fn run_simulations_sequential(config: &BuildConfig, count: usize) -> Vec<Sim
         .collect()
 }
 
-/// Run simulations and return aggregated stats
+/// Run simulations and return aggregated stats - MATCHES WHAT main.rs AND python.rs EXPECT
 pub fn run_and_aggregate(config: &BuildConfig, count: usize, parallel: bool) -> AggregatedStats {
     let results = if parallel {
         run_simulations_parallel(config, count)

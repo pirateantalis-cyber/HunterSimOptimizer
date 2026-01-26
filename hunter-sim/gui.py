@@ -351,7 +351,13 @@ class BuildGenerator:
             if not valid_attrs:
                 stuck_count += 1
                 if stuck_count >= 3:  # Give up after 3 consecutive failures
-                    break  # No more valid moves
+                    # Can't find valid moves - just allocate remaining points randomly to unlimited attrs
+                    unlimited_attrs = [a for a in attrs if costs[a] <= remaining]
+                    while remaining > 0 and unlimited_attrs:
+                        chosen = random.choice(unlimited_attrs)
+                        result[chosen] += 1
+                        remaining -= costs[chosen]
+                    break  # Done allocating
             else:
                 stuck_count = 0  # Reset counter when we find valid moves
             

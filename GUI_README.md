@@ -1,4 +1,6 @@
-# Hunter Sim - Build Optimizer GUI v1.3
+# Hunter Sim - Build Optimizer GUI v2.0
+
+> Release highlights: revive timing bug fix, cleaner color palette for all hunters, rebuilt Rust backend, significantly faster multi-threaded sims, and polished Optimizer/Advisor flows.
 
 A graphical interface for the Hunter Sim that **automatically finds optimal talent and attribute builds** by simulating thousands of combinations.
 

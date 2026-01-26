@@ -5,10 +5,16 @@ echo ====================================
 echo.
 
 cd /d "%~dp0"
-cd hunter-sim
 
-echo Starting Multi-Hunter GUI...
-python gui_multi.py
+REM Use venv if available (for Rust support)
+if exist ".venv\Scripts\python.exe" (
+    echo Using virtual environment with Rust support...
+    .venv\Scripts\python.exe hunter-sim\gui_multi.py
+) else (
+    cd hunter-sim
+    echo Starting Multi-Hunter GUI...
+    python gui_multi.py
+)
 
 if errorlevel 1 (
     echo.

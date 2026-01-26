@@ -1,8 +1,5 @@
-# CIFI Tools files (downloaded for analysis, not ours)
-index-*.css
-index-*.js
-evaluationWorker-*.js
-release.wat
+# Archive folder (test scripts, debug files, WASM analysis, spreadsheets)
+archive/
 
 # Logs and most builds
 logs/
@@ -189,6 +186,8 @@ hunter-sim-rs/target/
 *.ods
 *.csv
 *.png
+!hunter-sim/assets/*.png
+!docs/screenshots/*.png
 *.wasm
 *.dcmp
 js.devtools

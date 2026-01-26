@@ -1,3 +1,5 @@
+
+
 """
 Hunter Sim GUI - Multi-Hunter Build Optimizer
 ==============================================
@@ -13,15 +15,18 @@ import itertools
 import queue
 import time
 import math
+import re
 from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass, field
-from concurrent.futures import ProcessPoolExecutor
 import statistics
 from collections import Counter
 import copy
 import sys
 import os
 import json
+import subprocess
+import tempfile
+import traceback
 from tkinter import filedialog
 from pathlib import Path
 
@@ -40,17 +45,287 @@ from hunters import Borge, Knox, Ozzy, Hunter
 from sim import SimulationManager, Simulation, sim_worker
 from units import Boss, Enemy
 
-# Import classes from the original gui.py
-from gui import (
-    BuildResult, BuildGenerator, EvolutionaryOptimizer, OptimizationMode,
-    RUST_AVAILABLE
-)
-
 # Try to import Rust simulator
 try:
     import rust_sim
+    RUST_AVAILABLE = True
 except ImportError:
-    pass
+    RUST_AVAILABLE = False
+
+# Simple BuildResult - just a container for optimization results
+@dataclass
+class BuildResult:
+    talents: Dict[str, int]
+    attributes: Dict[str, int]
+    avg_final_stage: float
+    highest_stage: int
+    lowest_stage: int = 0
+    avg_loot_per_hour: float = 0.0
+    avg_damage: float = 0.0
+    avg_kills: float = 0.0
+    avg_elapsed_time: float = 0.0
+    avg_damage_taken: float = 0.0
+    survival_rate: float = 1.0
+    avg_xp: float = 0.0
+    config: Dict = field(default_factory=dict)
+    
+    def __lt__(self, other):
+        return self.avg_final_stage < other.avg_final_stage
+
+RUST_SIM_AVAILABLE = RUST_AVAILABLE
+
+
+class BuildGenerator:
+    """Generates all valid talent/attribute combinations for a given hunter and level."""
+    
+    def __init__(self, hunter_class, level: int, use_smart_sampling: bool = True):
+        self.hunter_class = hunter_class
+        self.level = level
+        self.talent_points = level  # 1 talent point per level
+        self.attribute_points = level * 3  # 3 attribute points per level
+        self.costs = hunter_class.costs
+        self.use_smart_sampling = use_smart_sampling
+        
+        # Calculate dynamic maxes for infinite attributes based on total points
+        self._calculate_dynamic_attr_maxes()
+        
+    def _calculate_dynamic_attr_maxes(self):
+        """
+        For attributes with infinite max, calculate a realistic cap based on:
+        - The total attribute points available
+        - The cost to max out all limited attributes
+        
+        When there are multiple unlimited attributes, they SHARE the remaining budget.
+        Each unlimited attr gets: (remaining_budget / num_unlimited_attrs)
+        """
+        attrs = self.costs["attributes"]
+        
+        # Find unlimited attributes and calculate cost to max all limited ones
+        unlimited_attrs = [a for a, info in attrs.items() if info["max"] == float("inf")]
+        limited_attr_cost = sum(info["cost"] * info["max"] 
+                               for a, info in attrs.items() 
+                               if info["max"] != float("inf"))
+        
+        # Calculate remaining budget and share it among unlimited attributes
+        if unlimited_attrs:
+            remaining_budget = self.attribute_points - limited_attr_cost
+            max_per_unlimited = max(1, remaining_budget // len(unlimited_attrs))
+            self.dynamic_attr_maxes = {a: max_per_unlimited for a in unlimited_attrs}
+        else:
+            self.dynamic_attr_maxes = {}
+    
+    def get_dynamic_attr_max(self, attr_name: str) -> int:
+        """Get the effective max for an attribute, using dynamic calc for unlimited attrs."""
+        if attr_name in self.dynamic_attr_maxes:
+            return self.dynamic_attr_maxes[attr_name]
+        
+        base_max = self.costs["attributes"][attr_name]["max"]
+        if base_max == float("inf"):
+            return 250
+        return int(base_max)
+        
+    def get_talent_combinations(self) -> List[Dict[str, int]]:
+        """Generate all valid talent point allocations."""
+        talents = list(self.costs["talents"].keys())
+        max_levels = [min(self.costs["talents"][t]["max"], self.talent_points) 
+                      for t in talents]
+        
+        combinations = []
+        self._generate_talent_combos(talents, max_levels, {}, 0, 0, combinations)
+        return combinations
+    
+    def _generate_talent_combos(self, talents, max_levels, current, index, points_spent, results):
+        """Recursively generate talent combinations."""
+        if index == len(talents):
+            if points_spent <= self.talent_points:
+                results.append(current.copy())
+            return
+        
+        talent = talents[index]
+        max_lvl = min(max_levels[index], self.talent_points - points_spent)
+        
+        for lvl in range(0, int(max_lvl) + 1):
+            current[talent] = lvl
+            self._generate_talent_combos(talents, max_levels, current, index + 1, 
+                                        points_spent + lvl, results)
+    
+    def get_attribute_combinations(self, max_per_infinite: int = 30) -> List[Dict[str, int]]:
+        """Generate valid attribute point allocations using a smarter approach."""
+        attributes = list(self.costs["attributes"].keys())
+        attr_costs = {a: self.costs["attributes"][a]["cost"] for a in attributes}
+        attr_max = {a: self.costs["attributes"][a]["max"] for a in attributes}
+        
+        combinations = []
+        self._generate_attr_combos(attributes, attr_costs, attr_max, {}, 0, 0, combinations, max_per_infinite)
+        return combinations
+    
+    def _generate_attr_combos(self, attributes, costs, max_levels, current, index, points_spent, results, max_per_infinite):
+        """Recursively generate attribute combinations."""
+        if index == len(attributes):
+            if points_spent <= self.attribute_points:
+                results.append(current.copy())
+            return
+        
+        if points_spent > self.attribute_points:
+            return
+            
+        attr = attributes[index]
+        cost = costs[attr]
+        max_lvl = min(max_levels[attr], (self.attribute_points - points_spent) // cost)
+        
+        if max_lvl == float('inf'):
+            max_lvl = (self.attribute_points - points_spent) // cost
+        
+        max_lvl = int(min(max_lvl, max_per_infinite))
+        
+        for lvl in range(0, max_lvl + 1):
+            current[attr] = lvl
+            self._generate_attr_combos(attributes, costs, max_levels, current, index + 1,
+                                       points_spent + (lvl * cost), results, max_per_infinite)
+    
+    def generate_smart_sample(self, sample_size: int = 100, strategy: str = None) -> List[Tuple[Dict, Dict]]:
+        """Generate a smart sample of builds using random walk allocation."""
+        import random
+        
+        builds = []
+        talents_list = list(self.costs["talents"].keys())
+        attrs_list = list(self.costs["attributes"].keys())
+        attr_costs = {a: self.costs["attributes"][a]["cost"] for a in attrs_list}
+        attr_max = {a: self.costs["attributes"][a]["max"] for a in attrs_list}
+        talent_max = {t: self.costs["talents"][t]["max"] for t in talents_list}
+        
+        for _ in range(sample_size):
+            talents = self._random_walk_talent_allocation(talents_list, talent_max)
+            attrs = self._random_walk_attr_allocation(attrs_list, attr_costs, attr_max)
+            builds.append((talents, attrs))
+        
+        return builds
+    
+    def _random_walk_talent_allocation(self, talents, max_levels) -> Dict[str, int]:
+        """True random walk talent allocation - simulate human point-by-point clicking."""
+        import random
+        result = {t: 0 for t in talents}
+        remaining = self.talent_points
+        
+        # Get talents that require all others to be maxed first
+        requires_all_maxed = getattr(self.hunter_class, 'talent_requires_all_maxed', [])
+        
+        while remaining > 0:
+            # Check if all normal talents are maxed
+            all_normal_maxed = all(
+                result[t] >= int(max_levels[t]) 
+                for t in talents 
+                if t not in requires_all_maxed and t != 'unknown_talent' and max_levels[t] != float('inf')
+            )
+            
+            valid_talents = []
+            for t in talents:
+                if t == 'unknown_talent':
+                    continue
+                if max_levels[t] != float('inf') and result[t] >= int(max_levels[t]):
+                    continue  # Already maxed
+                # If this talent requires all others maxed, only allow if they are
+                if t in requires_all_maxed and not all_normal_maxed:
+                    continue
+                valid_talents.append(t)
+            
+            if not valid_talents:
+                if 'unknown_talent' in talents:
+                    valid_talents = ['unknown_talent']
+                else:
+                    break
+            
+            chosen = random.choice(valid_talents)
+            result[chosen] += 1
+            remaining -= 1
+        
+        return result
+    
+    def _can_unlock_attribute(self, attr: str, current_allocation: Dict[str, int], costs: Dict[str, int]) -> bool:
+        """Check if an attribute can be unlocked based on point gates."""
+        point_gates = getattr(self.hunter_class, 'attribute_point_gates', {})
+        
+        if attr not in point_gates:
+            return True
+        
+        required_points = point_gates[attr]
+        points_spent = sum(
+            current_allocation.get(other_attr, 0) * costs[other_attr]
+            for other_attr in current_allocation
+            if other_attr != attr
+        )
+        
+        return points_spent >= required_points
+    
+    def _random_walk_attr_allocation(self, attrs, costs, max_levels) -> Dict[str, int]:
+        """True random walk attribute allocation - simulate human point-by-point clicking."""
+        import random
+        result = {a: 0 for a in attrs}
+        remaining = self.attribute_points
+        
+        deps = getattr(self.hunter_class, 'attribute_dependencies', {})
+        exclusions = getattr(self.hunter_class, 'attribute_exclusions', [])
+        
+        max_iterations = 10000
+        iteration = 0
+        stuck_count = 0
+        while remaining > 0 and iteration < max_iterations:
+            iteration += 1
+            valid_attrs = []
+            for attr in attrs:
+                cost = costs[attr]
+                if cost > remaining:
+                    continue
+                if max_levels[attr] == float('inf'):
+                    pass
+                else:
+                    max_lvl = int(max_levels[attr])
+                    if result[attr] >= max_lvl:
+                        continue
+                if attr in deps:
+                    can_use = all(result.get(req_attr, 0) >= req_level 
+                                 for req_attr, req_level in deps[attr].items())
+                    if not can_use:
+                        continue
+                if not self._can_unlock_attribute(attr, result, costs):
+                    continue
+                excluded = False
+                for excl_pair in exclusions:
+                    if attr in excl_pair:
+                        other = excl_pair[0] if excl_pair[1] == attr else excl_pair[1]
+                        if result.get(other, 0) > 0:
+                            excluded = True
+                            break
+                if excluded:
+                    continue
+                valid_attrs.append(attr)
+            
+            if not valid_attrs:
+                stuck_count += 1
+                if stuck_count >= 3:
+                    unlimited_attrs = [a for a in attrs if costs[a] <= remaining]
+                    while remaining > 0 and unlimited_attrs:
+                        chosen = random.choice(unlimited_attrs)
+                        result[chosen] += 1
+                        remaining -= costs[chosen]
+                    break
+            else:
+                stuck_count = 0
+            
+            if valid_attrs:
+                chosen = random.choice(valid_attrs)
+                result[chosen] += 1
+                remaining -= costs[chosen]
+        
+        total_spent = sum(result[attr] * costs[attr] for attr in result)
+        if total_spent > self.attribute_points:
+            return {a: 0 for a in attrs}
+        
+        return result
+
+
+# Import simulation worker for isolated process execution
+from sim_worker import SimulationWorker
 
 
 # Path to IRL Builds folder
@@ -59,8 +334,8 @@ IRL_BUILDS_PATH = Path(__file__).parent / "IRL Builds"
 # Path to global bonuses config file
 GLOBAL_BONUSES_FILE = IRL_BUILDS_PATH / "global_bonuses.json"
 
-# Path to assets folder (portraits are in parent directory)
-ASSETS_PATH = Path(__file__).parent.parent  # Parent of hunter-sim folder
+# Path to assets folder (in same directory as this file)
+ASSETS_PATH = Path(__file__).parent / "assets"
 
 # Hunter color themes and portraits
 HUNTER_COLORS = {
@@ -70,7 +345,7 @@ HUNTER_COLORS = {
         "dark": "#721C24",         # Dark red
         "text": "#FFFFFF",         # White text on dark
         "bg": "#FFF5F5",           # Very light red background
-        "portrait": "hunter_borge-GMACLV3e.png",
+        "portrait": "borge.png",
     },
     "Knox": {
         "primary": "#0D6EFD",      # Blue
@@ -78,7 +353,7 @@ HUNTER_COLORS = {
         "dark": "#084298",         # Dark blue
         "text": "#FFFFFF",         # White text on dark
         "bg": "#F0F7FF",           # Very light blue background
-        "portrait": "hunter_knox-DfvSfjhv.png",
+        "portrait": "knox.png",
     },
     "Ozzy": {
         "primary": "#198754",      # Green
@@ -86,13 +361,264 @@ HUNTER_COLORS = {
         "dark": "#0F5132",         # Dark green
         "text": "#FFFFFF",         # White text on dark
         "bg": "#F0FFF4",           # Very light green background
-        "portrait": "hunter_ozzy-BYN3S8hK.png",
+        "portrait": "ozzy.png",
     },
 }
 
 
+# ============================================================================
+# UPGRADE COST CALCULATION FUNCTIONS
+# ============================================================================
+# Ported from the WASM JavaScript implementation
+# Calculates resource costs for upgrading each stat at a given level
+
+def calculate_upgrade_cost(stat: str, level: int, hunter: str) -> int:
+    """
+    Calculate the resource cost to upgrade a stat from (level-1) to level.
+    
+    Args:
+        stat: The stat key (hp, power, regen, damage_reduction, evade_chance, 
+              effect_chance, special_chance, special_damage, speed)
+        level: The target level (we're calculating cost to reach this level)
+        hunter: Hunter name (Borge, Ozzy, Knox)
+    
+    Returns:
+        The resource cost for this upgrade
+    """
+    if level <= 0:
+        return 0
+    
+    n = level - 1  # Formula uses 0-based index
+    hunter_lower = hunter.lower()
+    
+    # Map our stat names to WASM stat names
+    stat_map = {
+        "hp": "hp",
+        "power": "atk",
+        "regen": "regen",
+        "damage_reduction": "dr",
+        "evade_chance": "evade",
+        "block_chance": "block",  # Knox uses block instead of evade
+        "effect_chance": "effect",
+        "special_chance": "critchance",  # Maps to crit/multi/charge
+        "special_damage": "critpower",   # Maps to critpower/multipower/chargeGain
+        "speed": "atkspeed",
+        # Knox-specific
+        "charge_chance": "charge",
+        "charge_gained": "chargeGain",
+        "reload_time": "reload",
+        "projectiles_per_salvo": "proj",
+    }
+    
+    wasm_stat = stat_map.get(stat, stat)
+    
+    # HP cost formula
+    if wasm_stat == "hp":
+        if hunter_lower == "knox":
+            t = min(n, 110)
+            return math.ceil(1 * pow(1.054 + 0.00027 * t, n))
+        elif hunter_lower == "ozzy":
+            e = min(n, 130)
+            return math.ceil(2 * pow(1.061 + 0.000285 * e, n))
+        else:  # Borge
+            r = min(n, 130)
+            return math.ceil(pow(1.061 + 0.00028 * r, n))
+    
+    # ATK/Power cost formula
+    elif wasm_stat == "atk":
+        if hunter_lower == "knox":
+            t = min(n, 100)
+            return math.ceil(2 * pow(1.068 + 0.00027 * t, n))
+        elif hunter_lower == "ozzy":
+            e = min(n, 120)
+            return math.ceil(3 * pow(1.076 + 0.000285 * e, n))
+        else:  # Borge
+            r = min(n, 120)
+            return math.ceil(3 * pow(1.082 + 0.00028 * r, n))
+    
+    # Regen cost formula
+    elif wasm_stat == "regen":
+        if hunter_lower == "knox":
+            t = min(n, 70)
+            return math.ceil(4 * pow(1.09 + 0.00027 * t, n))
+        elif hunter_lower == "ozzy":
+            e = min(n, 80)
+            return math.ceil(5 * pow(1.11 + 0.000285 * e, n))
+        else:  # Borge
+            r = min(n, 65)
+            return math.ceil(6 * pow(1.143 + 0.000278 * r, n))
+    
+    # DR cost formula (expensive!)
+    elif wasm_stat == "dr":
+        if hunter_lower == "knox":
+            base = math.ceil(2 * pow(0.008 * n + 1.12, n))
+            mult = (pow(1.2, max(n - 9, 0)) * pow(1.5, max(n - 19, 0)) * 
+                    pow(2, max(n - 29, 0)) * pow(3, max(n - 34, 0)) * 
+                    pow(4, max(n - 39, 0)))
+            return math.ceil(0.9 * base * mult)
+        elif hunter_lower == "ozzy":
+            base = math.ceil(3 * pow(0.024 * n + 1.17, n))
+            mult = (pow(3, max(n - 34, 0)) * pow(4, max(n - 35, 0)) * 
+                    pow(6, max(n - 36, 0)) * pow(8, max(n - 37, 0)) * 
+                    pow(100, max(n - 38, 0)))
+            return math.ceil(base * mult)
+        else:  # Borge
+            base = math.ceil(5 * pow(0.024 * n + 1.17, n))
+            mult = (pow(3, max(n - 34, 0)) * pow(4, max(n - 35, 0)) * 
+                    pow(6, max(n - 36, 0)) * pow(8, max(n - 37, 0)) * 
+                    pow(100, max(n - 38, 0)))
+            return math.ceil(base * mult)
+    
+    # Evade/Block cost formula
+    elif wasm_stat in ("evade", "block"):
+        if hunter_lower == "knox":
+            base = math.ceil(3 * pow(0.028 * n + 1.18, n))
+            mult = (pow(1.2, max(n - 9, 0)) * pow(1.5, max(n - 19, 0)) * 
+                    pow(2, max(n - 29, 0)) * pow(3, max(n - 34, 0)) * 
+                    pow(4, max(n - 39, 0)) * pow(5, max(n - 44, 0)))
+            return math.ceil(0.9 * base * mult)
+        elif hunter_lower == "ozzy":
+            base = math.ceil(5 * pow(0.028 * n + 1.3, n))
+            mult = (pow(2, max(n - 34, 0)) * pow(3, max(n - 35, 0)) * 
+                    pow(4, max(n - 36, 0)) * pow(5, max(n - 37, 0)) * 
+                    pow(10, max(n - 38, 0)))
+            return math.ceil(base * mult)
+        else:  # Borge
+            base = math.ceil(pow(0.015 * n + 1.23, n))
+            mult = (pow(1.5, max(n - 39, 0)) * pow(2, max(n - 41, 0)) * 
+                    pow(2.5, max(n - 43, 0)) * pow(3, max(n - 45, 0)) * 
+                    pow(10, max(n - 47, 0)))
+            return 10 * math.ceil(base * mult)
+    
+    # Effect chance cost formula
+    elif wasm_stat == "effect":
+        if hunter_lower == "knox":
+            base = math.ceil(50 * pow(0.018 * n + 1.2, n))
+            mult = (pow(1.2, max(n - 9, 0)) * pow(1.5, max(n - 19, 0)) * 
+                    pow(2, max(n - 29, 0)) * pow(3, max(n - 34, 0)) * 
+                    pow(4, max(n - 39, 0)) * pow(5, max(n - 44, 0)))
+            return math.ceil(0.9 * base * mult)
+        elif hunter_lower == "ozzy":
+            base = math.ceil(7 * pow(0.018 * n + 1.22, n))
+            mult = (pow(1.5, max(n - 39, 0)) * pow(2, max(n - 41, 0)) * 
+                    pow(2.5, max(n - 43, 0)) * pow(3, max(n - 45, 0)) * 
+                    pow(10, max(n - 47, 0)))
+            return math.ceil(base * mult)
+        else:  # Borge
+            base = math.ceil(3 * pow(0.0095 * n + 1.32, n))
+            mult = (pow(1.5, max(n - 39, 0)) * pow(2, max(n - 41, 0)) * 
+                    pow(2.5, max(n - 43, 0)) * pow(3, max(n - 45, 0)) * 
+                    pow(10, max(n - 47, 0)))
+            return 10 * math.ceil(base * mult)
+    
+    # Crit/Multi/Charge chance cost formula
+    elif wasm_stat in ("critchance", "multichance", "charge"):
+        if hunter_lower == "knox":
+            base = math.ceil(1 * pow(0.016 * n + 1.18, n))
+            mult = (pow(1.05, max(n - 9, 0)) * pow(1.05, max(n - 19, 0)) * 
+                    pow(1.2, max(n - 29, 0)) * pow(1.3, max(n - 39, 0)) * 
+                    pow(1.4, max(n - 49, 0)) * pow(1.5, max(n - 59, 0)))
+            return math.ceil(0.9 * base * mult)
+        elif hunter_lower == "ozzy":
+            base = math.ceil(1 * pow(0.016 * n + 1.18, n))
+            mult = (pow(1.05, max(n - 59, 0)) * pow(1.2, max(n - 69, 0)) * 
+                    pow(1.3, max(n - 79, 0)) * pow(1.4, max(n - 89, 0)))
+            return 10 * math.ceil(base * mult)
+        else:  # Borge
+            base = math.ceil(5 * pow(0.004 * n + 1.19, n))
+            mult = (pow(1.05, max(n - 59, 0)) * pow(1.2, max(n - 69, 0)) * 
+                    pow(1.3, max(n - 79, 0)) * pow(1.4, max(n - 89, 0)))
+            return math.ceil(base * mult)
+    
+    # Crit/Multi power or Charge gained cost formula
+    elif wasm_stat in ("critpower", "multipower", "chargeGain"):
+        if hunter_lower == "knox":
+            base = math.ceil(1 * pow(0.025 * n + 1.35, n))
+            mult = (pow(1.05, max(n - 9, 0)) * pow(1.05, max(n - 19, 0)) * 
+                    pow(1.2, max(n - 29, 0)) * pow(1.3, max(n - 39, 0)) * 
+                    pow(1.4, max(n - 49, 0)) * pow(1.5, max(n - 59, 0)))
+            return math.ceil(0.9 * base * mult)
+        elif hunter_lower == "ozzy":
+            base = math.ceil(1.1 * pow(0.025 * n + 1.4, n))
+            mult = (pow(1.1, max(n - 59, 0)) * pow(1.2, max(n - 69, 0)) * 
+                    pow(1.3, max(n - 79, 0)) * pow(1.4, max(n - 89, 0)))
+            return 10 * math.ceil(base * mult)
+        else:  # Borge
+            base = math.ceil(1 * pow(0.025 * n + 1.35, n))
+            mult = (pow(1.05, max(n - 59, 0)) * pow(1.2, max(n - 69, 0)) * 
+                    pow(1.3, max(n - 79, 0)) * pow(1.4, max(n - 89, 0)))
+            return math.ceil(base * mult)
+    
+    # ATK Speed / Reload cost formula
+    elif wasm_stat in ("atkspeed", "reload"):
+        if hunter_lower == "knox":
+            base = math.ceil(2 * pow(0.035 * n + 1.24, n))
+            mult = (pow(1.02, max(n - 9, 0)) * pow(1.05, max(n - 19, 0)) * 
+                    pow(1.2, max(n - 29, 0)) * pow(1.3, max(n - 39, 0)) * 
+                    pow(1.4, max(n - 49, 0)) * pow(1.5, max(n - 59, 0)) * 
+                    pow(1.6, max(n - 69, 0)) * pow(1.7, max(n - 79, 0)) * 
+                    pow(1.8, max(n - 89, 0)))
+            return math.ceil(0.9 * base * mult)
+        elif hunter_lower == "ozzy":
+            base = math.ceil(1.2 * pow(0.035 * n + 1.24, n))
+            mult = (pow(1.06, max(n - 39, 0)) * pow(1.07, max(n - 49, 0)) * 
+                    pow(1.08, max(n - 59, 0)) * pow(1.1, max(n - 69, 0)))
+            return 10 * math.ceil(base * mult)
+        else:  # Borge
+            base = math.ceil(pow(0.032 * n + 1.21, n))
+            mult = (pow(1.05, max(n - 39, 0)) * pow(1.06, max(n - 49, 0)) * 
+                    pow(1.07, max(n - 59, 0)) * pow(1.08, max(n - 69, 0)))
+            return math.ceil(base * mult * 10)
+    
+    # Default fallback
+    return 0
+
+
+def get_stat_resource_type(stat: str, hunter: str) -> str:
+    """
+    Get the resource type (common/uncommon/rare) for a given stat.
+    
+    Returns: "common", "uncommon", or "rare"
+    """
+    # Common stats (Obsidian/Farahyte/Glacium)
+    common_stats = ["hp", "power", "regen"]
+    
+    # Uncommon stats (Behlium/Galvarium/Quartz)
+    uncommon_stats = ["damage_reduction", "evade_chance", "block_chance", "effect_chance"]
+    
+    # Rare stats (Hellish-Biomatter/Vectid/Tesseracts)
+    rare_stats = ["special_chance", "special_damage", "speed", 
+                  "charge_chance", "charge_gained", "reload_time", "projectiles_per_salvo"]
+    
+    if stat in common_stats:
+        return "common"
+    elif stat in uncommon_stats:
+        return "uncommon"
+    else:
+        return "rare"
+
+
+def format_cost(cost: int) -> str:
+    """Format a cost number with K/M/B suffixes for readability."""
+    if cost < 1000:
+        return str(cost)
+    elif cost < 1_000_000:
+        return f"{cost / 1000:.1f}K"
+    elif cost < 1_000_000_000:
+        return f"{cost / 1_000_000:.2f}M"
+    elif cost < 1_000_000_000_000:
+        return f"{cost / 1_000_000_000:.2f}B"
+    else:
+        return f"{cost / 1_000_000_000_000:.2f}T"
+
+
 class HunterTab:
     """Manages a single hunter's tab with sub-tabs for Build, Run, and Results."""
+    
+    # Dark mode colors (matching MultiHunterGUI)
+    DARK_BG = "#1a1a2e"
+    DARK_BG_SECONDARY = "#16213e"
+    DARK_TEXT = "#e0e0e0"
     
     def __init__(self, parent_notebook: ttk.Notebook, hunter_name: str, hunter_class, app: 'MultiHunterGUI'):
         self.hunter_name = hunter_name
@@ -124,6 +650,10 @@ class HunterTab:
         self.stop_event = threading.Event()
         self.optimization_start_time = 0
         
+        # Simulation worker - created lazily when optimization starts
+        self.sim_worker = None
+        self.pending_simulations = {}  # task_id -> metadata
+        
         # Best tracking
         self.best_max_stage = 0
         self.best_avg_stage = 0.0
@@ -146,6 +676,11 @@ class HunterTab:
         self.irl_max_stage = tk.IntVar(value=0)
         self.irl_baseline_result = None  # Stores sim result for user's current build
         
+        # Generation history - tracks top 10 builds per tier during progressive evolution
+        # Each entry: {'tier_pct': float, 'tier_idx': int, 'talent_pts': int, 'attr_pts': int, 'builds': list}
+        self.generation_history: List[Dict] = []
+        self.generation_tabs: Dict[int, scrolledtext.ScrolledText] = {}
+        
         # Pre-initialize variables that may be accessed before lazy loading
         self.num_sims = tk.IntVar(value=100)
         self.builds_per_tier = tk.IntVar(value=10)
@@ -159,6 +694,7 @@ class HunterTab:
         self.run_frame = None
         self.advisor_frame = None
         self.results_frame = None
+        self.generations_frame = None
         self.log_text = None  # Will be created in lazy loading
         
         # Show loading placeholder
@@ -212,16 +748,19 @@ class HunterTab:
         self.run_frame = ttk.Frame(self.sub_notebook)
         self.advisor_frame = ttk.Frame(self.sub_notebook)
         self.results_frame = ttk.Frame(self.sub_notebook)
+        self.generations_frame = ttk.Frame(self.sub_notebook)
         
         self.sub_notebook.add(self.build_frame, text="📝 Build")
         self.sub_notebook.add(self.run_frame, text="🚀 Run")
         self.sub_notebook.add(self.advisor_frame, text="🎯 Advisor")
         self.sub_notebook.add(self.results_frame, text="🏆 Best")
+        self.sub_notebook.add(self.generations_frame, text="📊 Generations")
         
         self._create_build_tab()
         self._create_run_tab()
         self._create_advisor_tab()
         self._create_results_tab()
+        self._create_generations_tab()
         
         # Try to auto-load IRL build
         self._auto_load_build()
@@ -509,6 +1048,44 @@ class HunterTab:
         self._auto_save_build()
         messagebox.showinfo("Saved", f"{self.hunter_name} build saved to IRL Builds folder!")
     
+    def _create_section_frame(self, parent, title: str, emoji: str, color: str = None) -> ttk.Frame:
+        """Create a colorful section with header banner and content frame."""
+        # Container for the whole section
+        container = ttk.Frame(parent)
+        
+        # Colorful header banner
+        if color is None:
+            color = self.colors["primary"]
+        
+        header = tk.Frame(container, bg=color, height=28)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        header_label = tk.Label(header, text=f"{emoji} {title}", 
+                                font=('Arial', 10, 'bold'), fg="white", bg=color)
+        header_label.pack(side=tk.LEFT, padx=10)
+        
+        # Content frame - use tk.Frame with dark background for proper dark mode
+        content = tk.Frame(container, bg=self.DARK_BG)
+        content.pack(fill=tk.BOTH, expand=True, padx=1, pady=(0, 1))
+        
+        return container, content
+    
+    def _dark_label(self, parent, text: str, fg: str = None, **kwargs) -> tk.Label:
+        """Create a tk.Label with dark mode colors."""
+        if fg is None:
+            fg = self.DARK_TEXT
+        return tk.Label(parent, text=text, fg=fg, bg=self.DARK_BG, **kwargs)
+    
+    def _get_stat_color(self, stat_key: str) -> str:
+        """Get the color for a stat based on its resource type."""
+        resource_type = get_stat_resource_type(stat_key, self.hunter_name)
+        colors = {
+            "common": "#22c55e",    # Green (Obsidian)
+            "uncommon": "#3b82f6",  # Blue (Behlium)  
+            "rare": "#f97316",      # Orange (Hellish-Biomatter)
+        }
+        return colors.get(resource_type, "#888888")
+    
     def _populate_build_fields(self):
         """Populate the build configuration fields in a 2-column layout."""
         dummy = self.hunter_class.load_dummy()
@@ -520,9 +1097,11 @@ class HunterTab:
         # === LEFT COLUMN (column 0) ===
         left_row = 0
         
-        # Stats Section (LEFT)
-        stats_frame = ttk.LabelFrame(self.scrollable_frame, text="📊 Main Stats (Upgrade LEVELS)")
-        stats_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
+        # Stats Section (LEFT) - with colorful header
+        stats_container, stats_frame = self._create_section_frame(
+            self.scrollable_frame, "Main Stats (Upgrade LEVELS)", "📊"
+        )
+        stats_container.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
         left_row += 1
         
         if self.hunter_name == "Knox":
@@ -531,7 +1110,7 @@ class HunterTab:
                 "damage_reduction": "DR", "block_chance": "Block",
                 "effect_chance": "Effect", "charge_chance": "Charge",
                 "charge_gained": "Charge Gain", "reload_time": "Reload",
-                "projectiles_per_salvo": "Projectiles"
+                "projectiles_per_salvo": "Proj. Upgrades"
             }
         else:
             stat_names = {
@@ -543,33 +1122,52 @@ class HunterTab:
         
         for i, (stat_key, stat_label) in enumerate(stat_names.items()):
             r, c = divmod(i, 3)  # 3 columns for stats
-            frame = ttk.Frame(stats_frame)
-            frame.grid(row=r, column=c, padx=4, pady=1, sticky="w")
-            ttk.Label(frame, text=f"{stat_label}:", width=12).pack(side=tk.LEFT)
+            frame = tk.Frame(stats_frame, bg=self.DARK_BG)
+            frame.grid(row=r, column=c, padx=4, pady=2, sticky="w")
+            # Colored label based on resource type
+            stat_color = self._get_stat_color(stat_key)
+            label = tk.Label(frame, text=f"{stat_label}:", width=12, anchor="w",
+                           fg=stat_color, bg=self.DARK_BG, font=('Arial', 9, 'bold'))
+            label.pack(side=tk.LEFT)
             entry = ttk.Entry(frame, width=5)
             entry.insert(0, "0")
             entry.bind('<FocusOut>', lambda e: self._auto_save_build())
             entry.pack(side=tk.LEFT)
+            # Add max level indicator for projectiles (max 5 upgrades)
+            if stat_key == "projectiles_per_salvo":
+                tk.Label(frame, text="/5", width=3, fg="#b0b0b0", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             self.stat_entries[stat_key] = entry
         
-        # Talents Section (LEFT)
-        talents_frame = ttk.LabelFrame(self.scrollable_frame, text="⭐ Talents")
-        talents_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
+        # Add resource type legend with actual resource names
+        res_common, res_uncommon, res_rare = self._get_resource_names()
+        legend_frame = tk.Frame(stats_frame, bg=self.DARK_BG)
+        legend_frame.grid(row=10, column=0, columnspan=3, pady=(8, 2), sticky="w")
+        tk.Label(legend_frame, text="Resource:", font=('Arial', 8), fg="#888888", bg=self.DARK_BG).pack(side=tk.LEFT, padx=(4, 8))
+        tk.Label(legend_frame, text=f"● {res_common}", font=('Arial', 8, 'bold'), fg="#22c55e", bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
+        tk.Label(legend_frame, text=f"● {res_uncommon}", font=('Arial', 8, 'bold'), fg="#3b82f6", bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
+        tk.Label(legend_frame, text=f"● {res_rare}", font=('Arial', 8, 'bold'), fg="#f97316", bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
+        
+        # Talents Section (LEFT) - with colorful header
+        talents_container, talents_frame = self._create_section_frame(
+            self.scrollable_frame, "Talents", "⭐", "#9333ea"  # Purple
+        )
+        talents_container.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
         left_row += 1
         
         # Get max levels from hunter's costs
         hunter_costs = self._get_hunter_costs()
         
         talent_items = list(dummy.get("talents", {}).items())
-        num_talent_cols = 3
+        num_talent_cols = 2  # 2 columns for better readability
         for i, (talent_key, talent_val) in enumerate(talent_items):
             r, c = divmod(i, num_talent_cols)
-            frame = ttk.Frame(talents_frame)
-            frame.grid(row=r, column=c, padx=2, pady=1, sticky="w")
+            frame = tk.Frame(talents_frame, bg=self.DARK_BG)
+            frame.grid(row=r, column=c, padx=2, pady=2, sticky="w")
             label = talent_key.replace("_", " ").title()
-            if len(label) > 18:
-                label = label[:17] + "…"
-            ttk.Label(frame, text=f"{label}:", width=18).pack(side=tk.LEFT)
+            if len(label) > 22:
+                label = label[:21] + "…"
+            tk.Label(frame, text=f"{label}:", width=22, anchor="w",
+                    fg="#a855f7", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             entry = ttk.Entry(frame, width=3)
             entry.insert(0, "0")
             entry.bind('<FocusOut>', lambda e: self._auto_save_build())
@@ -577,53 +1175,51 @@ class HunterTab:
             # Show max level
             max_lvl = hunter_costs.get("talents", {}).get(talent_key, {}).get("max", "?")
             max_text = "∞" if max_lvl == float("inf") else str(max_lvl)
-            ttk.Label(frame, text=f"/{max_text}", width=4).pack(side=tk.LEFT)
+            tk.Label(frame, text=f"/{max_text}", width=4, fg="#b0b0b0", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             self.talent_entries[talent_key] = entry
         
-        # Inscryptions Section (LEFT)
-        inscr_frame = ttk.LabelFrame(self.scrollable_frame, text="📜 Inscryptions")
-        inscr_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
+        # Inscryptions Section (LEFT) - with colorful header
+        inscr_container, inscr_frame = self._create_section_frame(
+            self.scrollable_frame, "Inscryptions", "📜", "#0891b2"  # Cyan
+        )
+        inscr_container.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
         left_row += 1
         
         inscr_tooltips = self._get_inscryption_tooltips()
         for i, (inscr_key, inscr_val) in enumerate(dummy.get("inscryptions", {}).items()):
-            r, c = divmod(i, 3)  # 3 columns
-            frame = ttk.Frame(inscr_frame)
-            frame.grid(row=r, column=c, padx=2, pady=1, sticky="w")
+            r, c = divmod(i, 2)  # 2 columns
+            frame = tk.Frame(inscr_frame, bg=self.DARK_BG)
+            frame.grid(row=r, column=c, padx=2, pady=2, sticky="w")
             tooltip = inscr_tooltips.get(inscr_key, inscr_key.upper())
-            ttk.Label(frame, text=f"{inscr_key} ({tooltip}):", width=16).pack(side=tk.LEFT)
+            tk.Label(frame, text=f"{inscr_key} ({tooltip}):", width=18, anchor="w",
+                    fg="#06b6d4", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             entry = ttk.Entry(frame, width=3)
             entry.insert(0, "0")
             entry.bind('<FocusOut>', lambda e: self._auto_save_build())
             entry.pack(side=tk.LEFT)
+            # Max level for inscryptions is 10
+            tk.Label(frame, text="/10", width=3, fg="#b0b0b0", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             self.inscryption_entries[inscr_key] = entry
-        
-        # Relics Note (LEFT) - Relics are now in the Control tab
-        relics_note_frame = ttk.LabelFrame(self.scrollable_frame, text="🏆 Relics")
-        relics_note_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
-        left_row += 1
-        
-        note_label = ttk.Label(relics_note_frame, 
-                              text="ℹ️ Relics are shared across all hunters.\n   Set them in the Control tab.",
-                              font=('Arial', 9), foreground='gray')
-        note_label.pack(padx=10, pady=10)
         
         # === RIGHT COLUMN (column 1) ===
         right_row = 0
         
-        # Attributes Section (RIGHT)
-        attrs_frame = ttk.LabelFrame(self.scrollable_frame, text="🔮 Attributes")
-        attrs_frame.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
+        # Attributes Section (RIGHT) - with colorful header
+        attrs_container, attrs_frame = self._create_section_frame(
+            self.scrollable_frame, "Attributes", "🔮", "#dc2626"  # Red
+        )
+        attrs_container.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
         right_row += 1
         
         attr_items = list(dummy.get("attributes", {}).items())
-        num_attr_cols = 3
+        num_attr_cols = 2  # 2 columns for better readability
         for i, (attr_key, attr_val) in enumerate(attr_items):
             r, c = divmod(i, num_attr_cols)
-            frame = ttk.Frame(attrs_frame)
-            frame.grid(row=r, column=c, padx=2, pady=1, sticky="w")
+            frame = tk.Frame(attrs_frame, bg=self.DARK_BG)
+            frame.grid(row=r, column=c, padx=2, pady=2, sticky="w")
             label = self._format_attribute_label(attr_key)
-            ttk.Label(frame, text=f"{label}:", width=18).pack(side=tk.LEFT)
+            tk.Label(frame, text=f"{label}:", width=22, anchor="w",
+                    fg="#ef4444", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             entry = ttk.Entry(frame, width=3)
             entry.insert(0, "0")
             entry.bind('<FocusOut>', lambda e: self._auto_save_build())
@@ -631,26 +1227,19 @@ class HunterTab:
             # Show max level
             max_lvl = hunter_costs.get("attributes", {}).get(attr_key, {}).get("max", "?")
             max_text = "∞" if max_lvl == float("inf") else str(max_lvl)
-            ttk.Label(frame, text=f"/{max_text}", width=4).pack(side=tk.LEFT)
+            tk.Label(frame, text=f"/{max_text}", width=4, fg="#b0b0b0", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             self.attribute_entries[attr_key] = entry
         
-        # Gems Section (RIGHT)
-        gems_frame = ttk.LabelFrame(self.scrollable_frame, text="💎 Gems")
-        gems_frame.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
+        # Mods Section (RIGHT) - with colorful header
+        # Always create Mods section for consistent layout across all hunters
+        mods_container, mods_frame = self._create_section_frame(
+            self.scrollable_frame, "Mods", "⚙️", "#64748b"  # Slate gray
+        )
+        mods_container.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
         right_row += 1
         
-        # Gems are now in the Control tab - show note
-        note_label = ttk.Label(gems_frame, 
-                              text="ℹ️ Gems are shared across all hunters.\n   Set them in the Control tab.",
-                              font=('Arial', 9), foreground='gray')
-        note_label.pack(padx=10, pady=10)
-        
-        # Mods Section (RIGHT)
+        # Only populate if hunter has mods
         if dummy.get("mods"):
-            mods_frame = ttk.LabelFrame(self.scrollable_frame, text="⚙️ Mods")
-            mods_frame.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
-            right_row += 1
-            
             for i, (mod_key, mod_val) in enumerate(dummy.get("mods", {}).items()):
                 var = tk.BooleanVar(value=False)
                 label = mod_key.replace("_", " ").title()
@@ -658,11 +1247,17 @@ class HunterTab:
                                      command=self._auto_save_build)
                 cb.grid(row=i // 2, column=i % 2, padx=10, pady=5, sticky="w")
                 self.mod_vars[mod_key] = var
+        else:
+            # Show a message for hunters without mods
+            tk.Label(mods_frame, text="No mods available for this hunter",
+                    fg="#888888", bg=self.DARK_BG, font=('Arial', 9, 'italic')).pack(padx=10, pady=10)
         
-        # Gadgets Section (LEFT - after Relics) - Each hunter has their own gadget
-        gadgets_frame = ttk.LabelFrame(self.scrollable_frame, text="🔧 Gadget")
-        gadgets_frame.grid(row=left_row, column=0, sticky="nsew", padx=(10, 5), pady=5)
-        left_row += 1
+        # Gadgets Section (RIGHT - after Mods/Attributes) - with colorful header
+        gadgets_container, gadgets_frame = self._create_section_frame(
+            self.scrollable_frame, "Gadget", "🔧", "#f59e0b"  # Amber
+        )
+        gadgets_container.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
+        right_row += 1
         
         # Each hunter has exactly one gadget
         hunter_gadgets = {
@@ -671,24 +1266,15 @@ class HunterTab:
             "Knox": ("anchor_of_ages", "Anchor of Ages"),
         }
         gadget_key, gadget_label = hunter_gadgets[self.hunter_name]
-        frame = ttk.Frame(gadgets_frame)
-        frame.grid(row=0, column=0, padx=4, pady=1, sticky="w")
-        ttk.Label(frame, text=f"{gadget_label}:", width=14).pack(side=tk.LEFT)
+        frame = tk.Frame(gadgets_frame, bg=self.DARK_BG)
+        frame.grid(row=0, column=0, padx=4, pady=2, sticky="w")
+        tk.Label(frame, text=f"{gadget_label}:", width=16, anchor="w",
+                fg="#fbbf24", bg=self.DARK_BG, font=('Arial', 9, 'bold')).pack(side=tk.LEFT)
         entry = ttk.Entry(frame, width=4)
         entry.insert(0, "0")
         entry.bind('<FocusOut>', lambda e: self._auto_save_build())
         entry.pack(side=tk.LEFT)
         self.gadget_entries[gadget_key] = entry
-        
-        # Note about Global Bonuses (RIGHT - after Mods)
-        bonuses_note_frame = ttk.LabelFrame(self.scrollable_frame, text="💎 Global Bonuses")
-        bonuses_note_frame.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
-        right_row += 1
-        
-        note_label = ttk.Label(bonuses_note_frame, 
-                              text="ℹ️ Bonuses are shared across all hunters.\n   Set them in the Control tab.",
-                              font=('Arial', 9), foreground='gray')
-        note_label.pack(padx=10, pady=10)
     
     def _get_inscryption_tooltips(self) -> Dict[str, str]:
         """Get tooltip descriptions for inscryptions."""
@@ -792,6 +1378,8 @@ class HunterTab:
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         # Style the internal frame
         self.log_text.configure(background='#1e1e2e')
+        # Configure text tags for colorful log output
+        self._configure_text_tags(self.log_text)
     
     def _create_advisor_tab(self):
         """Create the Upgrade Advisor sub-tab."""
@@ -858,6 +1446,9 @@ class HunterTab:
             relief=tk.FLAT, borderwidth=0
         )
         self.advisor_results.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Configure text tags for colorful output
+        self._configure_text_tags(self.advisor_results)
     
     def _run_upgrade_advisor(self):
         """Run the upgrade advisor analysis."""
@@ -907,7 +1498,8 @@ class HunterTab:
                     text=f"Testing +1 {s}... ({i+1}/{len(stat_keys)})"))
                 
                 test_config = copy.deepcopy(base_config)
-                test_config["stats"][stat] = test_config["stats"].get(stat, 0) + 1
+                current_level = test_config["stats"].get(stat, 0)
+                test_config["stats"][stat] = current_level + 1
                 
                 if use_rust:
                     result = self._simulate_build_rust(test_config, num_sims)
@@ -931,13 +1523,25 @@ class HunterTab:
                         survival_improvement * 2   # Survival is good
                     )
                     
+                    # Calculate upgrade cost (cost to go from current_level to current_level + 1)
+                    upgrade_cost = calculate_upgrade_cost(stat, current_level + 1, self.hunter_name)
+                    resource_type = get_stat_resource_type(stat, self.hunter_name)
+                    
+                    # Calculate efficiency (score per unit cost)
+                    # Higher efficiency = more bang for your buck
+                    efficiency = score / max(upgrade_cost, 1) * 1000  # Scale for readability
+                    
                     results.append({
                         "stat": stat,
+                        "current_level": current_level,
                         "stage_improvement": stage_improvement,
                         "loot_improvement": loot_improvement,
                         "damage_taken_change": damage_taken_improvement,
                         "survival_improvement": survival_improvement,
                         "score": score,
+                        "cost": upgrade_cost,
+                        "resource_type": resource_type,
+                        "efficiency": efficiency,
                         "result": result
                     })
             
@@ -1004,8 +1608,43 @@ class HunterTab:
         else:  # Borge
             return ("Obsidian", "Behlium", "Hellish-Biomatter")
     
+    def _configure_text_tags(self, text_widget):
+        """Configure colorful text tags for a text widget."""
+        # Headers and dividers
+        text_widget.tag_configure("header", foreground="#ffd700", font=('Consolas', 11, 'bold'))  # Gold
+        text_widget.tag_configure("subheader", foreground="#87ceeb", font=('Consolas', 10, 'bold'))  # Sky blue
+        text_widget.tag_configure("divider", foreground="#555577")  # Muted purple
+        
+        # Medals and rankings
+        text_widget.tag_configure("gold", foreground="#ffd700", font=('Consolas', 10, 'bold'))  # Gold
+        text_widget.tag_configure("silver", foreground="#c0c0c0", font=('Consolas', 10, 'bold'))  # Silver
+        text_widget.tag_configure("bronze", foreground="#cd7f32", font=('Consolas', 10, 'bold'))  # Bronze
+        text_widget.tag_configure("rank", foreground="#888899")  # Other ranks
+        
+        # Stats and numbers
+        text_widget.tag_configure("positive", foreground="#00ff88")  # Bright green - good
+        text_widget.tag_configure("negative", foreground="#ff6666")  # Red - bad
+        text_widget.tag_configure("neutral", foreground="#aaaacc")  # Light purple - neutral
+        text_widget.tag_configure("cost", foreground="#ffaa44")  # Orange - costs
+        text_widget.tag_configure("stat_name", foreground="#66ccff")  # Cyan - stat names
+        text_widget.tag_configure("level", foreground="#cc99ff")  # Light purple - levels
+        
+        # Resource types
+        text_widget.tag_configure("common", foreground="#88cc88")  # Light green
+        text_widget.tag_configure("uncommon", foreground="#8888ff")  # Light blue
+        text_widget.tag_configure("rare", foreground="#ff8844")  # Orange
+        
+        # Section titles
+        text_widget.tag_configure("section_common", foreground="#88cc88", font=('Consolas', 10, 'bold'))
+        text_widget.tag_configure("section_uncommon", foreground="#8888ff", font=('Consolas', 10, 'bold'))
+        text_widget.tag_configure("section_rare", foreground="#ff8844", font=('Consolas', 10, 'bold'))
+        
+        # Tips and info
+        text_widget.tag_configure("tip", foreground="#aaddff", font=('Consolas', 9, 'italic'))
+        text_widget.tag_configure("efficiency", foreground="#00ddaa")  # Teal - efficiency callout
+
     def _display_advisor_results(self, baseline, results):
-        """Display the upgrade advisor results grouped by resource type."""
+        """Display the upgrade advisor results with costs, efficiency, and colorful formatting."""
         self.advisor_results.configure(state=tk.NORMAL)
         self.advisor_results.delete(1.0, tk.END)
         
@@ -1020,68 +1659,193 @@ class HunterTab:
                     grouped_results[category].append(r)
                     break
         
-        text.insert(tk.END, "=" * 60 + "\n")
-        text.insert(tk.END, f"🎯 {self.hunter_name.upper()} UPGRADE ADVISOR\n")
-        text.insert(tk.END, "=" * 60 + "\n\n")
-        
-        text.insert(tk.END, "📊 BASELINE PERFORMANCE:\n")
-        text.insert(tk.END, f"   Avg Stage: {baseline.avg_final_stage:.1f}\n")
-        # Get resource names and show per-resource loot
+        # Get resource names
         res_common, res_uncommon, res_rare = self._get_resource_names()
+        
+        # ===== HEADER =====
+        text.insert(tk.END, "═" * 70 + "\n", "divider")
+        text.insert(tk.END, f"🎯 {self.hunter_name.upper()} UPGRADE ADVISOR", "header")
+        text.insert(tk.END, " (with Costs)\n", "subheader")
+        text.insert(tk.END, "═" * 70 + "\n\n", "divider")
+        
+        # ===== BASELINE =====
+        text.insert(tk.END, "📊 BASELINE PERFORMANCE\n", "subheader")
+        text.insert(tk.END, "   Avg Stage: ", "neutral")
+        text.insert(tk.END, f"{baseline.avg_final_stage:.1f}\n", "positive")
+        
         if baseline.avg_elapsed_time > 0:
             runs_per_day = (3600 / baseline.avg_elapsed_time) * 24
-            text.insert(tk.END, f"   📦 Loot/Run → Loot/Day:\n")
-            text.insert(tk.END, f"      {res_common}: {self._format_number(baseline.avg_loot_common)} → {self._format_number(baseline.avg_loot_common * runs_per_day)}\n")
-            text.insert(tk.END, f"      {res_uncommon}: {self._format_number(baseline.avg_loot_uncommon)} → {self._format_number(baseline.avg_loot_uncommon * runs_per_day)}\n")
-            text.insert(tk.END, f"      {res_rare}: {self._format_number(baseline.avg_loot_rare)} → {self._format_number(baseline.avg_loot_rare * runs_per_day)}\n")
+            text.insert(tk.END, "   📦 Loot/Run → Loot/Day:\n", "neutral")
+            text.insert(tk.END, f"      {res_common}: ", "common")
+            text.insert(tk.END, f"{self._format_number(baseline.avg_loot_common)} → {self._format_number(baseline.avg_loot_common * runs_per_day)}\n", "positive")
+            text.insert(tk.END, f"      {res_uncommon}: ", "uncommon")
+            text.insert(tk.END, f"{self._format_number(baseline.avg_loot_uncommon)} → {self._format_number(baseline.avg_loot_uncommon * runs_per_day)}\n", "positive")
+            text.insert(tk.END, f"      {res_rare}: ", "rare")
+            text.insert(tk.END, f"{self._format_number(baseline.avg_loot_rare)} → {self._format_number(baseline.avg_loot_rare * runs_per_day)}\n", "positive")
         else:
-            text.insert(tk.END, f"   Loot/Hour: {baseline.avg_loot_per_hour:.2f}\n")
-        text.insert(tk.END, f"   Dmg Dealt: {baseline.avg_damage:,.0f}\n")
-        text.insert(tk.END, f"   Dmg Taken: {baseline.avg_damage_taken:,.0f}\n")
-        text.insert(tk.END, f"   Survival: {baseline.survival_rate*100:.1f}%\n\n")
+            text.insert(tk.END, f"   Loot/Hour: {baseline.avg_loot_per_hour:.2f}\n", "neutral")
         
-        # Show best overall first
+        text.insert(tk.END, f"   Dmg Dealt: ", "neutral")
+        text.insert(tk.END, f"{baseline.avg_damage:,.0f}\n", "positive")
+        text.insert(tk.END, f"   Dmg Taken: ", "neutral")
+        text.insert(tk.END, f"{baseline.avg_damage_taken:,.0f}\n", "negative")
+        text.insert(tk.END, f"   Survival: ", "neutral")
+        survival_tag = "positive" if baseline.survival_rate >= 0.9 else "negative" if baseline.survival_rate < 0.5 else "neutral"
+        text.insert(tk.END, f"{baseline.survival_rate*100:.1f}%\n\n", survival_tag)
+        
+        # ===== BEST OVERALL =====
         if results:
             best = results[0]
-            text.insert(tk.END, "=" * 60 + "\n")
-            text.insert(tk.END, "✨ BEST OVERALL UPGRADE\n")
-            text.insert(tk.END, "=" * 60 + "\n")
-            stat_name = best["stat"].replace("_", " ").title()
-            text.insert(tk.END, f"🥇 +1 {stat_name}\n")
-            text.insert(tk.END, f"   Stage: {best['stage_improvement']:+.2f}")
-            text.insert(tk.END, f"  |  Loot: {best['loot_improvement']:+.2f}")
-            text.insert(tk.END, f"  |  Taken: {best['damage_taken_change']:+,.0f}\n\n")
-        
-        # Show results grouped by resource
-        text.insert(tk.END, "=" * 60 + "\n")
-        text.insert(tk.END, "📦 BEST UPGRADES BY RESOURCE TYPE\n")
-        text.insert(tk.END, "=" * 60 + "\n\n")
-        
-        for category in resource_categories.keys():
-            category_results = grouped_results[category]
+            text.insert(tk.END, "═" * 70 + "\n", "divider")
+            text.insert(tk.END, "✨ BEST OVERALL UPGRADE ", "header")
+            text.insert(tk.END, "(highest impact)\n", "neutral")
+            text.insert(tk.END, "═" * 70 + "\n", "divider")
             
+            stat_name = best["stat"].replace("_", " ").title()
+            text.insert(tk.END, "🥇 ", "gold")
+            text.insert(tk.END, f"+1 {stat_name}", "stat_name")
+            text.insert(tk.END, f" (Lv {best['current_level']} → {best['current_level'] + 1})\n", "level")
+            
+            # Stats line with colors
+            text.insert(tk.END, "   Stage: ", "neutral")
+            stage_tag = "positive" if best['stage_improvement'] > 0 else "negative" if best['stage_improvement'] < 0 else "neutral"
+            text.insert(tk.END, f"{best['stage_improvement']:+.2f}", stage_tag)
+            text.insert(tk.END, "  │  Loot: ", "neutral")
+            loot_tag = "positive" if best['loot_improvement'] > 0 else "negative" if best['loot_improvement'] < 0 else "neutral"
+            text.insert(tk.END, f"{best['loot_improvement']:+.2f}", loot_tag)
+            text.insert(tk.END, "  │  Taken: ", "neutral")
+            taken_tag = "positive" if best['damage_taken_change'] < 0 else "negative" if best['damage_taken_change'] > 0 else "neutral"
+            text.insert(tk.END, f"{best['damage_taken_change']:+,.0f}\n", taken_tag)
+            
+            res_name = res_common if best['resource_type'] == 'common' else res_uncommon if best['resource_type'] == 'uncommon' else res_rare
+            res_tag = best['resource_type']
+            text.insert(tk.END, "   💰 Cost: ", "neutral")
+            text.insert(tk.END, f"{format_cost(best['cost'])} ", "cost")
+            text.insert(tk.END, f"{res_name}\n\n", res_tag)
+        
+        # ===== BEST VALUE =====
+        if results:
+            by_efficiency = sorted(results, key=lambda x: x["efficiency"], reverse=True)
+            best_eff = by_efficiency[0]
+            
+            text.insert(tk.END, "═" * 70 + "\n", "divider")
+            text.insert(tk.END, "💎 BEST VALUE UPGRADE ", "header")
+            text.insert(tk.END, "(most efficient)\n", "neutral")
+            text.insert(tk.END, "═" * 70 + "\n", "divider")
+            
+            stat_name = best_eff["stat"].replace("_", " ").title()
+            res_name = res_common if best_eff['resource_type'] == 'common' else res_uncommon if best_eff['resource_type'] == 'uncommon' else res_rare
+            
+            text.insert(tk.END, "🏆 ", "gold")
+            text.insert(tk.END, f"+1 {stat_name}", "stat_name")
+            text.insert(tk.END, f" (Lv {best_eff['current_level']} → {best_eff['current_level'] + 1})\n", "level")
+            
+            text.insert(tk.END, "   Stage: ", "neutral")
+            stage_tag = "positive" if best_eff['stage_improvement'] > 0 else "negative" if best_eff['stage_improvement'] < 0 else "neutral"
+            text.insert(tk.END, f"{best_eff['stage_improvement']:+.2f}", stage_tag)
+            text.insert(tk.END, "  │  Loot: ", "neutral")
+            loot_tag = "positive" if best_eff['loot_improvement'] > 0 else "negative" if best_eff['loot_improvement'] < 0 else "neutral"
+            text.insert(tk.END, f"{best_eff['loot_improvement']:+.2f}", loot_tag)
+            text.insert(tk.END, "  │  Taken: ", "neutral")
+            taken_tag = "positive" if best_eff['damage_taken_change'] < 0 else "negative" if best_eff['damage_taken_change'] > 0 else "neutral"
+            text.insert(tk.END, f"{best_eff['damage_taken_change']:+,.0f}\n", taken_tag)
+            
+            res_tag = best_eff['resource_type']
+            text.insert(tk.END, "   💰 Cost: ", "neutral")
+            text.insert(tk.END, f"{format_cost(best_eff['cost'])} ", "cost")
+            text.insert(tk.END, f"{res_name}\n", res_tag)
+            
+            # Efficiency comparison
+            if best != best_eff:
+                effectiveness = (best_eff['score'] / best['score'] * 100) if best['score'] > 0 else 0
+                cost_savings = ((best['cost'] - best_eff['cost']) / best['cost'] * 100) if best['cost'] > 0 else 0
+                text.insert(tk.END, "   📈 ", "neutral")
+                text.insert(tk.END, f"{effectiveness:.0f}% as effective at {cost_savings:.0f}% less cost!\n", "efficiency")
+            text.insert(tk.END, "\n")
+        
+        # ===== BY RESOURCE TYPE =====
+        text.insert(tk.END, "═" * 70 + "\n", "divider")
+        text.insert(tk.END, "📦 UPGRADES BY RESOURCE TYPE ", "header")
+        text.insert(tk.END, "(sorted by efficiency)\n", "neutral")
+        text.insert(tk.END, "═" * 70 + "\n\n", "divider")
+        
+        resource_tags = ["section_common", "section_uncommon", "section_rare"]
+        resource_names = [res_common, res_uncommon, res_rare]
+        
+        for idx, category in enumerate(resource_categories.keys()):
+            category_results = grouped_results[category]
             if not category_results:
                 continue
             
-            text.insert(tk.END, f"{category.upper()}\n")
-            text.insert(tk.END, "-" * 60 + "\n")
+            section_tag = resource_tags[idx] if idx < len(resource_tags) else "subheader"
+            text.insert(tk.END, f"{category.upper()}\n", section_tag)
+            text.insert(tk.END, "─" * 70 + "\n", "divider")
             
-            # Sort by score within category
-            category_results.sort(key=lambda x: x["score"], reverse=True)
+            category_results.sort(key=lambda x: x["efficiency"], reverse=True)
             
             for i, r in enumerate(category_results, 1):
                 stat_name = r["stat"].replace("_", " ").title()
-                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                text.insert(tk.END, f"  {medal} +1 {stat_name}\n")
-                text.insert(tk.END, f"     Stage: {r['stage_improvement']:+.2f}")
-                text.insert(tk.END, f"  |  Loot: {r['loot_improvement']:+.2f}")
-                text.insert(tk.END, f"  |  Taken: {r['damage_taken_change']:+,.0f}\n")
+                
+                # Medal with color
+                if i == 1:
+                    text.insert(tk.END, "  🥇 ", "gold")
+                elif i == 2:
+                    text.insert(tk.END, "  🥈 ", "silver")
+                elif i == 3:
+                    text.insert(tk.END, "  🥉 ", "bronze")
+                else:
+                    text.insert(tk.END, f"  {i}. ", "rank")
+                
+                text.insert(tk.END, f"+1 {stat_name}", "stat_name")
+                text.insert(tk.END, f" (Lv {r['current_level']} → {r['current_level'] + 1})\n", "level")
+                
+                text.insert(tk.END, "     Stage: ", "neutral")
+                stage_tag = "positive" if r['stage_improvement'] > 0 else "negative" if r['stage_improvement'] < 0 else "neutral"
+                text.insert(tk.END, f"{r['stage_improvement']:+.2f}", stage_tag)
+                text.insert(tk.END, "  │  Loot: ", "neutral")
+                loot_tag = "positive" if r['loot_improvement'] > 0 else "negative" if r['loot_improvement'] < 0 else "neutral"
+                text.insert(tk.END, f"{r['loot_improvement']:+.2f}", loot_tag)
+                text.insert(tk.END, "  │  Cost: ", "neutral")
+                text.insert(tk.END, f"{format_cost(r['cost'])}\n", "cost")
             
             text.insert(tk.END, "\n")
         
-        text.insert(tk.END, "=" * 60 + "\n")
-        text.insert(tk.END, "💡 TIP: Upgrade within the resource type you have available!\n")
-        text.insert(tk.END, "=" * 60 + "\n")
+        # ===== TOP 5 EFFICIENCY =====
+        text.insert(tk.END, "═" * 70 + "\n", "divider")
+        text.insert(tk.END, "⚡ TOP 5 MOST EFFICIENT ", "header")
+        text.insert(tk.END, "(across all resources)\n", "neutral")
+        text.insert(tk.END, "═" * 70 + "\n", "divider")
+        
+        by_efficiency = sorted(results, key=lambda x: x["efficiency"], reverse=True)[:5]
+        for i, r in enumerate(by_efficiency, 1):
+            stat_name = r["stat"].replace("_", " ").title()
+            res_name = res_common if r['resource_type'] == 'common' else res_uncommon if r['resource_type'] == 'uncommon' else res_rare
+            res_tag = r['resource_type']
+            
+            if i == 1:
+                text.insert(tk.END, "  🥇 ", "gold")
+            elif i == 2:
+                text.insert(tk.END, "  🥈 ", "silver")
+            elif i == 3:
+                text.insert(tk.END, "  🥉 ", "bronze")
+            else:
+                text.insert(tk.END, f"  {i}. ", "rank")
+            
+            text.insert(tk.END, f"+1 {stat_name}", "stat_name")
+            text.insert(tk.END, ": Stage ", "neutral")
+            stage_tag = "positive" if r['stage_improvement'] > 0 else "negative" if r['stage_improvement'] < 0 else "neutral"
+            text.insert(tk.END, f"{r['stage_improvement']:+.2f}", stage_tag)
+            text.insert(tk.END, " for ", "neutral")
+            text.insert(tk.END, f"{format_cost(r['cost'])} ", "cost")
+            text.insert(tk.END, f"{res_name}\n", res_tag)
+        
+        # ===== TIP =====
+        text.insert(tk.END, "\n")
+        text.insert(tk.END, "═" * 70 + "\n", "divider")
+        text.insert(tk.END, "💡 TIP: ", "header")
+        text.insert(tk.END, "'Best Value' may be cheaper than 'Best Overall'!\n", "tip")
+        text.insert(tk.END, "   Consider your available resources when choosing.\n", "tip")
+        text.insert(tk.END, "═" * 70 + "\n", "divider")
         
         text.configure(state=tk.DISABLED)
         self.advisor_btn.configure(state=tk.NORMAL)
@@ -1104,12 +1868,12 @@ class HunterTab:
         
         self.result_tabs: Dict[str, scrolledtext.ScrolledText] = {}
         categories = [
-            ("🏔️ Stage", "stage"),
+            ("🏔️ Avg Stage", "stage"),
+            ("🏔️ Max Stage", "max_stage"),
             ("💰 Loot", "loot"),
-            ("� XP", "xp"),
+            ("📈 XP", "xp"),
             ("💥 Damage", "damage"),
             ("📊 Compare", "compare"),
-            ("⚖️ All", "all"),
         ]
         
         for label, key in categories:
@@ -1125,20 +1889,314 @@ class HunterTab:
             )
             text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
             
-            # Configure color tags for rankings
-            text.tag_config("gold", foreground="#FFD700", font=('Consolas', 9, 'bold'))  # 1st place
-            text.tag_config("silver", foreground="#C0C0C0", font=('Consolas', 9, 'bold'))  # 2nd place
-            text.tag_config("bronze", foreground="#CD7F32", font=('Consolas', 9, 'bold'))  # 3rd place
-            text.tag_config("header", foreground=self.colors["primary"], font=('Consolas', 10, 'bold'))
-            text.tag_config("metric", foreground="#00FF00", font=('Consolas', 9, 'bold'))  # Green for values
+            # Configure full color tags (same as advisor)
+            self._configure_text_tags(text)
+            # Add IRL build tag specific to results
             text.tag_config("irl", foreground="#FF6B6B", font=('Consolas', 9, 'italic'))  # Red for IRL build
+            
+            # Add initial placeholder message
+            text.insert(tk.END, "🏆 ", "gold")
+            text.insert(tk.END, "Run optimization to see best builds!\n\n", "subheader")
+            text.insert(tk.END, "Go to the ", "neutral")
+            text.insert(tk.END, "Run", "positive")
+            text.insert(tk.END, " tab and click ", "neutral")
+            text.insert(tk.END, "Start Optimization", "positive")
+            text.insert(tk.END, " to find the best builds.\n", "neutral")
+            text.configure(state=tk.DISABLED)
             
             self.result_tabs[key] = text
     
+    def _create_generations_tab(self):
+        """Create the generations sub-tab to show evolution progress."""
+        # Colored header banner
+        icon = '🛡️' if self.hunter_name == 'Borge' else '🔫' if self.hunter_name == 'Knox' else '🐙'
+        header = tk.Frame(self.generations_frame, bg=self.colors["primary"], height=40)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        header_label = tk.Label(header, text=f"{icon} {self.hunter_name} Evolution History", 
+                                font=('Arial', 14, 'bold'), fg=self.colors["text"], bg=self.colors["primary"])
+        header_label.pack(expand=True)
+        
+        # Generations notebook with a tab per tier
+        self.generations_notebook = ttk.Notebook(self.generations_frame)
+        self.generations_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Store text widgets for each generation tab
+        self.generation_tabs: Dict[int, scrolledtext.ScrolledText] = {}
+        
+        # Create placeholder tab (will be replaced on optimization)
+        placeholder_frame = ttk.Frame(self.generations_notebook)
+        self.generations_notebook.add(placeholder_frame, text="📊 Overview")
+        
+        self.generations_overview_text = scrolledtext.ScrolledText(
+            placeholder_frame, height=20, font=('Consolas', 9),
+            bg='#1e1e2e', fg='#e0e0e0', insertbackground='#e0e0e0',
+            selectbackground='#3d3d5c', selectforeground='#ffffff',
+            highlightbackground='#2d2d3d', highlightcolor='#3d3d5c',
+            relief=tk.FLAT, borderwidth=0
+        )
+        self.generations_overview_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self._configure_text_tags(self.generations_overview_text)
+        
+        # Add placeholder message
+        self.generations_overview_text.insert(tk.END, "📊 ", "gold")
+        self.generations_overview_text.insert(tk.END, "Generation History\n\n", "subheader")
+        self.generations_overview_text.insert(tk.END, "Run optimization to see how builds evolve through generations!\n\n", "neutral")
+        self.generations_overview_text.insert(tk.END, "This tab shows the ", "neutral")
+        self.generations_overview_text.insert(tk.END, "top 10 builds", "positive")
+        self.generations_overview_text.insert(tk.END, " from each tier of progressive evolution:\n\n", "neutral")
+        self.generations_overview_text.insert(tk.END, "  • Tier 1 (5%): Early exploration with minimal points\n", "neutral")
+        self.generations_overview_text.insert(tk.END, "  • Tier 2 (10%): Testing promising patterns\n", "neutral")
+        self.generations_overview_text.insert(tk.END, "  • Tier 3 (20%): Refining successful strategies\n", "neutral")
+        self.generations_overview_text.insert(tk.END, "  • Tier 4 (40%): Converging on optimal builds\n", "neutral")
+        self.generations_overview_text.insert(tk.END, "  • Tier 5 (70%): Near-full builds tested\n", "neutral")
+        self.generations_overview_text.insert(tk.END, "  • Tier 6 (100%): Final full-point optimization\n", "neutral")
+        self.generations_overview_text.configure(state=tk.DISABLED)
+    
+    def _clear_generation_tabs(self):
+        """Clear all generation tabs for a new optimization run."""
+        if not hasattr(self, 'generations_notebook') or not self.generations_notebook:
+            return
+        
+        # Remove all tabs except the first (Overview)
+        for tab_id in list(self.generations_notebook.tabs())[1:]:
+            self.generations_notebook.forget(tab_id)
+        
+        # Clear stored tab widgets
+        self.generation_tabs.clear()
+        
+        # Reset overview text
+        if hasattr(self, 'generations_overview_text'):
+            self.generations_overview_text.configure(state=tk.NORMAL)
+            self.generations_overview_text.delete(1.0, tk.END)
+            self.generations_overview_text.insert(tk.END, "📊 ", "gold")
+            self.generations_overview_text.insert(tk.END, "Evolution in Progress...\n\n", "subheader")
+            self.generations_overview_text.insert(tk.END, "Tier tabs will appear as each generation completes.\n", "neutral")
+            self.generations_overview_text.configure(state=tk.DISABLED)
+    
+    def _update_generation_display_subprocess(self, gen_data: Dict):
+        """Update the generations tab with data from subprocess results."""
+        if not hasattr(self, 'generations_notebook') or not self.generations_notebook:
+            return
+        
+        gen_num = gen_data['generation']
+        tier_name = gen_data.get('tier_name', f'{gen_num}')
+        talent_pts = gen_data.get('talent_points', 0)
+        attr_pts = gen_data.get('attribute_points', 0)
+        builds_tested = gen_data.get('builds_tested', 0)
+        best_avg = gen_data.get('best_avg_stage', 0)
+        best_max = gen_data.get('best_max_stage', 0)
+        talents = gen_data.get('best_talents', {})
+        attributes = gen_data.get('best_attributes', {})
+        
+        # Create new tab for this tier
+        tab_frame = ttk.Frame(self.generations_notebook)
+        tab_name = f"Gen {gen_num} ({tier_name})"
+        self.generations_notebook.add(tab_frame, text=tab_name)
+        
+        # Create scrolled text widget
+        text = scrolledtext.ScrolledText(
+            tab_frame, height=20, font=('Consolas', 9),
+            bg='#1e1e2e', fg='#e0e0e0', insertbackground='#e0e0e0',
+            selectbackground='#3d3d5c', selectforeground='#ffffff',
+            highlightbackground='#2d2d3d', highlightcolor='#3d3d5c',
+            relief=tk.FLAT, borderwidth=0
+        )
+        text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self._configure_text_tags(text)
+        
+        # Store reference
+        self.generation_tabs[gen_num] = text
+        
+        # Populate content
+        text.insert(tk.END, f"📊 GENERATION {gen_num}: {tier_name} POINTS\n", "header")
+        text.insert(tk.END, "═" * 50 + "\n\n", "divider")
+        
+        # Tier summary
+        text.insert(tk.END, "📋 Summary:\n", "subheader")
+        text.insert(tk.END, f"   Talent Points: ", "stat_name")
+        text.insert(tk.END, f"{talent_pts}\n", "positive")
+        text.insert(tk.END, f"   Attribute Points: ", "stat_name")
+        text.insert(tk.END, f"{attr_pts}\n", "positive")
+        text.insert(tk.END, f"   Builds Tested: ", "stat_name")
+        text.insert(tk.END, f"{builds_tested}\n", "neutral")
+        text.insert(tk.END, f"   Best Avg Stage: ", "stat_name")
+        text.insert(tk.END, f"{best_avg:.1f}\n", "positive")
+        text.insert(tk.END, f"   Best Max Stage: ", "stat_name")
+        text.insert(tk.END, f"{best_max}\n\n", "gold")
+        
+        # Best build talents
+        text.insert(tk.END, "🏆 BEST BUILD\n", "header")
+        text.insert(tk.END, "─" * 50 + "\n\n", "divider")
+        
+        text.insert(tk.END, "Talents:\n", "subheader")
+        for talent, level in talents.items():
+            if level > 0:
+                text.insert(tk.END, f"   • {talent}: {level}\n", "neutral")
+        
+        text.insert(tk.END, "\nAttributes:\n", "subheader")
+        for attr, level in attributes.items():
+            if level > 0:
+                text.insert(tk.END, f"   • {attr}: {level}\n", "neutral")
+        
+        text.configure(state=tk.DISABLED)
+        
+        # Select this new tab
+        self.generations_notebook.select(tab_frame)
+    
+    def _update_generation_display(self, gen_data: Dict):
+        """Update the generations tab with new tier data."""
+        if not hasattr(self, 'generations_notebook') or not self.generations_notebook:
+            return
+        
+        tier_idx = gen_data['tier_idx']
+        tier_pct = gen_data['tier_pct']
+        talent_pts = gen_data['talent_pts']
+        attr_pts = gen_data['attr_pts']
+        builds_tested = gen_data['builds_tested']
+        best_avg = gen_data['best_avg']
+        best_max = gen_data['best_max']
+        top_10 = gen_data['top_10']
+        
+        # Create new tab for this tier
+        tab_frame = ttk.Frame(self.generations_notebook)
+        tab_name = f"T{tier_idx + 1} ({int(tier_pct * 100)}%)"
+        self.generations_notebook.add(tab_frame, text=tab_name)
+        
+        # Create scrolled text widget
+        text = scrolledtext.ScrolledText(
+            tab_frame, height=20, font=('Consolas', 9),
+            bg='#1e1e2e', fg='#e0e0e0', insertbackground='#e0e0e0',
+            selectbackground='#3d3d5c', selectforeground='#ffffff',
+            highlightbackground='#2d2d3d', highlightcolor='#3d3d5c',
+            relief=tk.FLAT, borderwidth=0
+        )
+        text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self._configure_text_tags(text)
+        
+        # Store reference
+        self.generation_tabs[tier_idx] = text
+        
+        # Populate content
+        text.insert(tk.END, f"📊 TIER {tier_idx + 1}: {int(tier_pct * 100)}% POINTS\n", "header")
+        text.insert(tk.END, "═" * 50 + "\n\n", "divider")
+        
+        # Tier summary
+        text.insert(tk.END, "📋 Tier Summary:\n", "subheader")
+        text.insert(tk.END, f"   Talent Points: ", "stat_name")
+        text.insert(tk.END, f"{talent_pts}\n", "positive")
+        text.insert(tk.END, f"   Attribute Points: ", "stat_name")
+        text.insert(tk.END, f"{attr_pts}\n", "positive")
+        text.insert(tk.END, f"   Builds Tested: ", "stat_name")
+        text.insert(tk.END, f"{builds_tested}\n", "neutral")
+        text.insert(tk.END, f"   Best Avg Stage: ", "stat_name")
+        text.insert(tk.END, f"{best_avg:.1f}\n", "positive")
+        text.insert(tk.END, f"   Best Max Stage: ", "stat_name")
+        text.insert(tk.END, f"{best_max}\n\n", "gold")
+        
+        # Top 10 builds
+        text.insert(tk.END, "🏆 TOP 10 BUILDS\n", "header")
+        text.insert(tk.END, "─" * 50 + "\n\n", "divider")
+        
+        for i, build in enumerate(top_10, 1):
+            # Medal and ranking
+            if i == 1:
+                medal = "🥇"
+                tag = "gold"
+            elif i == 2:
+                medal = "🥈"
+                tag = "silver"
+            elif i == 3:
+                medal = "🥉"
+                tag = "bronze"
+            else:
+                medal = f"#{i}"
+                tag = "neutral"
+            
+            avg_stage = build.get('avg_stage', 0)
+            max_stage = build.get('max_stage', 0)
+            talents = build.get('talents', {})
+            attrs = build.get('attributes', {})
+            
+            text.insert(tk.END, f"{medal} ", tag)
+            text.insert(tk.END, f"Stage: {avg_stage:.1f}", "positive")
+            text.insert(tk.END, f" (max {max_stage})\n", "neutral")
+            
+            # Format talents compactly
+            talent_str = ", ".join(f"{k}:{v}" for k, v in talents.items() if v > 0)
+            if talent_str:
+                text.insert(tk.END, "   Talents: ", "stat_name")
+                text.insert(tk.END, f"{talent_str}\n", "neutral")
+            
+            # Format attributes compactly
+            attr_str = ", ".join(f"{k}:{v}" for k, v in attrs.items() if v > 0)
+            if attr_str:
+                text.insert(tk.END, "   Attrs: ", "stat_name")
+                text.insert(tk.END, f"{attr_str}\n", "neutral")
+            
+            text.insert(tk.END, "\n")
+        
+        text.configure(state=tk.DISABLED)
+        
+        # Update overview with cumulative summary
+        self._update_generation_overview()
+    
+    def _update_generation_overview(self):
+        """Update the generations overview tab with all tier summaries."""
+        if not hasattr(self, 'generations_overview_text'):
+            return
+        
+        text = self.generations_overview_text
+        text.configure(state=tk.NORMAL)
+        text.delete(1.0, tk.END)
+        
+        text.insert(tk.END, "📊 ", "gold")
+        text.insert(tk.END, "Evolution Progress Summary\n", "header")
+        text.insert(tk.END, "═" * 50 + "\n\n", "divider")
+        
+        if not self.generation_history:
+            text.insert(tk.END, "No generation data yet.\n", "neutral")
+            text.configure(state=tk.DISABLED)
+            return
+        
+        # Show progression through tiers
+        for gen_data in self.generation_history:
+            tier_idx = gen_data['tier_idx']
+            tier_pct = gen_data['tier_pct']
+            best_avg = gen_data['best_avg']
+            best_max = gen_data['best_max']
+            builds_tested = gen_data['builds_tested']
+            
+            pct_label = f"{int(tier_pct * 100)}%"
+            text.insert(tk.END, f"📊 Tier {tier_idx + 1} ({pct_label}): ", "subheader")
+            text.insert(tk.END, f"Best {best_avg:.1f}", "positive")
+            text.insert(tk.END, f" (max {best_max})", "neutral")
+            text.insert(tk.END, f" from {builds_tested} builds\n", "neutral")
+        
+        # Show evolution trend if we have multiple tiers
+        if len(self.generation_history) > 1:
+            text.insert(tk.END, "\n")
+            text.insert(tk.END, "📈 Evolution Trend:\n", "header")
+            first_best = self.generation_history[0]['best_avg']
+            last_best = self.generation_history[-1]['best_avg']
+            improvement = last_best - first_best
+            text.insert(tk.END, f"   Stage improved from {first_best:.1f} → {last_best:.1f} ", "neutral")
+            if improvement > 0:
+                text.insert(tk.END, f"(+{improvement:.1f})\n", "positive")
+            else:
+                text.insert(tk.END, f"({improvement:.1f})\n", "negative")
+        
+        text.configure(state=tk.DISABLED)
+    
     def _log(self, message: str):
         """Add a message to the log (thread-safe via queue)."""
-        # Always use the queue - it will be processed by the main thread
-        self.result_queue.put(('log', message, None, None))
+        print(f"[_log] {message[:80]}...")  # Debug
+        # If using subprocess (no background thread), write directly
+        if hasattr(self, 'opt_process'):
+            self._log_direct(message)
+        else:
+            # Otherwise use queue for thread safety
+            self.result_queue.put(('log', message, None, None))
     
     def _log_direct(self, message: str):
         """Add a message to the log directly (only call from main thread)."""
@@ -1146,8 +2204,9 @@ class HunterTab:
             return
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.insert(tk.END, message + "\n")
-        self.log_text.see(tk.END)
+        self.log_text.see(tk.END)  # Always scroll to see latest
         self.log_text.configure(state=tk.DISABLED)
+        self.log_text.update_idletasks()  # Force GUI refresh
     
     def _get_current_config(self) -> Dict:
         """Build a config dictionary from current input values."""
@@ -1286,19 +2345,30 @@ class HunterTab:
     
     def _start_optimization(self):
         """Start optimization for this hunter."""
+        print(f"[DEBUG] _start_optimization called for {self.hunter_name}")
+        print(f"[DEBUG] is_running = {self.is_running}")
+        
         if self.is_running:
+            print(f"[DEBUG] Already running, returning")
             return
         self.is_running = True
         self.stop_event.clear()
         self.results.clear()
+        self.generation_history.clear()  # Clear previous generation data
         self.optimization_start_time = time.time()
         self.progress_var.set(0)
+        self.poll_count = 0
+        self.last_logged_gen = 0  # Track last generation we logged
+        self.last_logged_builds = 0  # Track last build count we logged
         
         # Reset best tracking
         self.best_max_stage = 0
         self.best_avg_stage = 0.0
         self.best_max_label.configure(text="🏆 Best Max: --")
         self.best_avg_label.configure(text="📊 Best Avg: --")
+        
+        # Clear generation tabs
+        self._clear_generation_tabs()
         
         self.start_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
@@ -1308,21 +2378,99 @@ class HunterTab:
         self.log_text.delete(1.0, tk.END)
         self.log_text.configure(state=tk.DISABLED)
         
-        # Capture ALL tkinter variables BEFORE starting thread (tkinter is not thread-safe)
+        # Capture ALL tkinter variables BEFORE starting (tkinter is not thread-safe)
         self._thread_level = self.level.get()
         self._thread_num_sims = self.num_sims.get()
         self._thread_builds_per_tier = self.builds_per_tier.get()
-        self._thread_use_rust = self.use_rust.get() and RUST_AVAILABLE
-        self._thread_use_progressive = self.use_progressive.get()
-        self._thread_irl_max_stage = self.irl_max_stage.get()
         self._thread_config = self._get_current_config()
         
-        # Start in background
-        thread = threading.Thread(target=self._run_optimization, daemon=True)
-        thread.start()
+        # Launch optimization as SEPARATE PROCESS (only way to avoid tkinter interference)
+        import subprocess
+        import tempfile
+        
+        print(f"[DEBUG] About to create config file for {self.hunter_name}")
+        
+        config_file = Path(tempfile.gettempdir()) / f"hunter_opt_{self.hunter_name}.json"
+        self.result_file = Path(tempfile.gettempdir()) / f"hunter_opt_{self.hunter_name}_results.json"
+        
+        print(f"[DEBUG] Config file: {config_file}")
+        print(f"[DEBUG] Result file: {self.result_file}")
+        
+        # Delete old result file if exists
+        if self.result_file.exists():
+            self.result_file.unlink()
+        
+        self._log(f"💾 Config: {config_file}")
+        self._log(f"💾 Results: {self.result_file}")
+        
+        # Write config
+        try:
+            with open(config_file, 'w') as f:
+                json.dump({
+                    'hunter_name': self.hunter_name,
+                    'level': self._thread_level,
+                    'base_config': self._thread_config,
+                    'num_sims': self._thread_num_sims,
+                    'builds_per_tier': self._thread_builds_per_tier,
+                    'use_progressive': self.use_progressive.get()
+                }, f)
+            self._log(f"✅ Config written")
+        except Exception as e:
+            self._log(f"❌ Failed to write config: {e}")
+            self._optimization_complete()
+            return
+        
+        # Launch process with error capture
+        python_exe = sys.executable
+        
+        # Try to use venv Python if available (for rust_sim module)
+        venv_python = Path(__file__).parent.parent / '.venv' / 'Scripts' / 'python.exe'
+        if venv_python.exists():
+            python_exe = str(venv_python)
+            self._log(f"🐍 Using venv Python: {python_exe}")
+        
+        script_path = Path(__file__).parent / 'run_optimization.py'
+        
+        self._log(f"🐍 Python: {python_exe}")
+        self._log(f"📜 Script: {script_path}")
+        
+        if not script_path.exists():
+            self._log(f"❌ Script not found: {script_path}")
+            self._optimization_complete()
+            return
+        
+        try:
+            # Ensure rust_sim module is available in subprocess by adding project to PYTHONPATH
+            import os
+            env = os.environ.copy()
+            project_root = str(script_path.parent.parent)  # Go from hunter-sim/run_optimization.py up to project root
+            hunter_sim_dir = str(script_path.parent)  # The hunter-sim directory itself
+            if 'PYTHONPATH' in env:
+                env['PYTHONPATH'] = hunter_sim_dir + os.pathsep + project_root + os.pathsep + env['PYTHONPATH']
+            else:
+                env['PYTHONPATH'] = hunter_sim_dir + os.pathsep + project_root
+            
+            # Create stderr file to capture errors without blocking
+            self.stderr_file = Path(tempfile.gettempdir()) / f"opt_stderr_{os.getpid()}.txt"
+            self.stderr_handle = open(self.stderr_file, 'w')
+            
+            self.opt_process = subprocess.Popen(
+                [python_exe, str(script_path), str(config_file), str(self.result_file)],
+                stdout=subprocess.DEVNULL,
+                stderr=self.stderr_handle,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+                env=env
+            )
+            self._log(f"🚀 Subprocess launched (PID: {self.opt_process.pid})")
+            self._log(f"⏳ Generating and simulating {self._thread_builds_per_tier} builds...")
+        except Exception as e:
+            self._log(f"❌ Failed to launch subprocess: {e}\n{traceback.format_exc()}")
+            self._optimization_complete()
+            return
         
         # Start polling
-        self.frame.after(100, self._poll_results)
+        self.poll_count = 0
+        self.frame.after(500, self._poll_subprocess)
     
     def _stop_optimization(self):
         """Stop optimization."""
@@ -1439,6 +2587,8 @@ class HunterTab:
         builds_per_tier = self._thread_builds_per_tier
         use_rust = self._thread_use_rust
         
+        print(f"[DEBUG] num_sims={num_sims}, builds_per_tier={builds_per_tier}, use_rust={use_rust}")
+        
         total_builds_planned = len(tiers) * builds_per_tier
         self._log(f"   Tiers: {[f'{int(t*100)}%' for t in tiers]}")
         self._log(f"   Builds per tier: {builds_per_tier}")
@@ -1479,23 +2629,28 @@ class HunterTab:
             consecutive_dupes = 0
             max_consecutive_dupes = 100
             
-            # SINGLE BUILD PROCESSING: Generate one build, simulate immediately
-            # Batching was causing GUI lag due to long blocking calls
-            batch_size = 1
+            # BATCH PROCESSING: Collect builds and simulate in batches for speed
+            batch_size = 100  # Process 100 at a time for maximum batch efficiency
             pending_configs = []
             pending_metadata = []
             
             builds_generated = 0
+            _loop_start = time.perf_counter()
+            _gen_time = 0
+            _sim_time = 0
+            _deepcopy_time = 0
+            _validation_time = 0
+            _other_time = 0
             for i in range(builds_per_tier):
+                _iter_start = time.perf_counter()
                 if self.stop_event.is_set():
                     break
-                
-                # Yield to main thread - 5ms every iteration for responsiveness
-                time.sleep(0.005)
                 
                 if consecutive_dupes >= max_consecutive_dupes:
                     self._log(f"   ⚡ Tier exhausted after {len(tier_results)} builds")
                     break
+                
+                _gen_start = time.perf_counter()
                 
                 # Generate build - always try to extend elite first
                 talents, attrs = None, None
@@ -1517,6 +2672,9 @@ class HunterTab:
                         consecutive_dupes += 1
                         continue
                 
+                _gen_time += time.perf_counter() - _gen_start
+                
+                _val_start = time.perf_counter()
                 # Check duplicate
                 build_hash = (tuple(sorted(talents.items())), tuple(sorted(attrs.items())))
                 if build_hash in tested_hashes:
@@ -1549,10 +2707,15 @@ class HunterTab:
                     consecutive_dupes += 1
                     continue
                 
+                _validation_time += time.perf_counter() - _val_start
+                
+                _dc_start = time.perf_counter()
                 # Add to batch
                 config = copy.deepcopy(base_config)
                 config["talents"] = talents
                 config["attributes"] = attrs
+                _deepcopy_time += time.perf_counter() - _dc_start
+                
                 pending_configs.append(config)
                 pending_metadata.append((talents, attrs))
                 builds_generated += 1
@@ -1563,22 +2726,18 @@ class HunterTab:
                                  consecutive_dupes >= max_consecutive_dupes)
                 
                 if should_process and pending_configs:
-                    # Yield before heavy simulation work
-                    time.sleep(0.001)
-                    
+                    _sim_start = time.perf_counter()
                     try:
-                        if use_rust and len(pending_configs) > 1:
-                            # Use batch processing
+                        if use_rust:
+                            # ALWAYS use batch processing for Rust (handles single configs too)
                             batch_results = self._simulate_builds_batch(pending_configs, num_sims)
                         else:
-                            # Individual simulation
+                            # Python fallback - individual simulation
                             batch_results = []
                             for cfg in pending_configs:
-                                if use_rust:
-                                    result = self._simulate_build_rust(cfg, num_sims)
-                                else:
-                                    result = self._simulate_build_sequential(cfg, num_sims)
+                                result = self._simulate_build_sequential(cfg, num_sims)
                                 batch_results.append(result)
+                        _sim_time += time.perf_counter() - _sim_start
                         
                         # Process results
                         for result, (talents, attrs) in zip(batch_results, pending_metadata):
@@ -1590,17 +2749,19 @@ class HunterTab:
                                     'avg_stage': result.avg_final_stage,
                                     'max_stage': result.highest_stage,
                                     'talents': talents,
-                                    'attributes': attrs
+                                    'attributes': attrs,
+                                    'result': result  # Store full BuildResult for generation history
                                 })
                         
                         total_tested += len(batch_results)
-                        progress = min(100, (total_tested / total_builds_planned) * 100)
-                        self.result_queue.put(('progress', progress, total_tested, total_builds_planned))
                         
-                        # Log progress every batch
-                        elapsed = time.time() - self.optimization_start_time
-                        rate = total_tested / elapsed if elapsed > 0 else 0
-                        self.result_queue.put(('log', f"   ...{builds_generated}/{builds_per_tier} generated, {total_tested} tested ({rate:.1f}/sec)", None, None))
+                        # Update progress/logs less frequently to reduce queue overhead
+                        if total_tested % 50 == 0 or total_tested == len(batch_results):
+                            progress = min(100, (total_tested / total_builds_planned) * 100)
+                            self.result_queue.put(('progress', progress, total_tested, total_builds_planned))
+                            elapsed = time.time() - self.optimization_start_time
+                            rate = total_tested / elapsed if elapsed > 0 else 0
+                            self.result_queue.put(('log', f"   ...{builds_generated}/{builds_per_tier} generated, {total_tested} tested ({rate:.1f}/sec)", None, None))
                         
                     except Exception as e:
                         self._log(f"   ⚠️ Batch error: {e}")
@@ -1608,6 +2769,16 @@ class HunterTab:
                     # Clear batch
                     pending_configs = []
                     pending_metadata = []
+            
+            # Print timing summary
+            _total_time = time.perf_counter() - _loop_start
+            print(f"[TIMING] Tier complete: tested={total_tested} in {_total_time:.2f}s")
+            print(f"[TIMING]   Generation: {_gen_time:.2f}s ({total_tested/_gen_time if _gen_time > 0 else 0:.0f}/s)")
+            print(f"[TIMING]   Validation: {_validation_time:.2f}s")
+            print(f"[TIMING]   Deepcopy:   {_deepcopy_time:.2f}s")
+            print(f"[TIMING]   Simulation: {_sim_time:.2f}s ({total_tested/_sim_time if _sim_time > 0 else 0:.0f}/s)")
+            print(f"[TIMING]   Other:      {_total_time - _gen_time - _validation_time - _deepcopy_time - _sim_time:.2f}s")
+            print(f"[TIMING]   OVERALL:    {total_tested/_total_time:.1f}/s")
             
             # Analyze tier results
             if tier_results:
@@ -1623,14 +2794,27 @@ class HunterTab:
                     'gen': tier_idx + 1
                 }, None, None))
                 
-                # Select elites
-                tier_results.sort(key=lambda x: x['avg_stage'], reverse=True)
+                # Select elites - sort by avg first, then max_stage as tiebreaker
+                tier_results.sort(key=lambda x: (x['avg_stage'], x['max_stage']), reverse=True)
                 elite_count = min(100, max(len(tier_results) // 10, 10))
                 elite_patterns = [
                     {'talents': r['talents'], 'attributes': r['attributes']}
                     for r in tier_results[:elite_count]
                 ]
                 self._log(f"   Promoted {len(elite_patterns)} elites")
+                
+                # Save top 10 for generation history display
+                top_10 = tier_results[:10]
+                self.result_queue.put(('generation_data', {
+                    'tier_idx': tier_idx,
+                    'tier_pct': tier_pct,
+                    'talent_pts': tier_talent_points,
+                    'attr_pts': tier_attr_points,
+                    'builds_tested': len(tier_results),
+                    'best_avg': best_avg,
+                    'best_max': max_stage,
+                    'top_10': top_10
+                }, None, None))
         
         # Final summary
         total_time = time.time() - self.optimization_start_time
@@ -1674,8 +2858,8 @@ class HunterTab:
         # Yield after build generation
         time.sleep(0.01)
         
-        # BATCH PROCESSING: Process builds in batches
-        batch_size = 15 if use_rust else 1
+        # Process builds one at a time
+        batch_size = 1
         
         for batch_idx, batch_start in enumerate(range(0, len(builds), batch_size)):
             if self.stop_event.is_set():
@@ -1845,12 +3029,11 @@ class HunterTab:
         return talents, attrs
     
     def _simulate_build_rust(self, config: Dict, num_sims: int) -> Optional[BuildResult]:
-        """Run simulations using Rust engine."""
+        """Run simulations using Rust engine - direct call."""
         if not RUST_AVAILABLE:
             return self._simulate_build_sequential(config, num_sims)
         
         hunter_type = self.hunter_name
-        # Support both flat format (from JSON saves) and nested format (from load_dummy)
         level = config.get("meta", {}).get("level") or config.get("level", 100)
         
         try:
@@ -1864,13 +3047,12 @@ class HunterTab:
                 mods=config.get("mods", {}),
                 relics=config.get("relics", {}),
                 gems=config.get("gems", {}),
+                gadgets=config.get("gadgets", {}),
                 bonuses=config.get("bonuses", {}),
                 num_sims=num_sims,
                 parallel=True
             )
             
-            # Rust sim returns stats at top level, not nested
-            # Use per-resource loot values directly from Rust (WASM formulas)
             return BuildResult(
                 talents=config.get("talents", {}).copy(),
                 attributes=config.get("attributes", {}).copy(),
@@ -1895,25 +3077,46 @@ class HunterTab:
                 config=config,
             )
         except Exception as e:
-            return self._simulate_build_sequential(config, num_sims)
+            print(f"[RUST ERROR] {e}")
+            return None
     
     def _simulate_builds_batch(self, configs: List[Dict], num_sims: int) -> List[Optional[BuildResult]]:
-        """Run simulations for multiple builds at once using Rust batch function - much faster!"""
+        """Run simulations for multiple builds using Rust batch API."""
         if not RUST_AVAILABLE:
-            # Fallback to sequential
             return [self._simulate_build_sequential(cfg, num_sims) for cfg in configs]
         
         try:
-            # Call Rust batch function
-            results = rust_sim.simulate_batch(configs, num_sims, parallel=True)
+            # Convert configs to JSON strings for Rust
+            config_jsons = []
+            for cfg in configs:
+                rust_cfg = {
+                    'hunter': self.hunter_name,
+                    'level': cfg.get("meta", {}).get("level") or cfg.get("level", 100),
+                    'stats': cfg.get("stats", {}),
+                    'talents': cfg.get("talents", {}),
+                    'attributes': cfg.get("attributes", {}),
+                    'inscryptions': cfg.get("inscryptions", {}),
+                    'mods': cfg.get("mods", {}),
+                    'relics': cfg.get("relics", {}),
+                    'gems': cfg.get("gems", {}),
+                    'gadgets': cfg.get("gadgets", {}),
+                    'bonuses': cfg.get("bonuses", {})
+                }
+                config_jsons.append(json.dumps(rust_cfg))
+            
+            # Batch simulate
+            results = rust_sim.simulate_batch(config_jsons, num_sims, True)
             
             # Convert to BuildResult objects
             build_results = []
-            for config, result in zip(configs, results):
-                # Use per-resource loot values directly from Rust (WASM formulas)
+            for result, cfg in zip(results, configs):
+                # Parse result if it's a JSON string
+                if isinstance(result, str):
+                    result = json.loads(result)
+                
                 build_results.append(BuildResult(
-                    talents=config.get("talents", {}).copy(),
-                    attributes=config.get("attributes", {}).copy(),
+                    talents=cfg.get("talents", {}).copy(),
+                    attributes=cfg.get("attributes", {}).copy(),
                     avg_final_stage=result.get("avg_stage", 0),
                     highest_stage=result.get("max_stage", 0),
                     lowest_stage=result.get("min_stage", 0),
@@ -1932,13 +3135,12 @@ class HunterTab:
                     avg_loot_uncommon=result.get("avg_loot_uncommon", 0),
                     avg_loot_rare=result.get("avg_loot_rare", 0),
                     avg_xp=result.get("avg_xp", 0),
-                    config=config,
+                    config=cfg
                 ))
-            
             return build_results
         except Exception as e:
-            # Fallback to sequential
-            return [self._simulate_build_sequential(cfg, num_sims) for cfg in configs]
+            print(f"[BATCH ERROR] {e}")
+            return [self._simulate_build_rust(cfg, num_sims) for cfg in configs]
     
     def _simulate_build_sequential(self, config: Dict, num_sims: int) -> Optional[BuildResult]:
         """Run simulations sequentially."""
@@ -2007,6 +3209,280 @@ class HunterTab:
             config=config,
         )
     
+    def _poll_subprocess(self):
+        """Poll subprocess results file"""
+        self.poll_count += 1
+        
+        # Try to read progress file
+        progress_file = Path(str(self.result_file).replace('_results.json', '_progress.json'))
+        print(f"[POLL #{self.poll_count}] progress_file={progress_file}, exists={progress_file.exists()}")
+        if progress_file.exists():
+            try:
+                with open(progress_file, 'r') as f:
+                    progress_data = json.load(f)
+                
+                gen = progress_data.get('generation', 0)
+                builds_in_gen = progress_data.get('builds_in_gen', 0)
+                print(f"[POLL #{self.poll_count}] gen={gen}, builds={builds_in_gen}, last_gen={self.last_logged_gen}, last_builds={self.last_logged_builds}")
+                
+                # Update global progress bar
+                progress_pct = progress_data.get('progress', 0)
+                self.progress_var.set(progress_pct)
+                
+                # Log generation progress (only when generation changes OR significant progress within gen)
+                builds_per_gen = progress_data.get('builds_per_gen', 1)
+                
+                # Detect generation change (means previous gen completed)
+                if gen > self.last_logged_gen:
+                    # Log completion of PREVIOUS generation if we had one
+                    if self.last_logged_gen > 0:
+                        total_gen = progress_data.get('total_generations', 0)
+                        speed = progress_data.get('sims_per_sec', 0)
+                        elapsed = progress_data.get('elapsed', 0)
+                        self._log(f"✅ Gen {self.last_logged_gen}/{total_gen} complete | {speed:.0f} sims/sec ({elapsed:.1f}s)")
+                    
+                    self.last_logged_gen = gen
+                    self.last_logged_builds = 0
+                
+                # Log in-progress updates (only when build count actually changes)
+                if builds_in_gen > self.last_logged_builds:
+                    speed = progress_data.get('sims_per_sec', 0)
+                    total_gen = progress_data.get('total_generations', 0)
+                    tier = progress_data.get('tier_name', '')
+                    total_sims = progress_data.get('total_sims', 0)
+                    
+                    # Calculate ETA
+                    total_sims_needed = builds_per_gen * total_gen * self._thread_num_sims
+                    sims_remaining = total_sims_needed - total_sims
+                    eta_seconds = sims_remaining / speed if speed > 0 else 0
+                    eta_str = f"{int(eta_seconds)}s" if eta_seconds < 60 else f"{int(eta_seconds/60)}m {int(eta_seconds%60)}s"
+                    
+                    self._log(f"📊 Gen {gen}/{total_gen} ({tier}): {builds_in_gen}/{builds_per_gen} builds | {speed:.0f} sims/sec | ETA: {eta_str}")
+                    self.last_logged_builds = builds_in_gen
+            except Exception as e:
+                # File may be mid-write, ignore
+                pass
+        else:
+            # No progress file yet - show basic activity
+            if self.poll_count % 2 == 0:  # Every second
+                progress = min(10, self.poll_count)  # Start at 10%, wait for real progress
+                self.progress_var.set(progress)
+        
+        # Show activity every 5 seconds (only if no progress file)
+        if not progress_file.exists() and self.poll_count % 10 == 0:
+            elapsed = self.poll_count * 0.5
+            self._log(f"⏳ Still running... ({elapsed:.0f}s elapsed)")
+        
+        # Check if process crashed
+        poll_result = self.opt_process.poll()
+        print(f"[POLL #{self.poll_count}] poll()={poll_result}, result_file exists={self.result_file.exists()}")
+        if poll_result is not None:
+            # Process exited - close stderr handle first
+            if hasattr(self, 'stderr_handle') and self.stderr_handle:
+                self.stderr_handle.close()
+            
+            exit_code = self.opt_process.returncode
+            print(f"[POLL] Process exited with code {exit_code}")
+            
+            if exit_code != 0:
+                # Process crashed - read error from stderr file
+                self._log(f"❌ Optimization process crashed (exit code: {exit_code})")
+                if hasattr(self, 'stderr_file') and self.stderr_file.exists():
+                    try:
+                        stderr_content = self.stderr_file.read_text()
+                        if stderr_content.strip():
+                            self._log(f"━━━ ERROR OUTPUT ━━━")
+                            self._log(stderr_content)
+                        self.stderr_file.unlink(missing_ok=True)
+                    except Exception as e:
+                        self._log(f"Could not read stderr: {e}")
+                self._optimization_complete()
+                return
+            
+            # Process completed successfully - check for results
+            print(f"[POLL] Checking for result file: {self.result_file}")
+            if self.result_file.exists():
+                print(f"[POLL] Result file EXISTS, loading...")
+                try:
+                    with open(self.result_file, 'r') as f:
+                        results = json.load(f)
+                    print(f"[POLL] Results loaded, keys: {results.keys()}")
+                    
+                    # Clean up temp files
+                    self.result_file.unlink(missing_ok=True)
+                    Path(str(self.result_file).replace('_results.json', '.json')).unlink(missing_ok=True)
+                    Path(str(self.result_file).replace('_results.json', '_progress.json')).unlink(missing_ok=True)
+                    if hasattr(self, 'stderr_file'):
+                        self.stderr_file.unlink(missing_ok=True)
+                    
+                    # Display results FIRST (updates status label with actual count)
+                    self._display_results(results)
+                    
+                    # Get top builds from new structure - each metric has its own top 10
+                    top_by_max = results.get('top_10_by_max_stage', [])
+                    top_by_avg = results.get('top_10_by_avg_stage', [])
+                    top_by_loot = results.get('top_10_by_loot', [])
+                    top_by_damage = results.get('top_10_by_damage', [])
+                    top_by_xp = results.get('top_10_by_xp', [])
+                    
+                    # Combine all unique builds for self.results
+                    all_builds_dict = {}
+                    for build in top_by_max + top_by_avg + top_by_loot + top_by_damage + top_by_xp:
+                        key = (tuple(sorted(build['talents'].items())), tuple(sorted(build['attributes'].items())))
+                        all_builds_dict[key] = build
+                    all_builds = list(all_builds_dict.values())
+                    
+                    # Helper to convert build dict to BuildResult
+                    def to_build_result(build):
+                        return BuildResult(
+                            talents=build['talents'],
+                            attributes=build['attributes'],
+                            avg_final_stage=build['avg_stage'],
+                            highest_stage=build['max_stage'],
+                            lowest_stage=build['max_stage'],
+                            avg_loot_per_hour=build.get('avg_loot_per_hour', 0),
+                            avg_damage=build.get('avg_damage', 0),
+                            avg_kills=build.get('avg_kills', 0),
+                            avg_elapsed_time=0,
+                            avg_damage_taken=0,
+                            survival_rate=1.0,
+                            avg_xp=build.get('avg_xp', 0),
+                            config={'talents': build['talents'], 'attributes': build['attributes']}
+                        )
+                    
+                    # Store all unique builds
+                    self.results.clear()
+                    for build in all_builds:
+                        self.results.append(to_build_result(build))
+                    
+                    # Store pre-sorted lists for each tab
+                    self._top_by_stage = [to_build_result(b) for b in top_by_avg]
+                    self._top_by_max_stage = [to_build_result(b) for b in top_by_max]
+                    self._top_by_loot = [to_build_result(b) for b in top_by_loot]
+                    self._top_by_damage = [to_build_result(b) for b in top_by_damage]
+                    self._top_by_xp = [to_build_result(b) for b in top_by_xp]
+                    
+                    # Process IRL baseline from subprocess results
+                    irl_data = results.get('irl_baseline')
+                    if irl_data:
+                        self.irl_baseline_result = BuildResult(
+                            talents=irl_data.get('talents', {}),
+                            attributes=irl_data.get('attributes', {}),
+                            avg_final_stage=irl_data.get('avg_stage', 0),
+                            highest_stage=irl_data.get('max_stage', 0),
+                            lowest_stage=irl_data.get('max_stage', 0),
+                            avg_loot_per_hour=irl_data.get('avg_loot_per_hour', 0),
+                            avg_damage=irl_data.get('avg_damage', 0),
+                            avg_kills=irl_data.get('avg_kills', 0),
+                            avg_elapsed_time=irl_data.get('avg_time', 0),
+                            avg_damage_taken=irl_data.get('avg_damage_taken', 0),
+                            survival_rate=irl_data.get('survival_rate', 1.0),
+                            avg_xp=irl_data.get('avg_xp', 0),
+                            config={'talents': irl_data.get('talents', {}), 'attributes': irl_data.get('attributes', {})}
+                        )
+                        self._log(f"📊 IRL Baseline: Stage {self.irl_baseline_result.avg_final_stage:.1f} (max {self.irl_baseline_result.highest_stage})")
+                    else:
+                        self.irl_baseline_result = None
+                        self._log("⚠️ No IRL baseline (no talents/attributes entered)")
+                    
+                    # Process generation history for Generations tab
+                    gen_history = results.get('generation_history', [])
+                    print(f"[POLL] gen_history has {len(gen_history)} entries")
+                    if gen_history:
+                        self.generation_history = []
+                        for gen_data in gen_history:
+                            self.generation_history.append({
+                                'generation': gen_data['generation'],
+                                'best_max_stage': gen_data['best_max_stage'],
+                                'best_avg_stage': gen_data['best_avg_stage'],
+                                'talents': gen_data['best_talents'],
+                                'attributes': gen_data['best_attributes']
+                            })
+                            # Display each generation's results in Generations tab
+                            self._update_generation_display_subprocess(gen_data)
+                    
+                    # Now display in result tabs
+                    print(f"[POLL] About to display {len(self.results)} results")
+                    if self.results:
+                        self._display_results_old()
+                    else:
+                        print("[POLL] WARNING: self.results is empty!")
+                    
+                    # Then mark as complete (but don't overwrite status)
+                    print("[POLL] Marking optimization complete")
+                    self.is_running = False
+                    self.start_btn.configure(state=tk.NORMAL)
+                    self.stop_btn.configure(state=tk.DISABLED)
+                    self.progress_var.set(100)
+                    
+                except Exception as e:
+                    self._log(f"❌ Error loading results: {e}\n{traceback.format_exc()}")
+                    self._optimization_complete()
+            else:
+                self._log(f"❌ Process completed but no result file found at: {self.result_file}")
+                self._optimization_complete()
+        else:
+            # Still running - keep polling
+            self.frame.after(500, self._poll_subprocess)
+    
+    def _display_results(self, results):
+        """Display optimization results in GUI"""
+        # Check for errors
+        if results.get('status') == 'error':
+            self._log(f"\n❌ ERROR in optimization:")
+            self._log(results.get('error', 'Unknown error'))
+            self._log(f"\nTraceback:")
+            self._log(results.get('traceback', 'No traceback available'))
+            return
+        
+        # Show timing info
+        timing = results.get('timing', {})
+        self._log(f"\n=== Optimization Complete ===")
+        self._log(f"Total time: {timing.get('total_time', 0):.2f}s")
+        self._log(f"Simulation speed: {timing.get('sims_per_sec', 0):.0f}/s\n")
+        
+        # Show best build
+        best = results.get('best_build', {})
+        self._log(f"=== Best Build ===")
+        self._log(f"Max Stage: {best.get('max_stage', 0)}")
+        self._log(f"Avg Stage: {best.get('avg_stage', 0):.1f}")
+        # Show additional stats if available
+        if best.get('avg_loot_per_hour', 0) > 0:
+            self._log(f"Avg Loot/Hour: {best.get('avg_loot_per_hour', 0):,.0f}")
+        if best.get('avg_damage', 0) > 0:
+            self._log(f"Avg Damage: {best.get('avg_damage', 0):,.0f}")
+        if best.get('avg_kills', 0) > 0:
+            self._log(f"Avg Kills: {best.get('avg_kills', 0):,.0f}")
+        self._log("")  # Blank line
+        
+        # Show talents
+        talents = best.get('talents', {})
+        if talents:
+            self._log("Talents:")
+            for talent, level in talents.items():
+                if level > 0:
+                    self._log(f"  • {talent}: {level}")
+        
+        # Show attributes
+        attributes = best.get('attributes', {})
+        if attributes:
+            self._log("\nAttributes:")
+            for attr, level in attributes.items():
+                if level > 0:
+                    self._log(f"  • {attr}: {level}")
+        
+        # Show full details
+        self._log(f"\n{results.get('full_report', '')}")
+        
+        # Update progress bar with actual build count (extract from report)
+        import re
+        match = re.search(r'Tested (\d+) builds', results.get('full_report', ''))
+        if match:
+            tested_count = int(match.group(1))
+            self.status_label.configure(text=f"Done! {tested_count} builds ({timing.get('sims_per_sec', 0):.0f}/s)")
+        else:
+            self.status_label.configure(text=f"Done! Max Stage: {best.get('max_stage', 0)}")
+    
     def _poll_results(self):
         """Poll for results from background thread."""
         try:
@@ -2028,6 +3504,10 @@ class HunterTab:
                         self.best_avg_label.configure(text=f"📊 Best Avg: {self.best_avg_stage:.1f}")
                 elif msg_type == 'log':
                     self._log_direct(data)
+                elif msg_type == 'generation_data':
+                    # Store generation data for display
+                    self.generation_history.append(data)
+                    self._update_generation_display(data)
                 elif msg_type == 'done':
                     self._optimization_complete()
                     return
@@ -2043,27 +3523,24 @@ class HunterTab:
             pass
         
         if self.is_running:
-            # Force process any pending GUI events
-            try:
-                self.frame.update_idletasks()
-            except:
-                pass
-            self.frame.after(50, self._poll_results)  # Poll more frequently
+            self.frame.after(500, self._poll_results)
     
     def _optimization_complete(self):
-        """Handle optimization completion."""
+        """Handle optimization completion (called after results displayed or error occurred)."""
         self.is_running = False
         self.start_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
         self.progress_var.set(100)
-        self.status_label.configure(text=f"Done! {len(self.results)} builds")
-        
-        self._display_results()
-        self.sub_notebook.select(self.results_frame)
+        # Note: results display and status label already updated by _poll_subprocess
+        # Just select the results frame to show the user what we found
+        if self.results:
+            self.sub_notebook.select(self.results_frame)
     
-    def _display_results(self):
-        """Display optimization results."""
+    def _display_results_old(self):
+        """Display optimization results using pre-sorted lists from subprocess."""
+        print(f"[_display_results_old] Called with {len(self.results)} results")
         if not self.results:
+            print("[_display_results_old] No results to display!")
             for text_widget in self.result_tabs.values():
                 text_widget.configure(state=tk.NORMAL)
                 text_widget.delete(1.0, tk.END)
@@ -2071,13 +3548,23 @@ class HunterTab:
                 text_widget.configure(state=tk.DISABLED)
             return
         
-        by_stage = sorted(self.results, key=lambda r: r.avg_final_stage, reverse=True)[:10]
-        by_loot = sorted(self.results, key=lambda r: r.avg_loot_per_hour, reverse=True)[:10]
-        by_xp = sorted(self.results, key=lambda r: r.avg_xp, reverse=True)[:10]
-        by_damage = sorted(self.results, key=lambda r: r.avg_damage, reverse=True)[:10]
+        print(f"[_display_results_old] First result: avg_stage={self.results[0].avg_final_stage}, max={self.results[0].highest_stage}")
+        
+        # Use pre-sorted lists from subprocess (already top 10 by each metric)
+        by_stage = getattr(self, '_top_by_stage', None) or sorted(self.results, 
+                          key=lambda r: (r.avg_final_stage, r.highest_stage, r.avg_loot_per_hour), 
+                          reverse=True)[:10]
+        by_max_stage = getattr(self, '_top_by_max_stage', None) or sorted(self.results,
+                          key=lambda r: (r.highest_stage, r.avg_final_stage, r.avg_loot_per_hour),
+                          reverse=True)[:10]
+        by_loot = getattr(self, '_top_by_loot', None) or sorted(self.results, key=lambda r: r.avg_loot_per_hour, reverse=True)[:10]
+        by_xp = getattr(self, '_top_by_xp', None) or sorted(self.results, key=lambda r: r.avg_xp, reverse=True)[:10]
+        by_damage = getattr(self, '_top_by_damage', None) or sorted(self.results, key=lambda r: r.avg_damage, reverse=True)[:10]
         
         self._display_category(self.result_tabs["stage"], by_stage, "Avg Stage",
-                               lambda r: f"{r.avg_final_stage:.1f}")
+                               lambda r: f"{r.avg_final_stage:.1f} (max {r.highest_stage})")
+        self._display_category(self.result_tabs["max_stage"], by_max_stage, "Max Stage",
+                               lambda r: f"{r.highest_stage} (avg {r.avg_final_stage:.1f})")
         self._display_category(self.result_tabs["loot"], by_loot, "Loot/Hour",
                                lambda r: f"{r.avg_loot_per_hour:.2f}")
         self._display_category(self.result_tabs["xp"], by_xp, "Avg XP",
@@ -2087,10 +3574,6 @@ class HunterTab:
         
         # Compare tab - detailed comparison with IRL build
         self._display_comparison_tab()
-        
-        # All tab - with IRL comparison
-        by_stage = sorted(self.results, key=lambda r: r.avg_final_stage, reverse=True)[:20]
-        self._display_all_tab(by_stage)
     
     def _display_comparison_tab(self):
         """Display the comparison tab with detailed IRL vs top 3 builds analysis."""
@@ -2121,9 +3604,9 @@ class HunterTab:
         res_common, res_uncommon, res_rare = self._get_resource_names()
         
         # Header
-        compare_text.insert(tk.END, "=" * 70 + "\n")
-        compare_text.insert(tk.END, "📊 BUILD COMPARISON: YOUR BUILD VS OPTIMAL BUILDS\n")
-        compare_text.insert(tk.END, "=" * 70 + "\n\n")
+        compare_text.insert(tk.END, "═" * 70 + "\n", "divider")
+        compare_text.insert(tk.END, "📊 BUILD COMPARISON: YOUR BUILD VS OPTIMAL BUILDS\n", "header")
+        compare_text.insert(tk.END, "═" * 70 + "\n\n", "divider")
         
         # Calculate optimal percentages based on different metrics
         pct_stage = (irl.avg_final_stage / best.avg_final_stage * 100) if best.avg_final_stage > 0 else 100
@@ -2135,207 +3618,147 @@ class HunterTab:
         overall_pct = (pct_stage * 0.4 + pct_loot * 0.3 + pct_xp * 0.15 + pct_damage * 0.15)
         
         # Big optimality display
-        compare_text.insert(tk.END, "╔════════════════════════════════════════════════════════════════╗\n")
-        compare_text.insert(tk.END, f"║         YOUR BUILD IS {overall_pct:>6.2f}% OPTIMAL                      ║\n")
-        compare_text.insert(tk.END, "╚════════════════════════════════════════════════════════════════╝\n\n")
+        compare_text.insert(tk.END, "╔════════════════════════════════════════════════════════════════╗\n", "gold")
+        compare_text.insert(tk.END, "║         YOUR BUILD IS ", "gold")
+        # Color based on score
+        if overall_pct >= 95:
+            compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "positive")
+        elif overall_pct >= 80:
+            compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "neutral")
+        elif overall_pct >= 60:
+            compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "cost")
+        else:
+            compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "negative")
+        compare_text.insert(tk.END, " OPTIMAL                      ║\n", "gold")
+        compare_text.insert(tk.END, "╚════════════════════════════════════════════════════════════════╝\n\n", "gold")
         
         # Rating and recommendation
         if overall_pct >= 98:
             grade = "🌟 PERFECT - No respec needed!"
             advice = "Your build is essentially optimal. Save your resources."
+            grade_color = "gold"
         elif overall_pct >= 95:
             grade = "🌟 EXCELLENT - Minor gains possible"
             advice = "Very minor improvements possible. Probably not worth a respec."
+            grade_color = "positive"
         elif overall_pct >= 90:
             grade = "✅ GREAT - Small room for improvement"
             advice = "Some gains possible. Consider respec if resources are plentiful."
+            grade_color = "positive"
         elif overall_pct >= 80:
             grade = "👍 GOOD - Noticeable gains available"
             advice = "Meaningful improvements available. Respec recommended when convenient."
+            grade_color = "neutral"
         elif overall_pct >= 70:
             grade = "📈 DECENT - Significant gains available"
             advice = "Significant improvements possible. Respec is a good investment."
+            grade_color = "cost"
         elif overall_pct >= 60:
             grade = "⚠️ SUBOPTIMAL - Large gains available"
             advice = "Major improvements available. Strongly recommend respec."
+            grade_color = "cost"
         else:
             grade = "🔧 NEEDS WORK - Substantial gains available"
             advice = "Your build needs significant optimization. Respec ASAP!"
+            grade_color = "negative"
         
-        compare_text.insert(tk.END, f"Rating: {grade}\n")
-        compare_text.insert(tk.END, f"💡 Advice: {advice}\n\n")
+        compare_text.insert(tk.END, "Rating: ", "stat_name")
+        compare_text.insert(tk.END, f"{grade}\n", grade_color)
+        compare_text.insert(tk.END, "💡 Advice: ", "stat_name")
+        compare_text.insert(tk.END, f"{advice}\n\n", "tip")
         
         # Detailed breakdown
-        compare_text.insert(tk.END, "─" * 70 + "\n")
-        compare_text.insert(tk.END, "METRIC BREAKDOWN:\n")
-        compare_text.insert(tk.END, "─" * 70 + "\n\n")
+        compare_text.insert(tk.END, "─" * 70 + "\n", "divider")
+        compare_text.insert(tk.END, "📊 METRIC BREAKDOWN:\n", "subheader")
+        compare_text.insert(tk.END, "─" * 70 + "\n\n", "divider")
         
-        compare_text.insert(tk.END, f"  🏔️ Stage:    {pct_stage:>6.2f}% optimal  ({irl.avg_final_stage:.1f} vs {best.avg_final_stage:.1f})\n")
-        compare_text.insert(tk.END, f"  💰 Loot/Hr:  {pct_loot:>6.2f}% optimal  ({irl.avg_loot_per_hour:.2f} vs {best.avg_loot_per_hour:.2f})\n")
-        compare_text.insert(tk.END, f"  📈 XP/Run:   {pct_xp:>6.2f}% optimal  ({self._format_number(irl.avg_xp)} vs {self._format_number(best.avg_xp)})\n")
-        compare_text.insert(tk.END, f"  💥 Damage:   {pct_damage:>6.2f}% optimal  ({irl.avg_damage:,.0f} vs {best.avg_damage:,.0f})\n\n")
+        # Helper to get color for percentage
+        def get_pct_color(pct):
+            if pct >= 95: return "positive"
+            elif pct >= 80: return "neutral"
+            elif pct >= 60: return "cost"
+            else: return "negative"
+        
+        compare_text.insert(tk.END, "  🏔️ Stage:    ", "stat_name")
+        compare_text.insert(tk.END, f"{pct_stage:>6.2f}% optimal", get_pct_color(pct_stage))
+        compare_text.insert(tk.END, f"  ({irl.avg_final_stage:.1f} vs {best.avg_final_stage:.1f})\n", "neutral")
+        
+        compare_text.insert(tk.END, "  💰 Loot/Hr:  ", "stat_name")
+        compare_text.insert(tk.END, f"{pct_loot:>6.2f}% optimal", get_pct_color(pct_loot))
+        compare_text.insert(tk.END, f"  ({irl.avg_loot_per_hour:.2f} vs {best.avg_loot_per_hour:.2f})\n", "neutral")
+        
+        compare_text.insert(tk.END, "  📈 XP/Run:   ", "stat_name")
+        compare_text.insert(tk.END, f"{pct_xp:>6.2f}% optimal", get_pct_color(pct_xp))
+        compare_text.insert(tk.END, f"  ({self._format_number(irl.avg_xp)} vs {self._format_number(best.avg_xp)})\n", "neutral")
+        
+        compare_text.insert(tk.END, "  💥 Damage:   ", "stat_name")
+        compare_text.insert(tk.END, f"{pct_damage:>6.2f}% optimal", get_pct_color(pct_damage))
+        compare_text.insert(tk.END, f"  ({irl.avg_damage:,.0f} vs {best.avg_damage:,.0f})\n\n", "neutral")
         
         # Potential gains
-        compare_text.insert(tk.END, "─" * 70 + "\n")
-        compare_text.insert(tk.END, "POTENTIAL GAINS IF YOU RESPEC:\n")
-        compare_text.insert(tk.END, "─" * 70 + "\n\n")
+        compare_text.insert(tk.END, "─" * 70 + "\n", "divider")
+        compare_text.insert(tk.END, "✨ POTENTIAL GAINS IF YOU RESPEC:\n", "subheader")
+        compare_text.insert(tk.END, "─" * 70 + "\n\n", "divider")
         
         stage_gain = best.avg_final_stage - irl.avg_final_stage
         loot_gain_pct = ((best.avg_loot_per_hour / irl.avg_loot_per_hour) - 1) * 100 if irl.avg_loot_per_hour > 0 else 0
         xp_gain_pct = ((best.avg_xp / irl.avg_xp) - 1) * 100 if irl.avg_xp > 0 else 0
         
-        compare_text.insert(tk.END, f"  Stage:      +{stage_gain:.1f} stages\n")
-        compare_text.insert(tk.END, f"  Loot:       +{loot_gain_pct:.1f}% more loot per hour\n")
-        compare_text.insert(tk.END, f"  XP:         +{xp_gain_pct:.1f}% more XP per run\n\n")
+        compare_text.insert(tk.END, "  Stage:      ", "stat_name")
+        compare_text.insert(tk.END, f"+{stage_gain:.1f} stages\n", "positive")
+        compare_text.insert(tk.END, "  Loot:       ", "stat_name")
+        compare_text.insert(tk.END, f"+{loot_gain_pct:.1f}% more loot per hour\n", "positive")
+        compare_text.insert(tk.END, "  XP:         ", "stat_name")
+        compare_text.insert(tk.END, f"+{xp_gain_pct:.1f}% more XP per run\n\n", "positive")
         
         # Compare talents/attributes
-        compare_text.insert(tk.END, "─" * 70 + "\n")
-        compare_text.insert(tk.END, "TOP 3 OPTIMAL BUILDS:\n")
-        compare_text.insert(tk.END, "─" * 70 + "\n\n")
+        compare_text.insert(tk.END, "─" * 70 + "\n", "divider")
+        compare_text.insert(tk.END, "🏆 TOP 3 OPTIMAL BUILDS:\n", "subheader")
+        compare_text.insert(tk.END, "─" * 70 + "\n\n", "divider")
         
+        medals = ["🥇", "🥈", "🥉"]
+        medal_colors = ["gold", "silver", "bronze"]
         for i, build in enumerate(top3, 1):
             pct_of_best = (build.avg_final_stage / best.avg_final_stage * 100) if best.avg_final_stage > 0 else 100
-            compare_text.insert(tk.END, f"#{i} - Stage {build.avg_final_stage:.1f} ({pct_of_best:.1f}% of best)\n")
-            compare_text.insert(tk.END, f"   Talents: {', '.join(f'{k}:{v}' for k, v in build.talents.items() if v > 0)}\n")
-            compare_text.insert(tk.END, f"   Attrs: {', '.join(f'{k}:{v}' for k, v in build.attributes.items() if v > 0)}\n\n")
+            compare_text.insert(tk.END, f"{medals[i-1]} ", medal_colors[i-1])
+            compare_text.insert(tk.END, f"Stage ", "stat_name")
+            compare_text.insert(tk.END, f"{build.avg_final_stage:.1f}", "positive")
+            compare_text.insert(tk.END, f" ({pct_of_best:.1f}% of best)\n", "neutral")
+            compare_text.insert(tk.END, "   Talents: ", "subheader")
+            compare_text.insert(tk.END, f"{', '.join(f'{k}:{v}' for k, v in build.talents.items() if v > 0)}\n", "level")
+            compare_text.insert(tk.END, "   Attrs: ", "subheader")
+            compare_text.insert(tk.END, f"{', '.join(f'{k}:{v}' for k, v in build.attributes.items() if v > 0)}\n\n", "level")
         
         # Talent/attribute diff from your build to best
-        compare_text.insert(tk.END, "─" * 70 + "\n")
-        compare_text.insert(tk.END, "CHANGES NEEDED (Your Build → Best Build):\n")
-        compare_text.insert(tk.END, "─" * 70 + "\n\n")
+        compare_text.insert(tk.END, "─" * 70 + "\n", "divider")
+        compare_text.insert(tk.END, "🔧 CHANGES NEEDED (Your Build → Best Build):\n", "subheader")
+        compare_text.insert(tk.END, "─" * 70 + "\n\n", "divider")
         
-        compare_text.insert(tk.END, "  TALENTS:\n")
+        compare_text.insert(tk.END, "  ⭐ TALENTS:\n", "stat_name")
         for talent in set(list(irl.talents.keys()) + list(best.talents.keys())):
             irl_val = irl.talents.get(talent, 0)
             best_val = best.talents.get(talent, 0)
             if irl_val != best_val:
                 diff = best_val - irl_val
-                sign = "+" if diff > 0 else ""
-                compare_text.insert(tk.END, f"    {talent}: {irl_val} → {best_val} ({sign}{diff})\n")
+                compare_text.insert(tk.END, f"    {talent}: ", "level")
+                compare_text.insert(tk.END, f"{irl_val}", "neutral")
+                compare_text.insert(tk.END, " → ", "stat_name")
+                compare_text.insert(tk.END, f"{best_val}", "positive" if diff > 0 else "negative")
+                compare_text.insert(tk.END, f" ({'+' if diff > 0 else ''}{diff})\n", "positive" if diff > 0 else "negative")
         
-        compare_text.insert(tk.END, "\n  ATTRIBUTES:\n")
+        compare_text.insert(tk.END, "\n  🔮 ATTRIBUTES:\n", "stat_name")
         for attr in set(list(irl.attributes.keys()) + list(best.attributes.keys())):
             irl_val = irl.attributes.get(attr, 0)
             best_val = best.attributes.get(attr, 0)
             if irl_val != best_val:
                 diff = best_val - irl_val
-                sign = "+" if diff > 0 else ""
-                compare_text.insert(tk.END, f"    {attr}: {irl_val} → {best_val} ({sign}{diff})\n")
+                compare_text.insert(tk.END, f"    {attr}: ", "level")
+                compare_text.insert(tk.END, f"{irl_val}", "neutral")
+                compare_text.insert(tk.END, " → ", "stat_name")
+                compare_text.insert(tk.END, f"{best_val}", "positive" if diff > 0 else "negative")
+                compare_text.insert(tk.END, f" ({'+' if diff > 0 else ''}{diff})\n", "positive" if diff > 0 else "negative")
         
         compare_text.configure(state=tk.DISABLED)
-    
-    def _display_all_tab(self, by_stage: List[BuildResult]):
-        """Display the All tab with summary and top 20 builds."""
-        all_text = self.result_tabs["all"]
-        all_text.configure(state=tk.NORMAL)
-        all_text.delete(1.0, tk.END)
-        
-        # Show IRL build comparison if available
-        best_build = by_stage[0] if by_stage else None
-        if self.irl_baseline_result and best_build:
-            all_text.insert(tk.END, "=" * 60 + "\n")
-            all_text.insert(tk.END, "📊 YOUR BUILD VS OPTIMAL\n")
-            all_text.insert(tk.END, "=" * 60 + "\n\n")
-            
-            irl = self.irl_baseline_result
-            opt = best_build
-            
-            # Calculate % optimal based on stage (primary metric)
-            if opt.avg_final_stage > 0:
-                pct_optimal = (irl.avg_final_stage / opt.avg_final_stage) * 100
-            else:
-                pct_optimal = 100.0
-            
-            all_text.insert(tk.END, f"🎮 YOUR IRL BUILD:\n")
-            all_text.insert(tk.END, f"   Sim Stage: {irl.avg_final_stage:.1f} (max {irl.highest_stage})\n")
-            if self.irl_max_stage.get() > 0:
-                all_text.insert(tk.END, f"   Actual IRL: {self.irl_max_stage.get()}\n")
-            # Per-resource loot for IRL build
-            res_common, res_uncommon, res_rare = self._get_resource_names()
-            if irl.avg_elapsed_time > 0:
-                irl_runs_per_day = (3600 / irl.avg_elapsed_time) * 24
-                all_text.insert(tk.END, f"   📦 Loot/Run → Loot/Day:\n")
-                all_text.insert(tk.END, f"      {res_common}: {self._format_number(irl.avg_loot_common)} → {self._format_number(irl.avg_loot_common * irl_runs_per_day)}\n")
-                all_text.insert(tk.END, f"      {res_uncommon}: {self._format_number(irl.avg_loot_uncommon)} → {self._format_number(irl.avg_loot_uncommon * irl_runs_per_day)}\n")
-                all_text.insert(tk.END, f"      {res_rare}: {self._format_number(irl.avg_loot_rare)} → {self._format_number(irl.avg_loot_rare * irl_runs_per_day)}\n")
-                # XP
-                all_text.insert(tk.END, f"   📈 XP/Run → XP/Day: {self._format_number(irl.avg_xp)} → {self._format_number(irl.avg_xp * irl_runs_per_day)}\n\n")
-            else:
-                all_text.insert(tk.END, f"   Loot/Hr: {irl.avg_loot_per_hour:.2f}\n\n")
-            
-            all_text.insert(tk.END, f"🏆 OPTIMAL BUILD:\n")
-            all_text.insert(tk.END, f"   Stage: {opt.avg_final_stage:.1f} (max {opt.highest_stage})\n")
-            # Per-resource loot for optimal build
-            if opt.avg_elapsed_time > 0:
-                opt_runs_per_day = (3600 / opt.avg_elapsed_time) * 24
-                all_text.insert(tk.END, f"   📦 Loot/Run → Loot/Day:\n")
-                all_text.insert(tk.END, f"      {res_common}: {self._format_number(opt.avg_loot_common)} → {self._format_number(opt.avg_loot_common * opt_runs_per_day)}\n")
-                all_text.insert(tk.END, f"      {res_uncommon}: {self._format_number(opt.avg_loot_uncommon)} → {self._format_number(opt.avg_loot_uncommon * opt_runs_per_day)}\n")
-                all_text.insert(tk.END, f"      {res_rare}: {self._format_number(opt.avg_loot_rare)} → {self._format_number(opt.avg_loot_rare * opt_runs_per_day)}\n")
-                all_text.insert(tk.END, f"   📈 XP/Run → XP/Day: {self._format_number(opt.avg_xp)} → {self._format_number(opt.avg_xp * opt_runs_per_day)}\n\n")
-            else:
-                all_text.insert(tk.END, f"   Loot/Hr: {opt.avg_loot_per_hour:.2f}\n\n")
-            
-            # Show % optimal with color coding
-            if pct_optimal >= 95:
-                grade = "🌟 EXCELLENT"
-            elif pct_optimal >= 85:
-                grade = "✅ GREAT"
-            elif pct_optimal >= 75:
-                grade = "👍 GOOD"
-            elif pct_optimal >= 60:
-                grade = "📈 ROOM TO IMPROVE"
-            else:
-                grade = "🔧 NEEDS OPTIMIZATION"
-            
-            all_text.insert(tk.END, f"📈 YOUR BUILD IS {pct_optimal:.1f}% OPTIMAL\n")
-            all_text.insert(tk.END, f"   {grade}\n")
-            
-            # Show stage difference
-            stage_diff = opt.avg_final_stage - irl.avg_final_stage
-            if stage_diff > 0:
-                all_text.insert(tk.END, f"   Potential gain: +{stage_diff:.1f} stages\n")
-            
-            all_text.insert(tk.END, "\n" + "=" * 60 + "\n\n")
-        
-        all_text.insert(tk.END, f"TOP 20 {self.hunter_name.upper()} BUILDS\n", "header")
-        all_text.insert(tk.END, "=" * 60 + "\n\n")
-        
-        # Get best stage for star rating comparison
-        best_stage = by_stage[0].avg_final_stage if by_stage else 0
-        
-        for i, result in enumerate(by_stage[:20], 1):
-            # Medals for top 3
-            if i == 1:
-                all_text.insert(tk.END, "🥇 ", "gold")
-            elif i == 2:
-                all_text.insert(tk.END, "🥈 ", "silver")
-            elif i == 3:
-                all_text.insert(tk.END, "🥉 ", "bronze")
-            else:
-                all_text.insert(tk.END, f"#{i} ")
-            
-            # Star rating based on % of best
-            if best_stage > 0:
-                pct = (result.avg_final_stage / best_stage) * 100
-                if pct >= 99:
-                    stars = "⭐⭐⭐⭐⭐"  # 5 stars - top tier
-                elif pct >= 95:
-                    stars = "⭐⭐⭐⭐"    # 4 stars - excellent
-                elif pct >= 90:
-                    stars = "⭐⭐⭐"      # 3 stars - good
-                elif pct >= 80:
-                    stars = "⭐⭐"        # 2 stars - average
-                else:
-                    stars = "⭐"          # 1 star - below average
-                all_text.insert(tk.END, f"{stars}\n")
-            else:
-                all_text.insert(tk.END, "\n")
-            
-            all_text.insert(tk.END, self._format_build_result(result))
-            all_text.insert(tk.END, "\n\n")
-        
-        all_text.configure(state=tk.DISABLED)
     
     def _display_category(self, text_widget, results: List[BuildResult], metric_name: str, metric_fn):
         """Display results for a category with color-coded rankings."""
@@ -2343,8 +3766,8 @@ class HunterTab:
         text_widget.delete(1.0, tk.END)
         
         # Header with color
-        text_widget.insert(tk.END, f"TOP 10 BY {metric_name.upper()}\n", "header")
-        text_widget.insert(tk.END, "=" * 50 + "\n\n")
+        text_widget.insert(tk.END, f"🏆 TOP 10 BY {metric_name.upper()}\n", "header")
+        text_widget.insert(tk.END, "═" * 50 + "\n\n", "divider")
         
         for i, result in enumerate(results, 1):
             # Determine medal and color tag based on ranking
@@ -2359,23 +3782,20 @@ class HunterTab:
                 tag = "bronze"
             else:
                 medal = f"#{i}"
-                tag = None
+                tag = "neutral"
             
             # Insert ranking line with medal and color
-            if tag:
-                text_widget.insert(tk.END, f"{medal} {metric_name} = ", tag)
-                text_widget.insert(tk.END, f"{metric_fn(result)}\n", "metric")
-            else:
-                text_widget.insert(tk.END, f"{medal}: {metric_name} = ")
-                text_widget.insert(tk.END, f"{metric_fn(result)}\n", "metric")
+            text_widget.insert(tk.END, f"{medal} ", tag)
+            text_widget.insert(tk.END, f"{metric_name} = ", "stat_name")
+            text_widget.insert(tk.END, f"{metric_fn(result)}\n", "positive")
             
-            text_widget.insert(tk.END, self._format_build_result(result))
-            text_widget.insert(tk.END, "\n\n")
+            self._insert_colorful_build_result(text_widget, result)
+            text_widget.insert(tk.END, "\n")
         
         text_widget.configure(state=tk.DISABLED)
     
     def _format_build_result(self, result: BuildResult) -> str:
-        """Format a build result for display."""
+        """Format a build result for display (plain text version)."""
         lines = []
         lines.append(f"  Stage: {result.avg_final_stage:.1f} (max {result.highest_stage})")
         
@@ -2383,13 +3803,10 @@ class HunterTab:
         res_common, res_uncommon, res_rare = self._get_resource_names()
         
         # Calculate per run and per day loot
-        # Loot per run = avg_loot (from avg_elapsed_time)
-        # Approximate: if avg_elapsed_time is in seconds, runs per hour = 3600/avg_elapsed_time
         if result.avg_elapsed_time > 0:
             runs_per_hour = 3600 / result.avg_elapsed_time
             runs_per_day = runs_per_hour * 24
             
-            # Per-resource loot per run and per day
             common_per_run = result.avg_loot_common
             uncommon_per_run = result.avg_loot_uncommon
             rare_per_run = result.avg_loot_rare
@@ -2402,7 +3819,6 @@ class HunterTab:
             lines.append(f"     {res_uncommon}: {self._format_number(uncommon_per_run)} / {self._format_number(uncommon_per_day)}")
             lines.append(f"     {res_rare}: {self._format_number(rare_per_run)} / {self._format_number(rare_per_day)}")
             
-            # XP per run and per day
             xp_per_run = result.avg_xp
             xp_per_day = xp_per_run * runs_per_day
             lines.append(f"  📈 XP PER RUN / PER DAY: {self._format_number(xp_per_run)} / {self._format_number(xp_per_day)}")
@@ -2415,6 +3831,23 @@ class HunterTab:
         lines.append("  Attrs: " + ", ".join(f"{k}:{v}" for k, v in result.attributes.items() if v > 0))
         
         return "\n".join(lines)
+    
+    def _insert_colorful_build_result(self, text_widget, result):
+        """Insert a colorfully formatted build result into a text widget."""
+        # Stage line
+        text_widget.insert(tk.END, "   Stage: ", "stat_name")
+        text_widget.insert(tk.END, f"{result.avg_final_stage:.1f}", "positive")
+        text_widget.insert(tk.END, f" (max {result.highest_stage})\n", "neutral")
+        
+        # Talents line
+        talents_str = ", ".join(f"{k}:{v}" for k, v in result.talents.items() if v > 0)
+        text_widget.insert(tk.END, "   Talents: ", "subheader")
+        text_widget.insert(tk.END, f"{talents_str}\n", "level")
+        
+        # Attrs line
+        attrs_str = ", ".join(f"{k}:{v}" for k, v in result.attributes.items() if v > 0)
+        text_widget.insert(tk.END, "   Attrs: ", "subheader")
+        text_widget.insert(tk.END, f"{attrs_str}\n", "level")
     
     def _format_number(self, num: float) -> str:
         """Format large numbers with suffixes (k, m, b, t, qa, qi)."""
@@ -2539,12 +3972,14 @@ class MultiHunterGUI:
         style.map("TButton",
                  background=[("active", "#5a5a8a"), ("pressed", "#3a3a5a")])
         
-        # TCheckbutton - dark
+        # TCheckbutton - dark with bright checkmark
         style.configure("TCheckbutton", background=self.DARK_BG, foreground=self.DARK_TEXT,
-                       indicatorbackground=self.DARK_BG_SECONDARY)
+                       indicatorbackground=self.DARK_BG_SECONDARY,
+                       indicatorforeground="#00ff88")  # Bright green checkmark
         style.map("TCheckbutton",
                  background=[("active", self.DARK_BG)],
-                 indicatorbackground=[("selected", self.DARK_ACCENT)])
+                 indicatorbackground=[("selected", "#2a4a3a")],  # Dark green bg when selected
+                 indicatorforeground=[("selected", "#00ff88")])  # Bright green X when checked
         
         # TNotebook - dark tabs
         style.configure("TNotebook", background=self.DARK_BG, borderwidth=0)
@@ -2792,15 +4227,7 @@ class MultiHunterGUI:
         right_frame = tk.Frame(control_frame, bg=self.DARK_BG)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, pady=5)
         
-        # ============ BATTLE ARENA (right side, top) ============
-        arena_label = tk.Label(right_frame, text="⚔️ Battle Arena", 
-                              bg=self.DARK_BG, fg=self.DARK_TEXT, font=('Arial', 11, 'bold'))
-        arena_label.pack(anchor='w', padx=5, pady=(5, 2))
-        
-        # Create battle canvas
-        self.battle_canvas = tk.Canvas(right_frame, width=350, height=300, bg=self.DARK_BG_TERTIARY, 
-                                       highlightthickness=2, highlightbackground=self.DARK_ACCENT)
-        self.battle_canvas.pack(padx=5, pady=5)
+        # Battle arena removed for performance
         
         # ============ RUN CONTROLS (below arena) ============
         run_panel = tk.Frame(right_frame, bg=self.DARK_BG_SECONDARY, relief='groove', bd=1)
@@ -2848,60 +4275,14 @@ class MultiHunterGUI:
                                font=('Arial', 9, 'bold'))
             cb.pack(side=tk.LEFT, padx=8)
         
-        # ============ STATUS / LEADERBOARD (combined panel below run controls) ============
-        status_panel = tk.Frame(right_frame, bg=self.DARK_BG_TERTIARY, relief='groove', bd=1)
-        status_panel.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Status header (will switch between "Status" and "Leaderboard")
-        self.status_header = tk.Label(status_panel, text="📊 Status / 🏆 Leaderboard", 
-                                      bg=self.DARK_BG_TERTIARY, fg=self.DARK_TEXT, 
-                                      font=('Arial', 10, 'bold'))
-        self.status_header.pack(anchor='w', padx=10, pady=(8, 5))
-        
-        # Overall status
-        self.all_status = tk.Label(status_panel, text="Ready to run optimizations",
-                                   bg=self.DARK_BG_TERTIARY, fg=self.DARK_TEXT_DIM,
-                                   font=('Arial', 9))
-        self.all_status.pack(anchor='w', padx=10, pady=2)
-        
-        # Create combined status/leaderboard entries for each hunter
+        # Status panel removed - individual hunter tabs show details
         self.leaderboard_labels = {}
         self.hunter_status_frames = {}
-        
-        for hunter_name, (icon, color) in [("Borge", ("🛡️", "#DC3545")), 
-                                            ("Knox", ("🔫", "#0D6EFD")), 
-                                            ("Ozzy", ("🐙", "#198754"))]:
-            row_frame = tk.Frame(status_panel, bg=self.DARK_BG_TERTIARY)
-            row_frame.pack(fill=tk.X, padx=10, pady=3)
-            
-            # Hunter name
-            name_label = tk.Label(row_frame, text=f"{icon} {hunter_name}", 
-                                  fg=color, bg=self.DARK_BG_TERTIARY, 
-                                  font=('Arial', 10, 'bold'), width=10, anchor='w')
-            name_label.pack(side=tk.LEFT, padx=2)
-            
-            # Progress bar (visible during run)
-            progress_var = tk.DoubleVar(value=0)
-            progress_bar = ttk.Progressbar(row_frame, variable=progress_var, maximum=100, 
-                                           length=100, style=f"{hunter_name}.Horizontal.TProgressbar")
-            progress_bar.pack(side=tk.LEFT, padx=5)
-            
-            # Status/result text
-            stats_label = tk.Label(row_frame, text="Waiting...", 
-                                   fg=self.DARK_TEXT_DIM, bg=self.DARK_BG_TERTIARY, 
-                                   font=('Arial', 9), anchor='w')
-            stats_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-            
-            self.leaderboard_labels[hunter_name] = stats_label
-            self.hunter_status_frames[hunter_name] = {
-                'frame': row_frame, 
-                'progress_var': progress_var,
-                'progress_bar': progress_bar,
-                'status_label': stats_label
-            }
+        self.all_status = tk.Label(run_panel, text="")  # Dummy for compatibility
         
         # Initialize battle state
-        self._init_battle_arena()
+        # Battle arena disabled
+        # self._init_battle_arena()
         
         # Create scrollable content for left side with dark theme
         canvas = tk.Canvas(left_frame, bg=self.DARK_BG, highlightthickness=0)
@@ -3347,14 +4728,18 @@ class MultiHunterGUI:
         self.hunter_images = {}
         self.hunter_photo_images = {}  # Keep reference to prevent garbage collection
         
-        # PNG file paths - in parent directory
+        # PNG file paths - in assets subfolder
         import os
-        parent_dir = os.path.dirname(os.path.dirname(__file__))
+        # Directory where this file lives
+        base = os.path.dirname(__file__)
+        # PNGs are in: <repo>/hunter-sim/hunter-sim/assets
+        assets_dir = os.path.join(base, "assets")
         png_files = {
-            "Borge": os.path.join(parent_dir, "hunter_borge-GMACLV3e.png"),
-            "Knox": os.path.join(parent_dir, "hunter_knox-DfvSfjhv.png"),
-            "Ozzy": os.path.join(parent_dir, "hunter_ozzy-BYN3S8hK.png"),
+            "Borge": os.path.join(assets_dir, "borge.png"),
+            "Knox": os.path.join(assets_dir, "knox.png"),
+            "Ozzy": os.path.join(assets_dir, "ozzy.png"),
         }
+
         
         # Try to load PNG images
         if PIL_AVAILABLE:
@@ -3733,17 +5118,12 @@ class MultiHunterGUI:
             was_running = self.prev_running.get(name, False)
             is_running = tab.is_running
             
+            # Battle arena disabled - just track state
             if is_running and not was_running:
-                # Hunter just started
-                self._start_live_simulation(name)
+                pass  # Hunter just started
                 
             elif not is_running and was_running:
-                # Hunter just finished
-                if self.live_sim_hunter == name:
-                    self.live_sim_running = False
-                    self.live_sim_final_stage = int(self.arena_visual_stage) + 1
-                    self.victory_mode = True
-                    self.victory_timer = 6
+                pass  # Hunter just finished
                 
                 # Update leaderboard
                 if tab._content_initialized and tab.results:
@@ -3764,19 +5144,45 @@ class MultiHunterGUI:
         """Update the leaderboard with completed run results."""
         if hunter_name not in self.leaderboard_labels:
             return
+        
+        # Get full results from the hunter tab
+        tab = self.hunter_tabs.get(hunter_name)
+        if tab and tab.results:
+            best = max(tab.results, key=lambda r: r.avg_final_stage)
             
-        label = self.leaderboard_labels[hunter_name]
+            # Store data for display
+            self.leaderboard_data[hunter_name] = {
+                "avg_stage": best.avg_final_stage,
+                "max_stage": best.highest_stage,
+                "gen": len(tab.results),
+            }
         
-        avg_stage = hunter.get("last_avg_stage", 0)
-        max_stage = hunter.get("last_max_stage", 0)
-        gen = hunter.get("last_gen", 0)
-        kills = hunter.get("kills", 0)
-        
-        if avg_stage > 0:
-            text = f"Avg: {avg_stage:.1f} | Max: {max_stage} | Gen: {gen} | Arena Kills: {kills}"
+        # Update display (static, no cycling)
+        self._refresh_leaderboard_display()
+    
+    def _refresh_leaderboard_display(self):
+        """Refresh the leaderboard display with stage info only."""
+        for hunter_name, label in self.leaderboard_labels.items():
+            data = self.leaderboard_data.get(hunter_name)
+            
+            if not data:
+                label.configure(text="Waiting...", fg='#888888')
+                continue
+            
+            # Simple static display: avg stage, max stage, generation
+            text = f"Stage: {data['avg_stage']:.1f} avg | {data['max_stage']} max | Gen {data['gen']}"
             label.configure(text=text, fg='#FFFFFF')
+    
+    def _format_number_short(self, num: float) -> str:
+        """Format number with K/M/B suffix for compact display."""
+        if num < 1000:
+            return f"{num:.0f}"
+        elif num < 1_000_000:
+            return f"{num/1000:.1f}K"
+        elif num < 1_000_000_000:
+            return f"{num/1_000_000:.1f}M"
         else:
-            label.configure(text="Waiting...", fg='#888888')
+            return f"{num/1_000_000_000:.1f}B"
     
     def _apply_global_settings(self):
         """Apply global settings to all hunter tabs."""
@@ -3908,22 +5314,56 @@ class MultiHunterGUI:
             bg=self.DARK_BG_TERTIARY, fg=self.DARK_TEXT, insertbackground=self.DARK_TEXT
         )
         self.global_log.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Configure color tags for global log
+        self._configure_global_log_tags()
     
-    def _log(self, message: str):
-        """Add message to global log."""
+    def _configure_global_log_tags(self):
+        """Configure colorful text tags for the global log."""
+        log = self.global_log
+        log.tag_configure("timestamp", foreground="#888899")
+        log.tag_configure("info", foreground="#aaddff")
+        log.tag_configure("success", foreground="#00ff88")
+        log.tag_configure("warning", foreground="#ffaa44")
+        log.tag_configure("error", foreground="#ff6666")
+        log.tag_configure("hunter", foreground="#66ccff", font=('Consolas', 9, 'bold'))
+        log.tag_configure("stage", foreground="#ffd700")
+        log.tag_configure("loot", foreground="#88cc88")
+    
+    def _log(self, message: str, tag: str = None):
+        """Add message to global log with optional color tag."""
         self.global_log.configure(state=tk.NORMAL)
         timestamp = time.strftime("%H:%M:%S")
-        self.global_log.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.global_log.insert(tk.END, f"[{timestamp}] ", "timestamp")
+        if tag:
+            self.global_log.insert(tk.END, f"{message}\n", tag)
+        else:
+            # Auto-detect tag based on content
+            if "error" in message.lower() or "failed" in message.lower():
+                self.global_log.insert(tk.END, f"{message}\n", "error")
+            elif "complete" in message.lower() or "finished" in message.lower() or "done" in message.lower():
+                self.global_log.insert(tk.END, f"{message}\n", "success")
+            elif "starting" in message.lower() or "running" in message.lower():
+                self.global_log.insert(tk.END, f"{message}\n", "info")
+            else:
+                self.global_log.insert(tk.END, f"{message}\n")
         self.global_log.see(tk.END)
         self.global_log.configure(state=tk.DISABLED)
     
     def _draw_global_progress(self):
         """Draw the color-coded global progress bar with 3 hunter segments."""
         canvas = self.global_progress_canvas
+        
+        # Check if anything has changed to avoid unnecessary redraws
+        current_state = tuple((name, state["progress"], state["complete"]) 
+                              for name, state in self.hunter_progress_state.items())
+        if hasattr(self, '_last_progress_state') and self._last_progress_state == current_state:
+            return  # Nothing changed, skip redraw
+        self._last_progress_state = current_state
+        
         canvas.delete("all")
         
-        # Get canvas dimensions
-        canvas.update_idletasks()
+        # Get canvas dimensions (avoid update_idletasks which causes flicker)
         width = canvas.winfo_width()
         height = canvas.winfo_height()
         
@@ -3982,14 +5422,14 @@ class MultiHunterGUI:
         # Apply global settings to all hunters first
         self._apply_global_settings()
         
-        # Get list of selected hunters
+        # Get list of selected hunters (in tab order: Borge, Ozzy, Knox)
         selected = []
         if self.run_borge_var.get():
             selected.append("Borge")
-        if self.run_knox_var.get():
-            selected.append("Knox")
         if self.run_ozzy_var.get():
             selected.append("Ozzy")
+        if self.run_knox_var.get():
+            selected.append("Knox")
         
         if not selected:
             messagebox.showwarning("No Selection", "Please select at least one hunter to optimize!")
@@ -4021,9 +5461,22 @@ class MultiHunterGUI:
         next_hunter = self.sequential_queue.pop(0)
         tab = self.hunter_tabs[next_hunter]
         
+        # Ensure the tab is initialized (lazy loading might not have triggered yet)
+        if not tab._content_initialized:
+            tab._on_tab_visible()
+            # Force Tkinter to process the initialization before starting optimization
+            self.root.update_idletasks()
+            # Give a bit more time for any after() calls to complete
+            self.root.after(200, lambda: self._start_hunter_after_init(tab, next_hunter))
+            return
+        
+        self._start_hunter_after_init(tab, next_hunter)
+    
+    def _start_hunter_after_init(self, tab, hunter_name: str):
+        """Start a hunter's optimization after ensuring tab is initialized."""
         if not tab.is_running:
-            self._log(f"   ▶️ Starting {next_hunter}...")
-            self.all_status.configure(text=f"Running: {next_hunter} ({len(self.sequential_queue)} remaining)")
+            self._log(f"   ▶️ Starting {hunter_name}...")
+            self.all_status.configure(text=f"Running: {hunter_name} ({len(self.sequential_queue)} remaining)")
             tab._start_optimization()
         
         # Check for completion
@@ -4036,9 +5489,10 @@ class MultiHunterGUI:
         # Check if any hunter is still running
         running = [name for name, tab in self.hunter_tabs.items() if tab.is_running]
         
-        # Also check if any hunter is still returning to bench
-        returning = [name for name, hunter in self.arena_hunters.items() 
-                     if hunter.get("returning_to_bench", False)]
+        # Battle arena disabled - no returning check needed
+        # returning = [name for name, hunter in self.arena_hunters.items() 
+        #              if hunter.get("returning_to_bench", False)]
+        returning = []
         
         if running:
             # Still running, check again
@@ -4046,10 +5500,6 @@ class MultiHunterGUI:
         elif returning:
             # Hunter finished but still walking back to bench - wait
             self.all_status.configure(text="⏳ Hunter returning to bench...")
-            self.root.after(200, self._check_sequential_complete)
-        elif self.victory_mode and self.victory_timer > 0:
-            # Victory celebration still playing - wait
-            self.all_status.configure(text="🎉 Celebrating victory...")
             self.root.after(200, self._check_sequential_complete)
         else:
             # Current hunter finished AND back on bench, brief cooldown before next
@@ -4079,17 +5529,19 @@ class MultiHunterGUI:
     
     def _check_all_complete(self):
         """Check if all hunters have completed."""
-        self._update_hunter_status()
         running = [name for name, tab in self.hunter_tabs.items() if tab.is_running]
         
         if running:
+            self._update_hunter_status()  # Only update status while running
             self.all_status.configure(text=f"Running: {', '.join(running)}")
             self.root.after(1000, self._check_all_complete)
         else:
+            self._update_hunter_status()  # Final update
             self.run_all_btn.configure(state=tk.NORMAL)
             self.stop_all_btn.configure(state=tk.DISABLED)
             self.all_status.configure(text="All hunters complete!")
             self._log("✅ All hunter optimizations complete!")
+            # Don't schedule another check - we're done
     
     def _save_all_builds(self):
         """Save all hunter builds."""
@@ -4123,6 +5575,28 @@ def main():
     """Main entry point."""
     root = tk.Tk()
     app = MultiHunterGUI(root)
+    
+    def on_closing():
+        """Cleanup on window close."""
+        # Terminate all optimization subprocesses
+        for tab in app.hunter_tabs.values():
+            if hasattr(tab, 'opt_process') and tab.opt_process and tab.opt_process.poll() is None:
+                try:
+                    tab.opt_process.terminate()
+                    tab.opt_process.wait(timeout=2)
+                except:
+                    try:
+                        tab.opt_process.kill()
+                    except:
+                        pass
+            
+            # Shutdown sim workers
+            if hasattr(tab, 'sim_worker') and tab.sim_worker:
+                tab.sim_worker.shutdown()
+        
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 
 

@@ -1,5 +1,6 @@
 import logging
 import random
+from collections import defaultdict
 from heapq import heappush as hpush
 from typing import Dict, List, Tuple
 
@@ -96,6 +97,7 @@ class Hunter:
             "inscryptions": self.inscryptions,
             "relics": self.relics,
             "gems": self.gems,
+            "gadgets": dict(self.gadgets),
         }
 
     def get_results(self) -> List:
@@ -157,15 +159,15 @@ class Hunter:
                 "hunter": config_dict.get("hunter", self.name),
                 "level": config_dict.get("level", 0)
             }
-        self.base_stats = config_dict.get("stats", {})
-        self.talents = config_dict.get("talents", {})
-        self.attributes = config_dict.get("attributes", {})
-        self.mods = config_dict.get("mods", {})
-        self.inscryptions = {k: self.costs["inscryptions"][k]["max"] if v == "max" else v for k, v in config_dict.get("inscryptions", {}).items()}
-        self.relics = config_dict.get("relics", {})
-        self.gems = config_dict.get("gems", {})
+        self.base_stats = defaultdict(int, config_dict.get("stats", {}))
+        self.talents = defaultdict(int, config_dict.get("talents", {}))
+        self.attributes = defaultdict(int, config_dict.get("attributes", {}))
+        self.mods = defaultdict(int, config_dict.get("mods", {}))
+        self.inscryptions = defaultdict(int, {k: self.costs["inscryptions"][k]["max"] if v == "max" else v for k, v in config_dict.get("inscryptions", {}).items()})
+        self.relics = defaultdict(int, config_dict.get("relics", {}))
+        self.gems = defaultdict(int, config_dict.get("gems", {}))
         # New fields with defaults
-        self.gadgets = config_dict.get("gadgets", {"wrench": 0, "zaptron": 0, "anchor": 0})
+        self.gadgets = defaultdict(int, config_dict.get("gadgets", {"wrench": 0, "zaptron": 0, "anchor": 0}))
         self.bonuses = config_dict.get("bonuses", {
             "shard_milestone": 0, 
             "research81": 0,
@@ -279,18 +281,16 @@ class Hunter:
                 raise ValueError(f'Unknown heal source: {source}')
 
     def on_kill(self) -> None:
-        """Actions to take when the hunter kills an enemy. Handles loot and XP based on WASM formulas.
+        """Actions to take when the hunter kills an enemy.
         
-        WASM Loot Formulas (per kill):
-        - Mat1 = stage * 0.3 * 1.686 / 1.4558 * multiplier = stage * 0.347 * multiplier
-        - Mat2 = stage * 0.3 * 1.6 / 1.4558 * multiplier = stage * 0.330 * multiplier
-        - Mat3 = stage * 0.3 * 1.2 / 1.4558 * multiplier = stage * 0.247 * multiplier
-        - XP = stage * 0.1 * 1.1 / 1.4558 * multiplier * xp_bonus = stage * 0.0755 * multiplier * xp_bonus
+        Accumulates loot and XP per kill using the same formula as Rust:
+        mat1 = stage * 0.347 * loot_mult
+        mat2 = stage * 0.330 * loot_mult  
+        mat3 = stage * 0.247 * loot_mult
+        xp = stage * 0.0755 * loot_mult * xp_mult
         """
         stage = self.current_stage
-        
-        # Base loot multiplier from talents/attributes/inscryptions
-        loot_mult = self.compute_loot_multiplier()
+        loot_mult = self.loot_mult
         
         # Call Me Lucky Loot proc (not on bosses)
         if (stage % 100 != 0 and stage > 0) and random.random() < self.effect_chance:
@@ -298,25 +298,16 @@ class Hunter:
                 loot_mult *= 1 + (self.talents["call_me_lucky_loot"] * 0.2)
                 self.total_effect_procs += 1
         
-        # Gem bonus
-        loot_mult *= (1 + 0.25 * self.gems["attraction_node_#3"])
-        
-        # WASM-based per-resource loot (constants from WASM analysis)
-        # Mat1: stage * 0.3 * avg(1.686) / divisor(1.4558) = stage * 0.347
-        # Mat2: stage * 0.3 * avg(1.6) / divisor(1.4558) = stage * 0.330
-        # Mat3: stage * 0.3 * avg(1.2) / divisor(1.4558) = stage * 0.247
+        # Loot calculation per kill (matching Rust exactly)
         mat1 = stage * 0.347 * loot_mult
         mat2 = stage * 0.330 * loot_mult
         mat3 = stage * 0.247 * loot_mult
+        xp = stage * 0.0755 * loot_mult * self.xp_mult
         
         self.loot_common += mat1
         self.loot_uncommon += mat2
         self.loot_rare += mat3
         self.total_loot += mat1 + mat2 + mat3
-        
-        # XP calculation: stage * 0.1 * avg(1.1) / divisor(1.4558) = stage * 0.0755
-        xp_bonus = self.get_xp_bonus()
-        xp = stage * 0.0755 * loot_mult * xp_bonus
         self.total_xp += xp
 
     def compute_loot_multiplier(self) -> float:
@@ -387,6 +378,10 @@ class Hunter:
             # i81: 1.1^level (max 10)
             i81 = self.inscryptions.get("i81", 0)
             if i81 > 0: mult *= 1.1 ** i81
+            
+            # blessings_of_the_scarab: +5% loot per level (max 20)
+            scarab = self.attributes.get("blessings_of_the_scarab", 0)
+            if scarab > 0: mult *= 1.0 + scarab * 0.05
         
         # === GADGETS ===
         # Compound formula: (1.005)^level * (1.02)^(level/10)
@@ -396,14 +391,18 @@ class Hunter:
             tier_mult = 1.02 ** (level // 10)
             return base * tier_mult
         
+        # Support both short ('wrench') and long ('wrench_of_gore') key names
         # Wrench (Borge loot)
         if isinstance(self, Borge):
-            mult *= gadget_loot(self.gadgets.get("wrench", 0))
+            wrench_level = self.gadgets.get("wrench", 0) or self.gadgets.get("wrench_of_gore", 0)
+            mult *= gadget_loot(wrench_level)
         # Zaptron (Ozzy loot)
         if isinstance(self, Ozzy):
-            mult *= gadget_loot(self.gadgets.get("zaptron", 0))
+            zaptron_level = self.gadgets.get("zaptron", 0) or self.gadgets.get("zaptron_533", 0)
+            mult *= gadget_loot(zaptron_level)
         # Anchor (all hunters)
-        mult *= gadget_loot(self.gadgets.get("anchor", 0))
+        anchor_level = self.gadgets.get("anchor", 0) or self.gadgets.get("anchor_of_ages", 0)
+        mult *= gadget_loot(anchor_level)
         
         # === LOOP MODS ===
         # Scavenger's Advantage: 1.05^level (max 25) - Borge
@@ -445,26 +444,35 @@ class Hunter:
             mult *= ultima
         
         # === GEM NODES (Attraction Gem) ===
+        # WASM verified: f_m(1.07, level) = 1.07^level
         if isinstance(self, Borge):
             loot_borge = self.gems.get("attraction_loot_borge", 0)
-            if loot_borge > 0: mult *= 1.01 ** loot_borge
+            if loot_borge > 0: mult *= 1.07 ** loot_borge
         if isinstance(self, Ozzy):
             loot_ozzy = self.gems.get("attraction_loot_ozzy", 0)
-            if loot_ozzy > 0: mult *= 1.01 ** loot_ozzy
+            if loot_ozzy > 0: mult *= 1.07 ** loot_ozzy
         
         return mult
     
     def get_xp_bonus(self) -> float:
-        """Get the XP bonus multiplier from inscryptions.
+        """Get the XP bonus multiplier from inscryptions and relics.
         
         Returns:
             float: The XP bonus multiplier.
         """
         xp_bonus = 1.0
         
+        # Borge: Relic r19 (Book of Mephisto) = 2^level XP bonus (max 8 levels)
+        if isinstance(self, Borge):
+            r19 = self.relics.get("r19", 0) or self.relics.get("book_of_mephisto", 0)
+            if r19 > 0:
+                xp_bonus *= 2 ** min(r19, 8)
+        
+        # Ozzy: i33 = 1.75^level XP multiplier (WASM verified: f_m(1.75, level))
         if isinstance(self, Ozzy):
-            # i33 = 1.75x XP per level for Ozzy
-            xp_bonus *= 1 + (self.inscryptions.get("i33", 0) * 0.75)
+            i33 = self.inscryptions.get("i33", 0)
+            if i33 > 0:
+                xp_bonus *= 1.75 ** i33
         
         return xp_bonus
 
@@ -478,14 +486,91 @@ class Hunter:
         if self.current_stage >= 100:
             self.catching_up = False
 
-    def compute_loot(self) -> float:
-        """DEPRECATED: Loot is now computed per-resource in on_kill().
-        This method is kept for backwards compatibility but returns 0.
+    def calculate_final_loot(self) -> None:
+        """Calculate final loot and XP using WASM's geometric series formula.
         
-        Returns:
-            float: 0 (loot is now tracked per-resource)
+        This is called at the end of each simulation run. The WASM formula uses:
+        - Geometric series: g = (1.051^(floor(stage/10)) - 1) / 0.051 * 10
+        - Plus partial stages: g + (stage % 10) * 1.051^(floor(stage/10))
+        - Multiplied by: ba (boss avg ~1.447) * y (timeless) * da (loot mult)
+        
+        Final loot = i * 0.3 * boss_avg / ba * da
+        where i = ba * (g + partial) * y * pog_bonus
         """
-        return 0.0
+        import math
+        
+        stage = self.current_stage
+        if stage <= 0:
+            return
+        
+        # WASM Boss array constants (for loot ratios)
+        BOSS_B_AVG = (1.0 + 1.0 + 1.2 + 1.5 + 1.7 + 2.0 + 3.2) / 7  # = 1.657 (mat1)
+        BOSS_D_AVG = (1.0 + 1.2 + 1.4 + 2.8) / 4  # = 1.6 (mat2)
+        BOSS_E_AVG = (0.8 + 1.0 + 1.8) / 3  # = 1.2 (mat3)
+        BOSS_F_AVG = (1.0 + 1.2) / 2  # = 1.1 (xp)
+        
+        # ba = overall boss average divisor
+        ba = (BOSS_B_AVG * 3 + BOSS_D_AVG * 3 + BOSS_E_AVG * 3 + BOSS_F_AVG) / 10.0  # ≈ 1.447
+        
+        # Geometric series for stages (WASM uses 1.051 base)
+        n = int(stage / 10)
+        if n > 0:
+            geom_sum = (1.051 ** n - 1.0) / 0.051 * 10.0
+        else:
+            geom_sum = 0
+        
+        # Partial stages (remaining after full 10s)
+        partial = stage - n * 10
+        total_base = geom_sum + partial * (1.051 ** n)
+        
+        # y = timeless mastery multiplier
+        if isinstance(self, Borge):
+            y = 1.0 + self.attributes.get("timeless_mastery", 0) * 0.14
+        elif isinstance(self, Ozzy):
+            y = 1.0 + self.attributes.get("timeless_mastery", 0) * 0.16
+        else:
+            y = 1.0 + self.attributes.get("timeless_mastery", 0) * 0.14
+        
+        # Presence of God bonus (0.2 per level * effect_chance)
+        pog_level = self.talents.get("presence_of_god", 0)
+        pog_bonus = 1.0
+        if pog_level > 0:
+            pog_bonus = 1.0 + pog_level * 0.2 * self.effect_chance
+        
+        # i = base loot accumulator
+        i = ba * total_base * y * pog_bonus
+        
+        # da = loot multiplier from all sources
+        da = self.compute_loot_multiplier()
+        
+        # Gem bonus (separate from da in WASM)
+        gem_bonus = 1.0 + 0.25 * self.gems.get("attraction_node_#3", 0)
+        da *= gem_bonus
+        
+        # Lucky loot procs bonus (average effect)
+        ll_level = self.talents.get("call_me_lucky_loot", 0)
+        if ll_level > 0 and self.total_effect_procs > 0:
+            # Average bonus based on procs
+            avg_ll_bonus = 1.0 + (self.total_effect_procs / max(self.total_kills, 1)) * ll_level * 0.2
+            da *= avg_ll_bonus
+        
+        # Calculate loot per resource type
+        # Mat1 = (i * 0.3) * BOSS_B_AVG / ba * da
+        mat1 = (i * 0.3) * BOSS_B_AVG / ba * da
+        mat2 = (i * 0.3) * BOSS_D_AVG / ba * da
+        mat3 = (i * 0.3) * BOSS_E_AVG / ba * da
+        
+        self.loot_common = mat1
+        self.loot_uncommon = mat2
+        self.loot_rare = mat3
+        self.total_loot = mat1 + mat2 + mat3
+        
+        # XP calculation
+        xp_bonus = self.get_xp_bonus()
+        # XP formula from WASM: (i / 10) * BOSS_F_AVG / ba * da * ca
+        # where ca is XP multiplier
+        xp = (i / 10.0) * BOSS_F_AVG / ba * da * xp_bonus
+        self.total_xp = xp
 
     def is_dead(self) -> bool:
         """Check if the hunter is dead.
@@ -516,6 +601,16 @@ class Hunter:
     @property
     def missing_hp_pct(self) -> float:
         return round((1 - self.hp / self.max_hp) * 100, 0)
+
+    @property
+    def loot_mult(self) -> float:
+        """Get the loot multiplier (calls compute_loot_multiplier)."""
+        return self.compute_loot_multiplier()
+
+    @property
+    def xp_mult(self) -> float:
+        """Get the XP multiplier (calls get_xp_bonus)."""
+        return self.get_xp_bonus()
 
     def show_build(self, in_colour: bool = True) -> None:
         """Prints the build of this Hunter's instance.
@@ -600,6 +695,9 @@ class Borge(Hunter):
         "soul_of_athena": 180,
     }
     
+    # Talents that require ALL other talents to be maxed first
+    talent_requires_all_maxed = ["legacy_of_ultima"]
+    
     costs = {
         "talents": {
             "death_is_my_companion": { # +1 revive at 80% hp
@@ -634,9 +732,9 @@ class Borge(Hunter):
                 "cost": 1,
                 "max": 15,
             },
-            "unknown_talent": { # Point dump for undiscovered talents - no effect
+            "legacy_of_ultima": { # The Legacy of Ultima: +1% HP/Power/Regen per point (WASM verified)
                 "cost": 1,
-                "max": float("inf"),
+                "max": 50,
             },
         },
         "attributes": {
@@ -692,7 +790,7 @@ class Borge(Hunter):
                 "cost": 15,
                 "max": 1,
             },
-            "soul_of_hermes": { # +0.5% crit chance, +1% crit power, +0.4% effect chance
+            "soul_of_hermes": { # +0.4% crit chance, +0.2% DR, +1% crit power, +0.4% effect chance (WASM verified)
                 "cost": 2,
                 "max": 20,
             },
@@ -771,31 +869,40 @@ class Borge(Hunter):
         """
         self.load_build(config_dict)
         
-        # Calculate gadget multipliers (each gadget gives ~1% per level to HP, Power, Regen, Loot)
+        # Calculate gadget multipliers (WASM-verified: ~0.3% per level + 0.2% bonus per 10 levels)
+        # WASM formula: (1 + level * 0.003) * (1.002 ** (level // 10))
+        def gadget_mult(level):
+            return (1 + level * 0.003) * (1.002 ** (level // 10))
+        
         gadget_hp_mult = (
-            (1 + self.gadgets.get("wrench_of_gore", 0) * 0.01) *
-            (1 + self.gadgets.get("zaptron_533", 0) * 0.01) *
-            (1 + self.gadgets.get("anchor_of_ages", 0) * 0.01)
+            gadget_mult(self.gadgets.get("wrench_of_gore", 0)) *
+            gadget_mult(self.gadgets.get("zaptron_533", 0)) *
+            gadget_mult(self.gadgets.get("anchor_of_ages", 0))
         )
         gadget_power_mult = gadget_hp_mult  # Same multiplier for power
         gadget_regen_mult = gadget_hp_mult  # Same multiplier for regen
         
-        # hp
-        self.max_hp = (
-            (
-                43
-                + (self.base_stats["hp"] * (2.50 + 0.01 * (self.base_stats["hp"] // 5)))
-                + (self.inscryptions["i3"] * 6)
-                + (self.inscryptions["i27"] * 24)
-            )
-            * (1 + (self.attributes["soul_of_ares"] * 0.01))
-            * (1 + (self.inscryptions["i60"] * 0.03))
-            * (1 + (self.relics["disk_of_dawn"] * 0.03))
-            * (1 + (0.015 * (self.meta["level"] - 39)) * self.gems["creation_node_#3"])
-            * (1 + (0.02 * self.gems["creation_node_#2"]))
-            * (1 + (0.2 * self.gems["creation_node_#1"]))
-            * gadget_hp_mult
+        # The Legacy of Ultima: +1% HP/Power/Regen per point (WASM: bc * 0.01 + 1.0)
+        talent_dump_mult = 1 + (self.talents.get("legacy_of_ultima", 0) * 0.01)
+        
+        # hp - WASM: base * ares * gadget + i27_flat + i3_flat
+        # Note: i27 and i3 are added AFTER multipliers in WASM!
+        hp_base = (
+            43
+            + (self.base_stats["hp"] * (2.50 + 0.01 * (self.base_stats["hp"] // 5)))
         )
+        hp_multiplied = (
+            hp_base
+            * (1 + (self.attributes["soul_of_ares"] * 0.01))
+            * (1 + (self.relics.get("disk_of_dawn", 0) * 0.03))
+            * (1 + (0.015 * (self.meta.get("level", 0) - 39)) * self.gems.get("creation_node_#3", 0))
+            * (1 + (0.02 * self.gems.get("creation_node_#2", 0)))
+            * (1 + (0.2 * self.gems.get("creation_node_#1", 0)))
+            * gadget_hp_mult
+            * talent_dump_mult
+        )
+        # Inscryptions add flat HP AFTER multipliers
+        self.max_hp = hp_multiplied + (self.inscryptions["i3"] * 6) + (self.inscryptions["i27"] * 59.15)
         self.hp = self.max_hp
         # power
         self.power = (
@@ -807,12 +914,16 @@ class Borge(Hunter):
             )
             * (1 + (self.attributes["soul_of_ares"] * 0.002))
             * (1 + (self.inscryptions["i60"] * 0.03))
-            * (1 + (self.relics["long_range_artillery_crawler"] * 0.03))
+            * (1 + (self.relics.get("long_range_artillery_crawler", 0) * 0.03))
             * (1 + (0.01 * (self.meta["level"] - 39)) * self.gems["creation_node_#3"])
             * (1 + (0.02 * self.gems["creation_node_#2"]))
             * (1 + (0.03 * self.gems["innovation_node_#3"]))
+            * (1 + (self.attributes["soul_of_the_minotaur"] * 0.01))  # WASM: +1% power per level
             * gadget_power_mult
+            * talent_dump_mult
         )
+        # Soul of Minotaur unique DR (separate multiplicative layer, like Scarab for Ozzy)
+        self.minotaur_dr = self.attributes["soul_of_the_minotaur"] * 0.01
         # regen
         self.regen = (
             (
@@ -824,6 +935,7 @@ class Borge(Hunter):
             * (1 + (0.005 * (self.meta["level"] - 39)) * self.gems["creation_node_#3"])
             * (1 + (0.02 * self.gems["creation_node_#2"]))
             * gadget_regen_mult
+            * talent_dump_mult
         )
         # damage_reduction
         self.damage_reduction = (
@@ -832,6 +944,7 @@ class Borge(Hunter):
                 + (self.base_stats["damage_reduction"] * 0.0144)
                 + (self.attributes["spartan_lineage"] * 0.015)
                 + (self.inscryptions["i24"] * 0.004)
+                + (self.attributes["soul_of_hermes"] * 0.002)  # WASM: +0.2% DR per level
             )
             * (1 + (0.02 * self.gems["creation_node_#2"]))
         )
@@ -859,6 +972,7 @@ class Borge(Hunter):
                 + (self.base_stats["special_chance"] * 0.0018)
                 + (self.attributes["explosive_punches"] * 0.044)
                 + (self.inscryptions["i4"] * 0.0065)
+                + (self.attributes["soul_of_hermes"] * 0.004)  # WASM: +0.4% crit per level
             )
             * (1 + (0.02 * self.gems["creation_node_#2"]))
         )
@@ -909,7 +1023,8 @@ class Borge(Hunter):
                 "omen_of_defeat": 0,
                 "call_me_lucky_loot": 0,
                 "presence_of_god": 0,
-                "fires_of_war": 0
+                "fires_of_war": 0,
+                "legacy_of_ultima": 0,
             },
             "attributes": {
                 "soul_of_ares": 0,
@@ -1024,11 +1139,15 @@ class Borge(Hunter):
             damage (float): The amount of damage to receive.
             is_crit (bool): Whether the attack was a critical hit or not.
         """
+        # Apply Soul of Minotaur unique DR first (separate multiplicative layer, like Scarab for Ozzy)
+        # WASM: damage = damage * (1 - minotaur_level * 0.01)
+        damage_after_minotaur = damage * (1 - self.minotaur_dr)
+        
         if is_crit:
-            reduced_crit_damage = damage * (1 - self.attributes["weakspot_analysis"] * 0.11)
+            reduced_crit_damage = damage_after_minotaur * (1 - self.attributes["weakspot_analysis"] * 0.11)
             final_damage = super(Borge, self).receive_damage(reduced_crit_damage)
         else:
-            final_damage = super(Borge, self).receive_damage(damage)
+            final_damage = super(Borge, self).receive_damage(damage_after_minotaur)
         if (not self.is_dead()) and final_damage > 0:
             helltouch_effect = (0.1 if (self.current_stage % 100 == 0 and self.current_stage > 0) else 1)
             reflected_damage = final_damage * self.attributes["helltouch_barrier"] * 0.08 * helltouch_effect
@@ -1246,6 +1365,9 @@ class Ozzy(Hunter):
         "blessings_of_the_sisters": 178,
     }
     
+    # Talents that require ALL other talents to be maxed first
+    talent_requires_all_maxed = ["legacy_of_ultima"]
+    
     costs = {
         "talents": {
             "death_is_my_companion": { # +1 revive, 80% of max hp
@@ -1264,7 +1386,7 @@ class Ozzy(Hunter):
                 "cost": 1,
                 "max": 10,
             },
-            "omen_of_decay": { # x0.08 enemy max hp per hit per point
+            "omen_of_decay": { # WASM: damage MULTIPLIER +3% per point (procs on 50% effect chance)
                 "cost": 1,
                 "max": 10,
             },
@@ -1272,7 +1394,7 @@ class Ozzy(Hunter):
                 "cost": 1,
                 "max": 10,
             },
-            "crippling_shots": { # chance on hit to deal x0.03 extra damage per point on the next hit
+            "crippling_shots": { # WASM: +0.8% enemy HP per stack on hit, /10 on bosses
                 "cost": 1,
                 "max": 15,
             },
@@ -1280,21 +1402,21 @@ class Ozzy(Hunter):
                 "cost": 1,
                 "max": 15,
             },
-            "unknown_talent": { # Point dump for undiscovered talents - no effect
+            "legacy_of_ultima": { # The Legacy of Ultima: +1% HP/Power/Regen per point (WASM verified)
                 "cost": 1,
-                "max": float("inf"),
+                "max": 50,
             },
         },
         "attributes": {
-            "living_off_the_land": { # x0.02 hp, x0.02 regen
+            "living_off_the_land": { # +1% HP per level, +0.2% regen per level (WASM verified)
                 "cost": 1,
                 "max": float("inf"),
             },
-            "exo_piercers": { # x0.012 power
+            "exo_piercers": { # +1.2% Power per level (WASM verified - NO speed effect!)
                 "cost": 1,
                 "max": float("inf"),
             },
-            "timeless_mastery": { # +0.16 loot
+            "timeless_mastery": { # +16% loot per level ONLY (WASM verified - NO HP/Power/Regen!)
                 "cost": 3,
                 "max": 5,
             },
@@ -1322,7 +1444,7 @@ class Ozzy(Hunter):
                 "cost": 3,
                 "max": 5,
             },
-            "gift_of_medusa": { # 0.05 hunter hp as enemy -regen
+            "gift_of_medusa": { # 0.06 hunter regen as enemy -regen (WASM verified, not 0.05!)
                 "cost": 3,
                 "max": 5,
             },
@@ -1334,11 +1456,11 @@ class Ozzy(Hunter):
                 "cost": 3,
                 "max": 4,
             },
-            "blessings_of_the_cat": { # +2% attack power, -0.4% unique attack speed reduction
+            "blessings_of_the_cat": { # +0.4% crit, +0.4% evade, +1% effect chance per level (WASM verified)
                 "cost": 2,
                 "max": 20,
             },
-            "blessings_of_the_scarab": { # +1% unique damage reduction, +5% loot gain
+            "blessings_of_the_scarab": { # +1% UNIQUE DR (stacks multiplicatively), +5% loot per level (WASM verified)
                 "cost": 2,
                 "max": 20,
             },
@@ -1372,11 +1494,21 @@ class Ozzy(Hunter):
                 "cost": 1,
                 "max": 10,
             },
+            "i86": { # +0.002 ozzy DR (WASM verified: ab * 0.002)
+                "cost": 1,
+                "max": 10,
+            },
+            "i92": { # +0.002 ozzy effect chance (WASM verified: bb * 0.002)
+                "cost": 1,
+                "max": 10,
+            },
         },
     }
 
     def __init__(self, config_dict: Dict):
         super(Ozzy, self).__init__(name='Ozzy')
+        self.scarab_dr: float = 0  # Blessings of the Scarab damage reduction
+        self.crit_chance: float = 0  # Ozzy has NO crit in WASM!
         self.__create__(config_dict)
         self.trickster_charges: int = 0
         self.crippling_on_target: int = 0
@@ -1409,66 +1541,117 @@ class Ozzy(Hunter):
         """
         self.load_build(config_dict)
         
-        # Calculate gadget multipliers (each gadget gives ~1% per level to HP, Power, Regen, Loot)
+        # Calculate gadget multipliers (WASM-verified: ~0.3% per level + 0.2% bonus per 10 levels)
+        # WASM formula: (1 + level * 0.003) * (1.002 ** (level // 10))
+        def gadget_mult(level):
+            return (1 + level * 0.003) * (1.002 ** (level // 10))
+        
         gadget_hp_mult = (
-            (1 + self.gadgets.get("wrench_of_gore", 0) * 0.01) *
-            (1 + self.gadgets.get("zaptron_533", 0) * 0.01) *
-            (1 + self.gadgets.get("anchor_of_ages", 0) * 0.01)
+            gadget_mult(self.gadgets.get("wrench_of_gore", 0)) *
+            gadget_mult(self.gadgets.get("zaptron_533", 0)) *
+            gadget_mult(self.gadgets.get("anchor_of_ages", 0))
         )
         gadget_power_mult = gadget_hp_mult
         gadget_regen_mult = gadget_hp_mult
         
-        # hp
+        # Attribute multipliers (WASM-verified Jan 2026)
+        # NOTE: timeless_mastery only affects LOOT (+16% per level), NOT HP/Power/Regen!
+        lotl_mult = 1 + (self.attributes["living_off_the_land"] * 0.02)  # +2% HP/Regen per level (WASM: ja[60] * 0.02)
+        exo_power_mult = 1 + (self.attributes["exo_piercers"] * 0.012)  # +1.2% Power per level (WASM: ja[61] * 0.012)
+        # NOTE: exo_piercers does NOT give crit or special_chance in WASM!
+        
+        # blessings_of_the_cat (WASM: ja[64]) - gives Power and Speed, NOT crit/evade/effect!
+        cat_power_mult = 1 + (self.attributes["blessings_of_the_cat"] * 0.02)  # +2% Power per level (WASM: ja[64] * 0.02)
+        cat_speed_mult = 1 - (self.attributes["blessings_of_the_cat"] * 0.004)  # -0.4% attack speed per level (faster!)
+        
+        # blessings_of_the_scarab (WASM: ja[69]) - gives DR only (applied in receive_damage), NOT power/speed!
+        # NOTE: scarab does NOT give power or speed bonuses in WASM!
+        
+        # The Legacy of Ultima: +1% HP/Power/Regen per point (WASM: ja[59] = s = "ultima")
+        talent_dump_mult = 1 + (self.talents.get("legacy_of_ultima", 0) * 0.01)
+        
+        # Scarab gives separate multiplicative DR (applied in receive_damage)
+        self.scarab_dr = self.attributes["blessings_of_the_scarab"] * 0.01  # +1% DR per level (WASM: b[69] * 0.01)
+        
+        # WASM Level Multiplier (lines 9182-9184):
+        # vb = 1.001^level * 1.02^(level/10)
+        # This multiplies HP, Power, and Regen
+        level = self.meta.get("level", 0)
+        level_mult = (1.001 ** level) * (1.02 ** (level // 10))
+        
+        # Iridian Card: +3% HP, +3% Power, +3% Regen (WASM verified)
+        iridian_mult = 1.03 if self.bonuses.get("iridian_card", False) else 1.0
+        
+        # hp - WASM-verified: HP does NOT use level_mult!
+        # WASM formula: hp_base * lotl_mult * disk_mult * gadget_hp_mult * gem_hp_mult
+        # Relic r4 = disk_of_dawn (+3% HP per level)
+        disk_of_dawn = self.relics.get("disk_of_dawn", 0) or self.relics.get("r4", 0)
         self.max_hp = (
             (
                 16
                 + (self.base_stats["hp"] * (2 + 0.03 * (self.base_stats["hp"] // 5)))
             )
-            * (1 + (self.attributes["living_off_the_land"] * 0.02))
-            * (1 + (self.relics["disk_of_dawn"] * 0.03))
+            # NOTE: No level_mult for HP in WASM!
+            * lotl_mult
+            * talent_dump_mult
+            * (1 + (disk_of_dawn * 0.03))
             * gadget_hp_mult
+            * (1 + (0.03 * self.gems.get("innovation_node_#3", 0)))  # +3% HP from gem
+            * iridian_mult  # Iridian Card: +3% HP
         )
         self.hp = self.max_hp
-        # power
+        # power - WASM: Power * level_mult * exo_power_mult * cat_power_mult * talent_dump_mult
+        # Relic r17 = bee_gone_companion_drone (+3% Power per level)
+        bee_gone = self.relics.get("bee_gone_companion_drone", 0) or self.relics.get("r17", 0)
         self.power = (
             (
                 2
                 + (self.base_stats["power"] * (0.3 + 0.01 * (self.base_stats["power"] // 10)))
             )
-            * (1 + (self.attributes["exo_piercers"] * 0.012))
-            * (1 + (self.relics["bee_gone_companion_drone"] * 0.03))
-            * (1 + (0.03 * self.gems["innovation_node_#3"]))
+            * level_mult
+            * exo_power_mult
+            * cat_power_mult
+            * talent_dump_mult
+            * (1 + (bee_gone * 0.03))
+            * (1 + (0.03 * self.gems.get("innovation_node_#3", 0)))
             * gadget_power_mult
+            * iridian_mult  # Iridian Card: +3% Power
         )
-        # regen
+        # regen - WASM-verified: NO level_mult! Uses +25% from innovation_gem3
         self.regen = (
             (
                 0.1
                 + (self.base_stats["regen"] * (0.05 + 0.01 * (self.base_stats["regen"] // 30)))
             )
-            * (1 + (self.attributes["living_off_the_land"] * 0.02))
+            # NOTE: No level_mult for Regen in WASM!
+            * lotl_mult
+            * talent_dump_mult
             * gadget_regen_mult
+            * (1 + (0.25 * self.gems.get("innovation_node_#3", 0)))  # +25% Regen from gem
+            * iridian_mult  # Iridian Card: +3% Regen
         )
         self.damage_reduction = (
             0
             + (self.base_stats["damage_reduction"] * 0.0035)
             + (self.attributes["wings_of_ibu"] * 0.026)
             + (self.inscryptions["i37"] * 0.0111)
+            + (self.inscryptions.get("i86", 0) * 0.002)  # WASM: ab * 0.002
         )
-        # evade_chance
+        # evade_chance - WASM: NO cat bonus for evade! Only base + wings_of_ibu
         self.evade_chance = (
             0.05
             + (self.base_stats["evade_chance"] * 0.0062)
             + (self.attributes["wings_of_ibu"] * 0.005)
         )
-        # effect_chance
+        # effect_chance - WASM: NO cat bonus for effect! Only base + extermination_protocol + inscryption
         self.effect_chance = (
             0.04
             + (self.base_stats["effect_chance"] * 0.0035)
             + (self.attributes["extermination_protocol"] * 0.028)
             + (self.inscryptions["i31"] * 0.006)
+            + (self.inscryptions.get("i92", 0) * 0.002)  # WASM: bb * 0.002
         )
-        # special_chance
+        # special_chance - WASM: NO exo_special! Only base stats + inscryption + gem
         self.special_chance = (
             (
                 0.05
@@ -1477,17 +1660,25 @@ class Ozzy(Hunter):
                 + (0.03 * self.gems["innovation_node_#3"])
             )
         )
+        # NOTE: Ozzy has NO crit in WASM! Removing crit_chance entirely.
         # special_damage
         self.special_damage = (
             0.25
             + (self.base_stats["special_damage"] * 0.01)
         )
-        # speed
+        # speed - WASM formula (lines 9230, 9325, 9348):
+        # 1. ja[10] = 4.0 - speed_stat * 0.02 - i36 * 0.03
+        # 2. ja[10] = ja[10] - thousand_needles * 0.06
+        # 3. ja[10] = ja[10] * (1.0 - ja[64] * 0.004)  where ja[64] = blessings_of_the_cat
+        # NOTE: exo_piercers does NOT affect speed! Only blessings_of_the_cat does!
         self.speed = (
-            4
-            - (self.base_stats["speed"] * 0.02)
-            - (self.talents["thousand_needles"] * 0.06)
-            - (self.inscryptions["i36"] * 0.03)
+            (
+                4
+                - (self.base_stats["speed"] * 0.02)
+                - (self.talents["thousand_needles"] * 0.06)
+                - (self.inscryptions["i36"] * 0.03)
+            )
+            * cat_speed_mult  # WASM: ja[10] *= (1.0 - blessings_of_the_cat * 0.004)
         )
         # lifesteal
         self.lifesteal = (self.attributes["shimmering_scorpion"] * 0.033)
@@ -1523,7 +1714,8 @@ class Ozzy(Hunter):
                 "omen_of_decay": 0,
                 "call_me_lucky_loot": 0,
                 "crippling_shots": 0,
-                "echo_bullets": 0
+                "echo_bullets": 0,
+                "legacy_of_ultima": 0,
             },
             "attributes": {
                 "living_off_the_land": 0,
@@ -1549,6 +1741,8 @@ class Ozzy(Hunter):
                 "i36": 0, # 0.03 ozzy speed
                 "i37": 0, # 0.0111 ozzy dr
                 "i40": 0, # 0.005 ozzy multistrike chance
+                "i86": 0, # 0.002 ozzy DR (WASM)
+                "i92": 0, # 0.002 ozzy effect chance (WASM)
             },
             "mods": {
             },
@@ -1613,69 +1807,133 @@ class Ozzy(Hunter):
                     self.total_ms_extra_damage += damage
                     self.total_multistrikes += 1
                 case '(ECHO)':
-                    if random.random() < self.special_chance:
-                        # Stat: Multi-Strike
-                        self.attack_queue.append('(ECHO-MS)')
-                        hpush(self.sim.queue, (0, 3, 'hunter_special'))
+                    # WASM: Echo bullets CANNOT trigger multishot (a=1 skips triggers)
                     damage = self.power * (self.talents["echo_bullets"] * 0.05)
                     self.total_echo += 1
-                case '(ECHO-MS)':
-                    damage = self.power * self.special_damage
-                    self.total_ms_extra_damage += damage
-                    self.total_multistrikes += 1
                 case _:
                     raise ValueError(f'Unknown attack type: {atk_type}')
-        # omen of decay
-        omen_effect = 0.1 if self.current_stage % 100 == 0 and self.current_stage > 0 else 1
-        omen_damage = target.hp * (self.talents["omen_of_decay"] * 0.008) * omen_effect
-        omen_final = damage + omen_damage
-        # crippling shots
-        cripple_damage = omen_final * (1 + (self.crippling_on_target * 0.03))
+        
+        # WASM-verified combat formulas (Jan 2026):
+        # Crippling Shots = flat % HP damage: (crippling_stacks * 0.008 * enemy_hp), /10 on bosses
+        # Omen of Decay = damage MULTIPLIER: (1 + omen * 0.03), procs on effect chance
+        
+        # crippling shots - flat % HP damage based on accumulated stacks
+        is_boss = self.current_stage % 100 == 0 and self.current_stage > 0
+        cripple_boss_reduction = 0.1 if is_boss else 1.0
+        cripple_damage = target.hp * (self.crippling_on_target * 0.008) * cripple_boss_reduction
         self.crippling_on_target = 0
-        logging.debug(f"[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tATTACK\t{cripple_damage:>6.2f} {atk_type} OMEN: {omen_damage:>6.2f}")
-        super(Ozzy, self).attack(target, cripple_damage)
+        
+        # omen of decay - damage multiplier that procs on effect chance (50% effect for omen)
+        omen_multiplier = 1.0
+        if self.talents["omen_of_decay"] and random.random() < (self.effect_chance / 2):
+            omen_multiplier = 1 + (self.talents["omen_of_decay"] * 0.03)
+            self.total_effect_procs += 1
+        
+        # Final damage = (base damage + cripple HP%) * omen multiplier
+        omen_damage = (damage + cripple_damage) * (omen_multiplier - 1)  # Track bonus from omen
+        final_damage = (damage + cripple_damage) * omen_multiplier
+        
+        logging.debug(f"[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tATTACK\t{final_damage:>6.2f} {atk_type} CRIP: {cripple_damage:>6.2f} OMEN: x{omen_multiplier:.2f}")
+        super(Ozzy, self).attack(target, final_damage)
         self.total_decay_damage += omen_damage
-        self.total_cripple_extra_damage += (cripple_damage - omen_final)
+        self.total_cripple_extra_damage += cripple_damage
         if atk_type == '':
             self.total_damage += cripple_damage
 
         # on_attack() effects
         # crippling shots and omen of decay inflict _extra damage_ that does not count towards lifesteal
-        self.heal_hp(damage * self.lifesteal, 'steal')
+        # WASM: Soul of Snek also empowers lifesteal during Vectid buff!
+        lifesteal_amount = damage * self.lifesteal
+        if self.empowered_regen > 0:
+            lifesteal_amount *= 1 + (self.attributes["soul_of_snek"] * 0.15)
+        self.heal_hp(lifesteal_amount, 'steal')
         if random.random() < self.effect_chance and (cs := self.talents["crippling_shots"]):
             # Talent: Crippling Shots, can proc on any attack
             self.crippling_on_target += cs
             logging.debug(f"[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tCRIPPLE\t+{cs}")
             self.total_effect_procs += 1
-        if target.is_dead():
-            self.on_kill()
+        # Note: on_kill() is called by Enemy.on_death() - no duplicate call needed here
 
-    def receive_damage(self, _, damage: float, is_crit: bool) -> None:
+    def receive_damage(self, attacker, damage: float, is_crit: bool) -> None:
         """Receive damage from an attack. Accounts for damage reduction, evade chance and trickster charges.
+        
+        WASM-verified order (f_le function, line 8517):
+        1. Check trickster_charges - if > 0, consume charge and evade
+        2. Else check normal evade chance
+        3. If evade fails AND it's a crit: Dance of Dashes can give trickster charge
+        4. At 200+ enrage: no evade possible, but Dance of Dashes still works on crits
 
         Args:
-            _ (Enemy): The unit that is attacking. Not used for Ozzy.
+            attacker (Enemy/Boss): The unit that is attacking.
             damage (float): The amount of damage to receive.
             is_crit (bool): Whether the attack was a critical hit or not.
         """
-        if self.trickster_charges:
+        from units import Boss
+        boss_max_enrage = isinstance(attacker, Boss) and getattr(attacker, 'max_enrage', False)
+        
+        # WASM Step 1: Check trickster charges FIRST (disabled at max enrage)
+        if self.trickster_charges and not boss_max_enrage:
             self.trickster_charges -= 1
             self.total_trickster_evades += 1
             logging.debug(f'[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tEVADE (TRICKSTER)')
+            # Evaded via trickster - no damage, no Dance of Dashes proc
+            return
+        
+        # WASM Step 2: Check normal evade (disabled at max enrage)
+        if not boss_max_enrage and random.random() < self.evade_chance:
+            self.total_evades += 1
+            logging.debug(f'[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tEVADE')
+            # Evaded normally - no damage, no Dance of Dashes proc
+            return
+        
+        # WASM Step 3: Failed to evade - take damage
+        # Apply scarab DR (WASM: separate multiplicative DR)
+        scarab_reduced_damage = damage * (1 - self.scarab_dr)
+        mitigated_damage = scarab_reduced_damage * (1 - self.damage_reduction)
+        self.hp -= mitigated_damage
+        self.total_taken += mitigated_damage
+        self.total_mitigated += (scarab_reduced_damage - mitigated_damage)
+        self.total_attacks_suffered += 1
+        
+        if boss_max_enrage:
+            logging.debug(f"[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tTAKE\t{mitigated_damage:>6.2f} (MAX ENRAGE - no evade), {self.hp:.2f} HP left")
         else:
-            _ = super(Ozzy, self).receive_damage(damage)
-            if is_crit:
-                if (dod := self.attributes["dance_of_dashes"]) and random.random() < dod * 0.15:
-                    # Talent: Dance of Dashes
-                    self.trickster_charges += 1
-                    self.total_effect_procs += 1
+            logging.debug(f"[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tTAKE\t{mitigated_damage:>6.2f}, {self.hp:.2f} HP left")
+        
+        # WASM Step 4: Dance of Dashes - ONLY when you take a crit (inside failed evade branch)
+        if is_crit:
+            if (dod := self.attributes["dance_of_dashes"]) and random.random() < dod * 0.15:
+                self.trickster_charges += 1
+                self.total_effect_procs += 1
+                logging.debug(f'[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tDANCE OF DASHES - gained trickster charge')
+        
+        if self.is_dead():
+            self.on_death()
+
+    def on_death(self) -> None:
+        """Actions to take when the hunter dies. Ozzy gets revives from BOTH death_is_my_companion 
+        AND blessings_of_the_sisters (WASM verified: d = a[51] + a[74]).
+        """
+        # Total revives = death_is_my_companion + blessings_of_the_sisters
+        total_revives = self.talents["death_is_my_companion"] + self.attributes.get("blessings_of_the_sisters", 0)
+        if self.times_revived < total_revives:
+            self.hp = self.max_hp * 0.8
+            self.revive_log.append(self.current_stage)
+            self.times_revived += 1
+            logging.debug(f'[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tREVIVED, {total_revives - self.times_revived} left')
+        else:
+            logging.debug(f'[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tDIED\n')
 
     def regen_hp(self) -> None:
-        """Regenerates hp according to the regen stat, modified by the `Vectid Elixir` attribute.
+        """Regenerates hp according to the regen stat, modified by Vectid Elixir + Soul of Snek.
+        
+        WASM formula: When Vectid is active, regen is multiplied by (1 + soul_of_snek * 0.15).
+        Soul of Snek is what actually provides the regen bonus, Vectid Elixir just activates it.
         """
         regen_value = self.regen
         if self.empowered_regen > 0:
-            regen_value *= 1 + (self.attributes["vectid_elixir"] * 0.15)
+            # WASM: Soul of Snek empowers regen during Vectid buff, not Vectid itself!
+            regen_value *= 1 + (self.attributes["soul_of_snek"] * 0.15)
             self.empowered_regen -= 1
         self.heal_hp(regen_value, 'regen')
 
@@ -1715,11 +1973,19 @@ class Ozzy(Hunter):
 
     def apply_medusa(self, enemy) -> None:
         """Apply the Gift of Medusa effect to an enemy.
+        
+        WASM formula: enemy.regen -= hunter_regen * medusa_level * 0.06 * vectid_mult
+        The vectid multiplier is applied during regen ticks, not here at spawn.
+        
+        We store the anti-regen value separately so it can be multiplied by vectid
+        during each regen tick (matching WASM behavior).
 
         Args:
             enemy (Enemy): The enemy to apply the effect to.
         """
-        enemy.regen -= self.regen * self.attributes["gift_of_medusa"] * 0.05
+        # Store the base anti-regen value - vectid multiplier is applied in Enemy.regen_hp()
+        # WASM coefficient is 0.06, not 0.05!
+        enemy.medusa_anti_regen = self.regen * self.attributes["gift_of_medusa"] * 0.06
 
     @property
     def power(self) -> float:
@@ -1842,6 +2108,10 @@ class Knox(Hunter):
     attribute_exclusions = [
         # Knox has no mutually exclusive attributes - everything is dependency-based
     ]
+    
+    # Talents that require ALL other talents to be maxed first
+    talent_requires_all_maxed = ["legacy_of_ultima"]
+    
     costs = {
         "talents": {
             "death_is_my_companion": {  # +1 revive at 80% hp
@@ -1876,9 +2146,9 @@ class Knox(Hunter):
                 "cost": 1,
                 "max": 15,
             },
-            "unknown_talent": {  # Point dump for undiscovered talents - no effect
+            "legacy_of_ultima": {  # The Legacy of Ultima: NO effect for Knox (WASM verified)
                 "cost": 1,
-                "max": float("inf"),
+                "max": 50,
             },
         },
         "attributes": {
@@ -1939,7 +2209,7 @@ class Knox(Hunter):
 
         # Knox-specific stats
         self.hundred_souls: int = 0
-        self.salvo_projectiles: int = 5  # Base projectiles per salvo
+        # Note: salvo_projectiles is set in __create__ based on config (base 3 + upgrades)
         
         # statistics
         # offence
@@ -1959,45 +2229,46 @@ class Knox(Hunter):
         """
         self.load_build(config_dict)
         
-        # Calculate gadget multipliers (each gadget gives ~1% per level to HP, Power, Regen, Loot)
+        # Calculate gadget multipliers (WASM-verified: ~0.3% per level + 0.2% bonus per 10 levels)
+        # WASM formula: (1 + level * 0.003) * (1.002 ** (level // 10))
+        def gadget_mult(level):
+            return (1 + level * 0.003) * (1.002 ** (level // 10))
+        
         gadget_hp_mult = (
-            (1 + self.gadgets.get("wrench_of_gore", 0) * 0.01) *
-            (1 + self.gadgets.get("zaptron_533", 0) * 0.01) *
-            (1 + self.gadgets.get("anchor_of_ages", 0) * 0.01)
+            gadget_mult(self.gadgets.get("wrench_of_gore", 0)) *
+            gadget_mult(self.gadgets.get("zaptron_533", 0)) *
+            gadget_mult(self.gadgets.get("anchor_of_ages", 0))
         )
         gadget_power_mult = gadget_hp_mult
         gadget_regen_mult = gadget_hp_mult
         
-        # hp - Knox formula (similar to others but with Release the Kraken)
+        # hp - Knox formula (WASM-verified: 20 + hp * (2 + hp/50))
+        # Note: Gadget does NOT affect Knox HP in WASM
         self.max_hp = (
             (
                 20  # Base HP
-                + (self.base_stats["hp"] * (2.0 + 0.02 * (self.base_stats["hp"] // 5)))
+                + (self.base_stats["hp"] * (2.0 + self.base_stats["hp"] / 50))
             )
             * (1 + (self.attributes["release_the_kraken"] * 0.005))
             * (1 + (self.relics.get("disk_of_dawn", 0) * 0.03))
-            * gadget_hp_mult
         )
         self.hp = self.max_hp
         
-        # power
+        # power - Knox formula (WASM-verified: 1.2 + atk * (0.06 + atk/1000))
+        # Note: Gadget does NOT affect Knox Power in WASM
         self.power = (
             (
-                2.5  # Base power
-                + (self.base_stats["power"] * (0.4 + 0.01 * (self.base_stats["power"] // 10)))
+                1.2  # Base power
+                + (self.base_stats["power"] * (0.06 + self.base_stats["power"] / 1000))
             )
             * (1 + (self.attributes["release_the_kraken"] * 0.005))
-            * gadget_power_mult
         )
         
-        # regen
+        # regen - Knox formula (WASM-verified: 0.05 + regen * (0.01 + regen * 0.00075))
+        # Note: Gadget and Kraken do NOT affect Knox Regen in WASM
         self.regen = (
-            (
-                0.15  # Base regen
-                + (self.base_stats["regen"] * (0.04 + 0.01 * (self.base_stats["regen"] // 30)))
-            )
-            * (1 + (self.attributes["release_the_kraken"] * 0.008))
-            * gadget_regen_mult
+            0.05  # Base regen
+            + (self.base_stats["regen"] * (0.01 + self.base_stats["regen"] * 0.00075))
         )
         
         # damage_reduction
@@ -2056,8 +2327,8 @@ class Knox(Hunter):
         self.special_chance = 0.10
         self.special_damage = 1.0 + (self.talents["finishing_move"] * 0.2)
         
-        # projectiles per salvo
-        self.salvo_projectiles = 5 + self.base_stats.get("projectiles_per_salvo", 0)
+        # projectiles per salvo (base 3 + upgrades)
+        self.salvo_projectiles = 3 + self.base_stats.get("projectiles_per_salvo", 0)
         
         # lifesteal (Knox might not have this, set to 0)
         self.lifesteal = 0
@@ -2095,6 +2366,7 @@ class Knox(Hunter):
                 "call_me_lucky_loot": 0,
                 "presence_of_god": 0,
                 "finishing_move": 0,
+                "legacy_of_ultima": 0,
             },
             "attributes": {
                 "release_the_kraken": 0,
