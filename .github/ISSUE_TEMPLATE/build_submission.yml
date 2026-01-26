@@ -11,6 +11,8 @@ body:
         By submitting your **real in-game stats**, you help us fine-tune the simulation formulas to match the game exactly. The more data points we have, the more accurate the optimizer becomes!
         
         **Please fill out as much as you can** - even partial data is helpful!
+        
+        📸 **Where to find these stats**: Open your Attributes page in-game and look at the stats panel on the right side.
 
   - type: dropdown
     id: hunter
@@ -35,48 +37,148 @@ body:
 
   - type: markdown
     attributes:
-      value: "## 📊 In-Game Stats (from your hunt results)"
+      value: |
+        ---
+        ## 🎯 Combat Stats (from Attributes Page)
 
   - type: input
-    id: irl_max_stage
+    id: enemies_killed_best
     attributes:
-      label: Max Stage Reached (In-Game)
-      description: Your best stage from actual gameplay
+      label: Best Run Enemies Killed
+      description: Highest number of enemies killed in a single run
+      placeholder: "1,234"
+    validations:
+      required: true
+
+  - type: input
+    id: enemies_killed_avg
+    attributes:
+      label: Avg Run Enemies Killed
+      description: Average enemies killed per run
+      placeholder: "1,100"
+    validations:
+      required: true
+
+  - type: input
+    id: highest_stage
+    attributes:
+      label: Highest Stage
+      description: Your all-time highest stage reached
       placeholder: "300"
     validations:
       required: true
 
   - type: input
-    id: irl_avg_stage
+    id: highest_stage_avg
     attributes:
-      label: Average Stage (if known)
-      description: Your typical ending stage
-      placeholder: "295"
+      label: Highest Stage Run Avg
+      description: Your average stage for runs (shown on attributes page)
+      placeholder: "295.5"
+    validations:
+      required: true
 
   - type: input
-    id: irl_avg_loot
+    id: run_avg_time
     attributes:
-      label: Average Loot Per Hunt
-      description: Approximate total loot from a typical run
-      placeholder: "4.5B"
-
-  - type: input
-    id: irl_avg_time
-    attributes:
-      label: Average Hunt Time (seconds)
-      description: How long your hunts typically take
-      placeholder: "2400"
-
-  - type: input
-    id: irl_avg_xp
-    attributes:
-      label: Average XP Per Hunt
-      description: XP gained from a typical run
-      placeholder: "5.9B"
+      label: Run Avg Time
+      description: Average time per run (format HH:MM:SS or seconds)
+      placeholder: "40:00 or 2400"
+    validations:
+      required: true
 
   - type: markdown
     attributes:
-      value: "## 🛠️ Your Build Configuration"
+      value: |
+        ---
+        ## 💎 Resource Gains (from Attributes Page)
+        
+        **Borge**: Obsidian / Behlium / Hellish-Biomatter
+        **Knox**: Glacium / Quartz / Tesseracts  
+        **Ozzy**: Farahyte Ore / Galvarium / Vectid Crystals
+
+  - type: input
+    id: common_resource_best
+    attributes:
+      label: Common Resource - Best Run
+      description: "Borge: Obsidian | Knox: Glacium | Ozzy: Farahyte Ore"
+      placeholder: "4.5B"
+    validations:
+      required: true
+
+  - type: input
+    id: common_resource_avg
+    attributes:
+      label: Common Resource - Avg
+      description: Average common resource per run
+      placeholder: "4.2B"
+    validations:
+      required: true
+
+  - type: input
+    id: uncommon_resource_best
+    attributes:
+      label: Uncommon Resource - Best Run
+      description: "Borge: Behlium | Knox: Quartz | Ozzy: Galvarium"
+      placeholder: "1.2B"
+    validations:
+      required: true
+
+  - type: input
+    id: uncommon_resource_avg
+    attributes:
+      label: Uncommon Resource - Avg
+      description: Average uncommon resource per run
+      placeholder: "1.1B"
+    validations:
+      required: true
+
+  - type: input
+    id: rare_resource_best
+    attributes:
+      label: Rare Resource - Best Run
+      description: "Borge: Hellish-Biomatter | Knox: Tesseracts | Ozzy: Vectid Crystals"
+      placeholder: "500M"
+    validations:
+      required: true
+
+  - type: input
+    id: rare_resource_avg
+    attributes:
+      label: Rare Resource - Avg
+      description: Average rare resource per run
+      placeholder: "450M"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        ## ⭐ XP Gains
+
+  - type: input
+    id: xp_best
+    attributes:
+      label: XP Gained - Best Run
+      description: Highest XP gained in a single run
+      placeholder: "6.5B"
+    validations:
+      required: true
+
+  - type: input
+    id: xp_avg
+    attributes:
+      label: XP Gained - Avg
+      description: Average XP per run
+      placeholder: "5.9B"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        ## 🛠️ Your Build Configuration
 
   - type: textarea
     id: build_json
@@ -100,21 +202,27 @@ body:
 
   - type: markdown
     attributes:
-      value: "## 📈 Simulation Results (Optional)"
+      value: |
+        ---
+        ## 📈 Simulation Results (Optional but Helpful!)
 
   - type: textarea
     id: sim_results
     attributes:
       label: Simulation Results
       description: |
-        If you've run the optimizer, paste the results here for comparison.
-        This helps us see how close our simulation is to your real stats.
+        If you've run the optimizer with this build, paste the sim results here.
+        This shows us exactly how close (or far off) our simulation is from reality!
       placeholder: |
-        Optimizer Results:
-        - Avg Stage: 300.0
-        - Max Stage: 300
-        - Avg Loot: 4.5B
-        - Sims/sec: 65,000
+        From the optimizer's "Compare" tab or results:
+        
+        Sim Avg Stage: 300.0
+        Sim Max Stage: 300
+        Sim Avg Time: 2380s
+        Sim Avg Loot (Common): 4.3B
+        Sim Avg XP: 5.7B
+        
+        Accuracy: 97.5% OPTIMAL
 
   - type: textarea
     id: additional_notes
@@ -122,10 +230,11 @@ body:
       label: Additional Notes
       description: |
         Any other information that might be helpful:
-        - Specific stages where you notice discrepancies
-        - Boss fights that seem off
+        - Stages where you die most often
+        - Bosses that seem particularly hard/easy
         - Mechanics that don't seem to work as expected
-      placeholder: "I notice the simulation overestimates lifesteal healing by ~10%..."
+        - Screenshot links
+      placeholder: "I usually die around stage 295 to the Stage 300 boss..."
 
   - type: checkboxes
     id: consent

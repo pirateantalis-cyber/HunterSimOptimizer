@@ -18,10 +18,133 @@ def _log(msg):
     """Safely write to stderr if available, otherwise ignore."""
     if sys.stderr is not None:
         try:
-            _log(msg)
-            
+            sys.stderr.write(msg)
+            sys.stderr.flush()
         except:
             pass
+
+def extend_elite_pattern(elite_talents, elite_attrs, generator, target_talents, target_attrs):
+    """
+    Extend an elite pattern from a previous tier to use more points.
+    
+    Takes a build that used fewer points (from an earlier tier) and adds more
+    talent/attribute points to reach the new tier's targets while preserving
+    the core pattern that made the original build successful.
+    """
+    import random
+    
+    hunter_class = generator.hunter_class
+    talents_list = list(generator.costs["talents"].keys())
+    attrs_list = list(generator.costs["attributes"].keys())
+    
+    # Copy elite pattern as starting point
+    talents = {t: elite_talents.get(t, 0) for t in talents_list}
+    attrs = {a: elite_attrs.get(a, 0) for a in attrs_list}
+    
+    # Calculate how much elite already spent
+    elite_talent_spent = sum(talents.values())
+    attr_costs = {a: generator.costs["attributes"][a]["cost"] for a in attrs_list}
+    elite_attr_spent = sum(attrs[a] * attr_costs[a] for a in attrs_list)
+    
+    # Calculate how much MORE we need to add
+    talent_to_add = max(0, target_talents - elite_talent_spent)
+    attr_to_add = max(0, target_attrs - elite_attr_spent)
+    
+    attr_max = {a: generator.costs["attributes"][a]["max"] for a in attrs_list}
+    talent_max = {t: generator.costs["talents"][t]["max"] for t in talents_list}
+    
+    # Find unlimited (infinite) attributes for fallback
+    unlimited_attrs = [a for a in attrs_list if attr_max[a] == float('inf')]
+    unlimited_attrs.sort(key=lambda a: attr_costs[a])
+    
+    # Find unlimited talents for fallback (but NOT unknown_talent)
+    unlimited_talents = [t for t in talents_list if talent_max[t] == float('inf') and t != 'unknown_talent']
+    
+    # === ADD TALENT POINTS ===
+    attempts = 0
+    while talent_to_add > 0 and attempts < 1000:
+        attempts += 1
+        # Find KNOWN talents that can accept more points
+        valid = [t for t in talents_list 
+                 if t != 'unknown_talent' and (talent_max[t] == float('inf') or talents[t] < int(talent_max[t]))]
+        
+        # Only use unknown_talent as LAST RESORT
+        if not valid:
+            if 'unknown_talent' in talents_list:
+                valid = ['unknown_talent']
+            else:
+                break
+        
+        chosen = random.choice(valid)
+        talents[chosen] += 1
+        talent_to_add -= 1
+    
+    # === ADD ATTRIBUTE POINTS ===
+    deps = getattr(hunter_class, 'attribute_dependencies', {})
+    exclusions = getattr(hunter_class, 'attribute_exclusions', [])
+    
+    attempts = 0
+    remaining = attr_to_add
+    
+    while remaining > 0 and attempts < 5000:
+        attempts += 1
+        
+        # Find valid attributes to add to
+        valid_attrs = []
+        for attr in attrs_list:
+            cost = attr_costs[attr]
+            if cost > remaining:
+                continue
+            # Check max - unlimited attrs (inf) always pass this check
+            if attr_max[attr] != float('inf'):
+                if attrs[attr] >= int(attr_max[attr]):
+                    continue
+            # Check dependencies
+            if attr in deps:
+                if not all(attrs.get(req, 0) >= lvl for req, lvl in deps[attr].items()):
+                    continue
+            # Check unlock requirements
+            if not generator._can_unlock_attribute(attr, attrs, attr_costs):
+                continue
+            # Check exclusions
+            excluded = False
+            for excl_pair in exclusions:
+                if attr in excl_pair:
+                    other = excl_pair[0] if excl_pair[1] == attr else excl_pair[1]
+                    if attrs.get(other, 0) > 0:
+                        excluded = True
+                        break
+            if excluded:
+                continue
+            valid_attrs.append(attr)
+        
+        if valid_attrs:
+            chosen = random.choice(valid_attrs)
+            attrs[chosen] += 1
+            remaining -= attr_costs[chosen]
+        elif unlimited_attrs:
+            # FALLBACK: Force use unlimited attributes
+            spent_any = False
+            for sink_attr in unlimited_attrs:
+                if attr_costs[sink_attr] <= remaining:
+                    attrs[sink_attr] += 1
+                    remaining -= attr_costs[sink_attr]
+                    spent_any = True
+                    break
+            if not spent_any:
+                break
+        else:
+            break
+    
+    # FINAL GUARANTEE: Dump remaining into unlimited attrs
+    if remaining > 0 and unlimited_attrs:
+        for sink_attr in unlimited_attrs:
+            cost = attr_costs[sink_attr]
+            while remaining >= cost:
+                attrs[sink_attr] += 1
+                remaining -= cost
+    
+    return talents, attrs
 
 from hunters import Borge, Knox, Ozzy
 from gui_multi import BuildGenerator
@@ -228,21 +351,31 @@ def run_optimization(config_file, result_file):
             
             # Process promoted builds FIRST (they're known good builds from previous gen)
             for top_build in top_builds:
-                # Mutate the promoted build
-                talents = dict(top_build['talents'])
-                attrs = dict(top_build['attributes'])
+                # EXTEND the promoted build to use the new tier's point budget
+                # This is critical! Previous tier builds have fewer points allocated.
+                talents, attrs = extend_elite_pattern(
+                    top_build['talents'],
+                    top_build['attributes'],
+                    generator,
+                    talent_points,
+                    attribute_points
+                )
                 
-                # Apply mutations: randomly adjust 1-2 talents/attributes
+                # Apply small mutations AFTER extending (to explore nearby space)
                 import random
-                if random.random() < 0.5 and talents:
-                    # Mutate a talent
-                    talent_key = random.choice(list(talents.keys()))
-                    talents[talent_key] = max(0, min(talent_points, talents[talent_key] + random.randint(-1, 1)))
-                
-                if random.random() < 0.5 and attrs:
-                    # Mutate an attribute
-                    attr_key = random.choice(list(attrs.keys()))
-                    attrs[attr_key] = max(0, attrs[attr_key] + random.randint(-2, 2))
+                if random.random() < 0.3:  # 30% chance to mutate
+                    # Swap some points between talents
+                    talent_keys = [t for t in talents if talents[t] > 0]
+                    if len(talent_keys) >= 2:
+                        src = random.choice(talent_keys)
+                        dst = random.choice([t for t in talents if t != src])
+                        if talents[src] > 0:
+                            talents[src] -= 1
+                            talent_max_val = generator.costs["talents"][dst]["max"]
+                            if talent_max_val == float('inf') or talents[dst] < int(talent_max_val):
+                                talents[dst] += 1
+                            else:
+                                talents[src] += 1  # Undo if can't add to dst
                 
                 # Create a hashable key for this build to check for duplicates
                 build_key = (

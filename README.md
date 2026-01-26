@@ -88,6 +88,42 @@ Our simulations are **validated against [hunter-sim2](https://hunter-sim2.netlif
 
 ---
 
+## 🧮 Why Can't We Test ALL Builds?
+
+A common question is "why not just test every possible build?" The answer: **the search space is astronomically large**.
+
+### The Math
+
+At a given level, you have:
+- **Talent Points** = Level (e.g., 69 points at level 69)
+- **Attribute Points** = Level × 3 (e.g., 207 points at level 69)
+
+Each point can be distributed across 9 talents and 10-15 attributes. The combinatorial explosion is staggering:
+
+| Hunter | Level | Talent Combos | Attribute Combos | **Total Builds** |
+|--------|-------|---------------|------------------|------------------|
+| Borge | 69 | 1.25 billion | 278 trillion | **347 quintillion** |
+| Ozzy | 67 | 416 million | 51 trillion | **21 quintillion** |
+| Knox | 30 | 59 million | 14 billion | **845 quadrillion** |
+
+### Perspective
+
+At 65,000 simulations per second (our Rust backend's speed), testing ALL Borge builds would take **170 billion years**. The universe is only 13.8 billion years old!
+
+### Our Solution: Smart Sampling
+
+Instead of exhaustive search, we use a **progressive evolution algorithm**:
+
+1. **Random sampling** - Test thousands of random builds to find promising regions
+2. **Genetic evolution** - Breed the best performers, mutate slightly, test offspring
+3. **Progressive refinement** - Each generation gets closer to optimal
+
+In practice, **testing ~50,000 builds over a few hours finds excellent results** that are likely within a few percent of the theoretical optimum. The optimizer focuses on the most promising build regions rather than wasting time on obviously bad combinations.
+
+You can run `scripts/count_builds.py` to see the exact numbers for your levels!
+
+---
+
 ## 🚀 Quick Start
 
 ### Option 1: Use the EXE (Recommended)
