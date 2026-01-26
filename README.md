@@ -32,7 +32,7 @@ A high-performance build optimizer for the Interstellar Hunt in CIFI (Cell Idle 
 
 ## 🎯 Accuracy & Validation
 
-Our simulations are **validated against [hunter-sim2](https://hunter-sim2.netlify.app/home)**, the community-trusted site built with WASM from the official game code. Players trust this site because it reflects actual in-game mechanics.
+Our simulations are **validated against [hunter-sim2](https://hunter-sim2.netlify.app/home)**, the community-trusted site: Players trust this site because it reflects actual in-game mechanics.
 
 **Since our tool stays within ~5% of hunter-sim2, you can trust either Python or Rust simulations to be accurate!**
 
