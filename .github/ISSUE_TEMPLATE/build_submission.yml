@@ -86,6 +86,110 @@ body:
     validations:
       required: true
 
+  - type: input
+    id: damage_best
+    attributes:
+      label: Damage Dealt - Best Run
+      description: Highest total damage dealt in a single run
+      placeholder: "12.89M"
+    validations:
+      required: true
+
+  - type: input
+    id: damage_avg
+    attributes:
+      label: Damage Dealt - Avg
+      description: Average damage dealt per run
+      placeholder: "10.33M"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        ## ⚔️ Hunter-Specific Combat Stats
+        
+        Fill in the section for YOUR hunter only. Leave other hunter sections blank.
+
+  - type: markdown
+    attributes:
+      value: |
+        ### 🔥 Borge-Specific Stats
+
+  - type: input
+    id: borge_crit_hits_avg
+    attributes:
+      label: "[Borge] Crit Hits - Run Avg"
+      description: Average critical hits per run
+      placeholder: "1.69k"
+
+  - type: input
+    id: borge_extra_crit_damage_avg
+    attributes:
+      label: "[Borge] Extra Damage from Crits - Avg"
+      description: Average extra damage from critical hits per run
+      placeholder: "3.89M"
+
+  - type: input
+    id: borge_helltouch_damage_avg
+    attributes:
+      label: "[Borge] Hellfire Torch Damage - Avg"
+      description: Average damage dealt by Hellfire Torch (Helltouch) per run
+      placeholder: "763.34M"
+
+  - type: markdown
+    attributes:
+      value: |
+        ### 🐍 Ozzy-Specific Stats
+
+  - type: input
+    id: ozzy_snek_hp_removed_avg
+    attributes:
+      label: "[Ozzy] HP Removed by Soul of Snek - Avg"
+      description: Average HP removed by Soul of Snek effect per run
+      placeholder: "127.67M"
+
+  - type: input
+    id: ozzy_multistrike_hits_avg
+    attributes:
+      label: "[Ozzy] Multistrike Hits - Run Avg"
+      description: Average multistrike hits per run (may be blank in-game)
+      placeholder: "2.5k"
+
+  - type: input
+    id: ozzy_multistrike_damage_avg
+    attributes:
+      label: "[Ozzy] Extra Damage from Multistrike - Avg"
+      description: Average extra damage from multistrikes per run (may be blank in-game)
+      placeholder: "1.2M"
+
+  - type: markdown
+    attributes:
+      value: |
+        ### 🏴‍☠️ Knox-Specific Stats
+
+  - type: input
+    id: knox_extra_salvos_avg
+    attributes:
+      label: "[Knox] Extra Salvos - Run Avg"
+      description: Average extra salvos fired per run (from Ghost Bullets/Armory)
+      placeholder: "17.11k"
+
+  - type: input
+    id: knox_extra_salvo_damage_avg
+    attributes:
+      label: "[Knox] Extra Damage from Salvos - Avg"
+      description: Average extra damage from additional salvo bullets per run
+      placeholder: "68.69k"
+
+  - type: input
+    id: knox_torpedo_damage_avg
+    attributes:
+      label: "[Knox] Torpedo Damage - Avg"
+      description: Average damage dealt by torpedoes per run
+      placeholder: "1.67B"
+
   - type: markdown
     attributes:
       value: |

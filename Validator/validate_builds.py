@@ -56,6 +56,8 @@ class IRLData:
     highest_stage: int
     highest_stage_avg: float
     run_avg_time_seconds: float
+    damage_best: float
+    damage_avg: float
     
     # Resources (common/uncommon/rare)
     common_best: float
@@ -69,8 +71,23 @@ class IRLData:
     xp_best: float
     xp_avg: float
     
+    # Borge-specific stats
+    borge_crit_hits_avg: float = 0.0
+    borge_extra_crit_damage_avg: float = 0.0
+    borge_helltouch_damage_avg: float = 0.0
+    
+    # Ozzy-specific stats
+    ozzy_snek_hp_removed_avg: float = 0.0
+    ozzy_multistrike_hits_avg: float = 0.0
+    ozzy_multistrike_damage_avg: float = 0.0
+    
+    # Knox-specific stats
+    knox_extra_salvos_avg: float = 0.0
+    knox_extra_salvo_damage_avg: float = 0.0
+    knox_torpedo_damage_avg: float = 0.0
+    
     # Build config
-    config: Dict
+    config: Dict = field(default_factory=dict)
     
     # Validation status
     valid: bool = True
@@ -91,6 +108,20 @@ class SimData:
     avg_loot_uncommon: float
     avg_loot_rare: float
     avg_xp: float
+    
+    # Borge-specific
+    borge_crit_hits_avg: float = 0.0
+    borge_extra_crit_damage_avg: float = 0.0
+    borge_helltouch_damage_avg: float = 0.0
+    
+    # Ozzy-specific
+    ozzy_multistrike_hits_avg: float = 0.0
+    ozzy_multistrike_damage_avg: float = 0.0
+    
+    # Knox-specific (salvos, torpedos tracked separately in sim if available)
+    knox_extra_salvos_avg: float = 0.0
+    knox_extra_salvo_damage_avg: float = 0.0
+    knox_torpedo_damage_avg: float = 0.0
 
 
 def parse_number(s: str) -> float:
@@ -258,6 +289,7 @@ def parse_build_submission(issue: Dict) -> Optional[IRLData]:
             hunter=hunter, level=level, issue_number=issue_num,
             enemies_killed_best=0, enemies_killed_avg=0,
             highest_stage=0, highest_stage_avg=0, run_avg_time_seconds=0,
+            damage_best=0, damage_avg=0,
             common_best=0, common_avg=0, uncommon_best=0, uncommon_avg=0,
             rare_best=0, rare_avg=0, xp_best=0, xp_avg=0,
             config={}, valid=False, validation_errors=["No valid build JSON found"]
@@ -279,6 +311,8 @@ def parse_build_submission(issue: Dict) -> Optional[IRLData]:
         highest_stage=int(parse_number(fields.get('Highest Stage', '0'))),
         highest_stage_avg=parse_number(fields.get('Highest Stage Run Avg', '0')),
         run_avg_time_seconds=parse_time(fields.get('Run Avg Time', '0')),
+        damage_best=parse_number(fields.get('Damage Dealt - Best Run', '0')),
+        damage_avg=parse_number(fields.get('Damage Dealt - Avg', '0')),
         common_best=parse_number(fields.get('Common Resource - Best Run', '0')),
         common_avg=parse_number(fields.get('Common Resource - Avg', '0')),
         uncommon_best=parse_number(fields.get('Uncommon Resource - Best Run', '0')),
@@ -287,6 +321,18 @@ def parse_build_submission(issue: Dict) -> Optional[IRLData]:
         rare_avg=parse_number(fields.get('Rare Resource - Avg', '0')),
         xp_best=parse_number(fields.get('XP Gained - Best Run', '0')),
         xp_avg=parse_number(fields.get('XP Gained - Avg', '0')),
+        # Borge-specific
+        borge_crit_hits_avg=parse_number(fields.get('[Borge] Crit Hits - Run Avg', '0')),
+        borge_extra_crit_damage_avg=parse_number(fields.get('[Borge] Extra Damage from Crits - Avg', '0')),
+        borge_helltouch_damage_avg=parse_number(fields.get('[Borge] Hellfire Torch Damage - Avg', '0')),
+        # Ozzy-specific
+        ozzy_snek_hp_removed_avg=parse_number(fields.get('[Ozzy] HP Removed by Soul of Snek - Avg', '0')),
+        ozzy_multistrike_hits_avg=parse_number(fields.get('[Ozzy] Multistrike Hits - Run Avg', '0')),
+        ozzy_multistrike_damage_avg=parse_number(fields.get('[Ozzy] Extra Damage from Multistrike - Avg', '0')),
+        # Knox-specific
+        knox_extra_salvos_avg=parse_number(fields.get('[Knox] Extra Salvos - Run Avg', '0')),
+        knox_extra_salvo_damage_avg=parse_number(fields.get('[Knox] Extra Damage from Salvos - Avg', '0')),
+        knox_torpedo_damage_avg=parse_number(fields.get('[Knox] Torpedo Damage - Avg', '0')),
         config=config,
         valid=len(validation_errors) == 0,
         validation_errors=validation_errors
@@ -331,7 +377,14 @@ def simulate_rust(config: Dict, num_sims: int = 100) -> Optional[SimData]:
             avg_loot_common=result.get('avg_loot_common', 0),
             avg_loot_uncommon=result.get('avg_loot_uncommon', 0),
             avg_loot_rare=result.get('avg_loot_rare', 0),
-            avg_xp=result.get('avg_xp', 0)
+            avg_xp=result.get('avg_xp', 0),
+            # Borge-specific
+            borge_crit_hits_avg=result.get('avg_crits', 0),
+            borge_extra_crit_damage_avg=result.get('avg_extra_from_crits', 0),
+            borge_helltouch_damage_avg=result.get('avg_helltouch', 0),
+            # Ozzy-specific
+            ozzy_multistrike_hits_avg=result.get('avg_multistrikes', 0),
+            ozzy_multistrike_damage_avg=result.get('avg_ms_extra_damage', 0),
         )
     except Exception as e:
         print(f"    ⚠️ Rust simulation failed: {e}")
@@ -353,6 +406,9 @@ def simulate_python(config: Dict, num_sims: int = 100) -> Optional[SimData]:
         
         stages, kills, times, damages = [], [], [], []
         loot_c, loot_u, loot_r, xps = [], [], [], []
+        # Hunter-specific stats
+        crits, extra_crit_dmg, helltouch_dmg = [], [], []
+        multistrikes, ms_extra_dmg = [], []
         
         for _ in range(num_sims):
             sim = Simulation(hunter_class(config))
@@ -365,19 +421,34 @@ def simulate_python(config: Dict, num_sims: int = 100) -> Optional[SimData]:
             loot_u.append(result.get('loot_uncommon', 0))
             loot_r.append(result.get('loot_rare', 0))
             xps.append(result.get('total_xp', 0))  # Python uses 'total_xp' not 'xp'
+            # Borge-specific
+            crits.append(result.get('crits', 0))
+            extra_crit_dmg.append(result.get('extra_damage_from_crits', 0))
+            helltouch_dmg.append(result.get('helltouch_barrier', 0))
+            # Ozzy-specific
+            multistrikes.append(result.get('multistrikes', 0))
+            ms_extra_dmg.append(result.get('extra_damage_from_ms', 0))
         
+        n = len(stages)
         return SimData(
             backend='python',
-            avg_stage=sum(stages) / len(stages),
+            avg_stage=sum(stages) / n,
             max_stage=max(stages),
             min_stage=min(stages),
-            avg_kills=sum(kills) / len(kills),
-            avg_time=sum(times) / len(times),
-            avg_damage=sum(damages) / len(damages),
-            avg_loot_common=sum(loot_c) / len(loot_c),
-            avg_loot_uncommon=sum(loot_u) / len(loot_u),
-            avg_loot_rare=sum(loot_r) / len(loot_r),
-            avg_xp=sum(xps) / len(xps)
+            avg_kills=sum(kills) / n,
+            avg_time=sum(times) / n,
+            avg_damage=sum(damages) / n,
+            avg_loot_common=sum(loot_c) / n,
+            avg_loot_uncommon=sum(loot_u) / n,
+            avg_loot_rare=sum(loot_r) / n,
+            avg_xp=sum(xps) / n,
+            # Borge-specific
+            borge_crit_hits_avg=sum(crits) / n,
+            borge_extra_crit_damage_avg=sum(extra_crit_dmg) / n,
+            borge_helltouch_damage_avg=sum(helltouch_dmg) / n,
+            # Ozzy-specific
+            ozzy_multistrike_hits_avg=sum(multistrikes) / n,
+            ozzy_multistrike_damage_avg=sum(ms_extra_dmg) / n,
         )
     except Exception as e:
         print(f"    ⚠️ Python simulation failed: {e}")
@@ -411,16 +482,43 @@ def pct_diff(irl_val: float, sim_val: float) -> float:
 
 def compare_irl_vs_sim(irl: IRLData, sim: SimData) -> Dict:
     """Compare IRL data vs simulated data."""
-    return {
+    comparisons = {
         'Stage (Avg)': {'irl': irl.highest_stage_avg, 'sim': sim.avg_stage},
         'Stage (Max)': {'irl': irl.highest_stage, 'sim': sim.max_stage},
         'Kills (Avg)': {'irl': irl.enemies_killed_avg, 'sim': sim.avg_kills},
         'Time (Avg)': {'irl': irl.run_avg_time_seconds, 'sim': sim.avg_time},
+        'Damage (Avg)': {'irl': irl.damage_avg, 'sim': sim.avg_damage},
         'Common Loot': {'irl': irl.common_avg, 'sim': sim.avg_loot_common},
         'Uncommon Loot': {'irl': irl.uncommon_avg, 'sim': sim.avg_loot_uncommon},
         'Rare Loot': {'irl': irl.rare_avg, 'sim': sim.avg_loot_rare},
         'XP (Avg)': {'irl': irl.xp_avg, 'sim': sim.avg_xp},
     }
+    
+    # Add hunter-specific stats
+    if irl.hunter == 'Borge':
+        if irl.borge_crit_hits_avg > 0 or sim.borge_crit_hits_avg > 0:
+            comparisons['Crit Hits'] = {'irl': irl.borge_crit_hits_avg, 'sim': sim.borge_crit_hits_avg}
+        if irl.borge_extra_crit_damage_avg > 0 or sim.borge_extra_crit_damage_avg > 0:
+            comparisons['Extra Crit Dmg'] = {'irl': irl.borge_extra_crit_damage_avg, 'sim': sim.borge_extra_crit_damage_avg}
+        if irl.borge_helltouch_damage_avg > 0 or sim.borge_helltouch_damage_avg > 0:
+            comparisons['Helltouch Dmg'] = {'irl': irl.borge_helltouch_damage_avg, 'sim': sim.borge_helltouch_damage_avg}
+    
+    elif irl.hunter == 'Ozzy':
+        if irl.ozzy_multistrike_hits_avg > 0 or sim.ozzy_multistrike_hits_avg > 0:
+            comparisons['Multistrike Hits'] = {'irl': irl.ozzy_multistrike_hits_avg, 'sim': sim.ozzy_multistrike_hits_avg}
+        if irl.ozzy_multistrike_damage_avg > 0 or sim.ozzy_multistrike_damage_avg > 0:
+            comparisons['MS Extra Dmg'] = {'irl': irl.ozzy_multistrike_damage_avg, 'sim': sim.ozzy_multistrike_damage_avg}
+        # Note: ozzy_snek_hp_removed is IRL only (sim doesn't track this separately)
+    
+    elif irl.hunter == 'Knox':
+        if irl.knox_extra_salvos_avg > 0 or sim.knox_extra_salvos_avg > 0:
+            comparisons['Extra Salvos'] = {'irl': irl.knox_extra_salvos_avg, 'sim': sim.knox_extra_salvos_avg}
+        if irl.knox_extra_salvo_damage_avg > 0 or sim.knox_extra_salvo_damage_avg > 0:
+            comparisons['Extra Salvo Dmg'] = {'irl': irl.knox_extra_salvo_damage_avg, 'sim': sim.knox_extra_salvo_damage_avg}
+        if irl.knox_torpedo_damage_avg > 0 or sim.knox_torpedo_damage_avg > 0:
+            comparisons['Torpedo Dmg'] = {'irl': irl.knox_torpedo_damage_avg, 'sim': sim.knox_torpedo_damage_avg}
+    
+    return comparisons
 
 
 def print_build_report(irl: IRLData, rust_sim: Optional[SimData], py_sim: Optional[SimData]):
