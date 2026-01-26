@@ -1,0 +1,139 @@
+name: 📊 Build Submission (Help Validate Formulas!)
+description: Submit your in-game build and stats to help improve simulation accuracy
+title: "[BUILD] Hunter: YOUR_HUNTER - Level: YOUR_LEVEL"
+labels: ["build-submission", "validation-data"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Thank you for contributing to formula validation! 🎉
+        
+        By submitting your **real in-game stats**, you help us fine-tune the simulation formulas to match the game exactly. The more data points we have, the more accurate the optimizer becomes!
+        
+        **Please fill out as much as you can** - even partial data is helpful!
+
+  - type: dropdown
+    id: hunter
+    attributes:
+      label: Hunter
+      description: Which hunter is this build for?
+      options:
+        - Borge
+        - Knox
+        - Ozzy
+    validations:
+      required: true
+
+  - type: input
+    id: level
+    attributes:
+      label: Hunter Level
+      description: Your current hunter level
+      placeholder: "69"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "## 📊 In-Game Stats (from your hunt results)"
+
+  - type: input
+    id: irl_max_stage
+    attributes:
+      label: Max Stage Reached (In-Game)
+      description: Your best stage from actual gameplay
+      placeholder: "300"
+    validations:
+      required: true
+
+  - type: input
+    id: irl_avg_stage
+    attributes:
+      label: Average Stage (if known)
+      description: Your typical ending stage
+      placeholder: "295"
+
+  - type: input
+    id: irl_avg_loot
+    attributes:
+      label: Average Loot Per Hunt
+      description: Approximate total loot from a typical run
+      placeholder: "4.5B"
+
+  - type: input
+    id: irl_avg_time
+    attributes:
+      label: Average Hunt Time (seconds)
+      description: How long your hunts typically take
+      placeholder: "2400"
+
+  - type: input
+    id: irl_avg_xp
+    attributes:
+      label: Average XP Per Hunt
+      description: XP gained from a typical run
+      placeholder: "5.9B"
+
+  - type: markdown
+    attributes:
+      value: "## 🛠️ Your Build Configuration"
+
+  - type: textarea
+    id: build_json
+    attributes:
+      label: Build JSON (from Save/Export)
+      description: |
+        Paste your build JSON here. You can export this from the optimizer's Save feature, 
+        or copy from `%LOCALAPPDATA%\HunterSimOptimizer\my_HUNTER_build.json`
+      placeholder: |
+        {
+          "hunter": "Borge",
+          "level": 69,
+          "stats": { "hp": 375, "power": 324, ... },
+          "talents": { ... },
+          "attributes": { ... },
+          ...
+        }
+      render: json
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "## 📈 Simulation Results (Optional)"
+
+  - type: textarea
+    id: sim_results
+    attributes:
+      label: Simulation Results
+      description: |
+        If you've run the optimizer, paste the results here for comparison.
+        This helps us see how close our simulation is to your real stats.
+      placeholder: |
+        Optimizer Results:
+        - Avg Stage: 300.0
+        - Max Stage: 300
+        - Avg Loot: 4.5B
+        - Sims/sec: 65,000
+
+  - type: textarea
+    id: additional_notes
+    attributes:
+      label: Additional Notes
+      description: |
+        Any other information that might be helpful:
+        - Specific stages where you notice discrepancies
+        - Boss fights that seem off
+        - Mechanics that don't seem to work as expected
+      placeholder: "I notice the simulation overestimates lifesteal healing by ~10%..."
+
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Data Usage Consent
+      description: |
+        Your build data will be used to improve simulation accuracy.
+      options:
+        - label: I consent to my build being used for formula validation
+          required: true
+        - label: I'm okay with my build being included in test datasets (anonymized)

@@ -13,6 +13,16 @@ import heapq
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Safe logging helper for frozen PyInstaller apps (sys.stderr is None in GUI mode)
+def _log(msg):
+    """Safely write to stderr if available, otherwise ignore."""
+    if sys.stderr is not None:
+        try:
+            _log(msg)
+            
+        except:
+            pass
+
 from hunters import Borge, Knox, Ozzy
 from gui_multi import BuildGenerator
 import rust_sim
@@ -83,8 +93,8 @@ def run_optimization(config_file, result_file):
         # Run IRL baseline FIRST
         irl_baseline = run_irl_baseline(hunter_name, level, base_config, num_sims)
         if irl_baseline:
-            sys.stderr.write(f"[INFO] IRL baseline: avg_stage={irl_baseline['avg_stage']:.1f}, max_stage={irl_baseline['max_stage']}\n")
-            sys.stderr.flush()
+            _log(f"[INFO] IRL baseline: avg_stage={irl_baseline['avg_stage']:.1f}, max_stage={irl_baseline['max_stage']}\n")
+            
         
         # Get hunter class
         hunter_classes = {'Borge': Borge, 'Knox': Knox, 'Ozzy': Ozzy}
@@ -180,6 +190,9 @@ def run_optimization(config_file, result_file):
             # Calculate points for this tier
             talent_points = max(1, int(level * tier_fraction))
             attribute_points = max(3, int(level * 3 * tier_fraction))
+            
+            _log(f"[DEBUG] Tier {tier_name}: level={level}, talent_pts={talent_points}, attr_pts={attribute_points}\n")
+            
             
             # Setup generator for this tier
             generator = BuildGenerator(hunter_class, level)
@@ -346,6 +359,11 @@ def run_optimization(config_file, result_file):
                 builds_generated += 1  # Count successful generation
                 generation_requests += 1
                 
+                # DEBUG: Log first build of each tier
+                if builds_generated == 1:
+                    _log(f"[DEBUG] First build: talents_sum={sum(talents.values())}, attrs_sum={sum(attrs.values())}\n")
+                    
+                
                 # Create config
                 cfg = copy.deepcopy(base_config)
                 cfg['talents'] = talents
@@ -376,6 +394,14 @@ def run_optimization(config_file, result_file):
                         batch_results = rust_sim.simulate_batch(batch_configs, num_sims, True)
                     except Exception as e:
                         raise
+                    
+                    # DEBUG: Log first batch results
+                    if tested == 0:
+                        first_result = batch_results[0] if batch_results else None
+                        if isinstance(first_result, str):
+                            first_result = json.loads(first_result)
+                        _log(f"[DEBUG] First sim result: avg_stage={first_result.get('avg_stage', 'N/A')}, max_stage={first_result.get('max_stage', 'N/A')}\n")
+                        
                     
                     for result, (tal, att) in zip(batch_results, batch_metadata):
                         if isinstance(result, str):
@@ -432,7 +458,7 @@ def run_optimization(config_file, result_file):
                                 }, f)
                             last_progress_write = len(gen_results)
                         except Exception as progress_err:
-                            sys.stderr.write(f"[WARN] Progress write failed: {progress_err}\n")
+                            _log(f"[WARN] Progress write failed: {progress_err}\n")
             
             
             # ===== GENERATION LOOP COMPLETE - HANDLE INCOMPLETE TIER =====
@@ -596,17 +622,17 @@ def run_optimization(config_file, result_file):
         try:
             results_json = json.dumps(final_data)
         except Exception as e:
-            sys.stderr.write(f"[ERROR] JSON serialization failed: {e}\n")
-            sys.stderr.flush()
+            _log(f"[ERROR] JSON serialization failed: {e}\n")
+            
             raise
         
         with open(result_file, 'w') as f:
             f.write(results_json)
     except Exception as e:
         import traceback
-        sys.stderr.write(f"[ERROR] Subprocess crashed: {str(e)}\n")
-        sys.stderr.write(f"{traceback.format_exc()}\n")
-        sys.stderr.flush()
+        _log(f"[ERROR] Subprocess crashed: {str(e)}\n")
+        _log(f"{traceback.format_exc()}\n")
+        
         
         # Write error to result file
         with open(result_file, 'w') as f:

@@ -1,4 +1,4 @@
-# Hunter Sim Optimizer v2.0
+# Hunter Sim Optimizer v2.0.1
 
 A high-performance build optimizer for the Interstellar Hunt in CIFI (Cell Idle Factory Incremental). Features a **multi-hunter GUI**, **Rust simulation backend**, and **progressive evolution algorithm** for blazing-fast optimization.
 
@@ -8,9 +8,10 @@ A high-performance build optimizer for the Interstellar Hunt in CIFI (Cell Idle 
 
 ### Multi-Hunter GUI
 - **Tabbed interface** for Borge, Knox, and Ozzy optimization
-- **Real-time progress** with animated battle arena visualization
-- **"Optimize All"** button to run all hunters simultaneously
+- **Real-time progress tracking** during optimization
+- **"Optimize All"** button to run all hunters sequentially
 - **IRL Build comparison** - compare optimized builds against your current in-game build
+- **Persistent builds** - your settings are saved to AppData and persist between sessions
 
 ### High-Performance Rust Backend
 - **Multi-core parallelization** using native Rust via PyO3 (auto-detects available cores)

@@ -328,14 +328,33 @@ class BuildGenerator:
 from sim_worker import SimulationWorker
 
 
+# Determine base path for user data (works in both frozen and source mode)
+def _get_user_data_path():
+    """Get the path for user data (IRL Builds). In frozen mode, use AppData. In source mode, use script dir."""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Frozen exe - use AppData/Local for persistent storage
+        appdata = Path(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')))
+        return appdata / "HunterSimOptimizer"
+    else:
+        # Running from source - use script directory
+        return Path(__file__).parent / "IRL Builds"
+
 # Path to IRL Builds folder
-IRL_BUILDS_PATH = Path(__file__).parent / "IRL Builds"
+IRL_BUILDS_PATH = _get_user_data_path()
 
 # Path to global bonuses config file
 GLOBAL_BONUSES_FILE = IRL_BUILDS_PATH / "global_bonuses.json"
 
-# Path to assets folder (in same directory as this file)
-ASSETS_PATH = Path(__file__).parent / "assets"
+# Path to assets folder (bundled with exe or in source dir)
+def _get_assets_path():
+    """Get the path to assets folder."""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Frozen exe - assets are in the temp extraction folder
+        return Path(sys._MEIPASS) / "assets"
+    else:
+        return Path(__file__).parent / "assets"
+
+ASSETS_PATH = _get_assets_path()
 
 # Hunter color themes and portraits
 HUNTER_COLORS = {
@@ -2383,9 +2402,94 @@ class HunterTab:
         self._thread_num_sims = self.num_sims.get()
         self._thread_builds_per_tier = self.builds_per_tier.get()
         self._thread_config = self._get_current_config()
+        self._thread_use_progressive = self.use_progressive.get()
         
-        # Launch optimization as SEPARATE PROCESS (only way to avoid tkinter interference)
-        import subprocess
+        # Check if we're running as a frozen PyInstaller exe
+        is_frozen = getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
+        
+        if is_frozen:
+            # Running as frozen exe - use threaded optimization (no subprocess available)
+            self._log(f"🧊 Running in frozen mode - using threaded optimization")
+            self._start_threaded_optimization()
+        else:
+            # Running from source - use subprocess for isolation
+            self._start_subprocess_optimization()
+    
+    def _start_threaded_optimization(self):
+        """Start optimization in a background thread (for frozen exe mode)."""
+        import tempfile
+        
+        config_file = Path(tempfile.gettempdir()) / f"hunter_opt_{self.hunter_name}.json"
+        self.result_file = Path(tempfile.gettempdir()) / f"hunter_opt_{self.hunter_name}_results.json"
+        
+        # Delete old result file if exists
+        if self.result_file.exists():
+            self.result_file.unlink()
+        
+        # Write config
+        try:
+            with open(config_file, 'w') as f:
+                json.dump({
+                    'hunter_name': self.hunter_name,
+                    'level': self._thread_level,
+                    'base_config': self._thread_config,
+                    'num_sims': self._thread_num_sims,
+                    'builds_per_tier': self._thread_builds_per_tier,
+                    'use_progressive': self._thread_use_progressive
+                }, f)
+        except Exception as e:
+            self._log(f"❌ Failed to write config: {e}")
+            self._optimization_complete()
+            return
+        
+        # Import and run optimization in thread
+        debug_log = Path(tempfile.gettempdir()) / f"hunter_opt_{self.hunter_name}_debug.log"
+        result_file_path = self.result_file  # Capture for closure
+        def run_threaded():
+            try:
+                import sys
+                with open(debug_log, 'a') as dbg:
+                    dbg.write(f"[THREADED] Starting optimization in thread\n")
+                    dbg.write(f"[THREADED] sys.path: {sys.path[:3]}\n")
+                    dbg.write(f"[THREADED] Importing run_optimization...\n")
+                from run_optimization import run_optimization
+                with open(debug_log, 'a') as dbg:
+                    dbg.write(f"[THREADED] Import successful, calling run_optimization...\n")
+                    dbg.write(f"[THREADED] config_file: {config_file}\n")
+                    dbg.write(f"[THREADED] result_file: {result_file_path}\n")
+                try:
+                    run_optimization(str(config_file), str(result_file_path))
+                    with open(debug_log, 'a') as dbg:
+                        dbg.write(f"[THREADED] Optimization complete, result file exists: {result_file_path.exists()}\n")
+                except Exception as inner_e:
+                    import traceback
+                    with open(debug_log, 'a') as dbg:
+                        dbg.write(f"[THREADED] INNER ERROR: {inner_e}\n")
+                        dbg.write(f"[THREADED] Traceback:\n{traceback.format_exc()}\n")
+                    raise
+            except Exception as e:
+                import traceback
+                with open(debug_log, 'a') as dbg:
+                    dbg.write(f"[THREADED] OUTER ERROR: {e}\n")
+                    dbg.write(f"[THREADED] Traceback:\n{traceback.format_exc()}\n")
+                # Write error to result file so polling can detect it
+                with open(result_file_path, 'w') as f:
+                    json.dump({'error': str(e), 'traceback': traceback.format_exc()}, f)
+        
+        self.opt_thread = threading.Thread(target=run_threaded, daemon=True)
+        self.opt_thread.start()
+        self.opt_process = None  # No subprocess in threaded mode
+        
+        self._log(f"🚀 Optimization thread started")
+        self._log(f"📊 Level: {self._thread_level} → Talents: {self._thread_level}, Attrs: {self._thread_level * 3}")
+        self._log(f"⏳ Generating and simulating {self._thread_builds_per_tier} builds...")
+        
+        # Start polling (same as subprocess mode)
+        self.poll_count = 0
+        self.frame.after(500, self._poll_subprocess)
+    
+    def _start_subprocess_optimization(self):
+        """Start optimization as a subprocess (for running from source)."""
         import tempfile
         
         print(f"[DEBUG] About to create config file for {self.hunter_name}")
@@ -2412,7 +2516,7 @@ class HunterTab:
                     'base_config': self._thread_config,
                     'num_sims': self._thread_num_sims,
                     'builds_per_tier': self._thread_builds_per_tier,
-                    'use_progressive': self.use_progressive.get()
+                    'use_progressive': self._thread_use_progressive
                 }, f)
             self._log(f"✅ Config written")
         except Exception as e:
@@ -3273,20 +3377,44 @@ class HunterTab:
             elapsed = self.poll_count * 0.5
             self._log(f"⏳ Still running... ({elapsed:.0f}s elapsed)")
         
-        # Check if process crashed
-        poll_result = self.opt_process.poll()
-        print(f"[POLL #{self.poll_count}] poll()={poll_result}, result_file exists={self.result_file.exists()}")
-        if poll_result is not None:
-            # Process exited - close stderr handle first
-            if hasattr(self, 'stderr_handle') and self.stderr_handle:
-                self.stderr_handle.close()
-            
-            exit_code = self.opt_process.returncode
+        # Check if process/thread completed
+        # In threaded mode (frozen exe), opt_process is None
+        is_complete = False
+        exit_code = 0
+        
+        if self.opt_process is not None:
+            # Subprocess mode
+            poll_result = self.opt_process.poll()
+            print(f"[POLL #{self.poll_count}] poll()={poll_result}, result_file exists={self.result_file.exists()}")
+            if poll_result is not None:
+                is_complete = True
+                exit_code = self.opt_process.returncode
+                # Close stderr handle
+                if hasattr(self, 'stderr_handle') and self.stderr_handle:
+                    self.stderr_handle.close()
+        else:
+            # Threaded mode - check if thread is still alive
+            if hasattr(self, 'opt_thread') and self.opt_thread is not None:
+                if not self.opt_thread.is_alive():
+                    is_complete = True
+                    # Check result file for errors
+                    if self.result_file.exists():
+                        try:
+                            with open(self.result_file, 'r') as f:
+                                temp_results = json.load(f)
+                            if 'error' in temp_results:
+                                exit_code = 1  # Simulate error
+                        except:
+                            pass
+                print(f"[POLL #{self.poll_count}] thread alive={self.opt_thread.is_alive()}, result_file exists={self.result_file.exists()}")
+        
+        if is_complete:
             print(f"[POLL] Process exited with code {exit_code}")
             
             if exit_code != 0:
-                # Process crashed - read error from stderr file
-                self._log(f"❌ Optimization process crashed (exit code: {exit_code})")
+                # Process/thread crashed - read error from stderr file or result file
+                self._log(f"❌ Optimization failed (exit code: {exit_code})")
+                # Try stderr file first (subprocess mode)
                 if hasattr(self, 'stderr_file') and self.stderr_file.exists():
                     try:
                         stderr_content = self.stderr_file.read_text()
@@ -3296,6 +3424,19 @@ class HunterTab:
                         self.stderr_file.unlink(missing_ok=True)
                     except Exception as e:
                         self._log(f"Could not read stderr: {e}")
+                # Try result file for error (threaded mode)
+                elif self.result_file.exists():
+                    try:
+                        with open(self.result_file, 'r') as f:
+                            err_data = json.load(f)
+                        if 'error' in err_data:
+                            self._log(f"━━━ ERROR ━━━")
+                            self._log(err_data['error'])
+                            if 'traceback' in err_data:
+                                self._log(err_data['traceback'])
+                        self.result_file.unlink(missing_ok=True)
+                    except Exception as e:
+                        self._log(f"Could not read error: {e}")
                 self._optimization_complete()
                 return
             
@@ -5571,8 +5712,53 @@ class MultiHunterGUI:
         self._log(f"📁 Opened IRL Builds folder: {builds_path}")
 
 
+def _init_blank_builds_for_new_users():
+    """Create blank build templates in AppData for new exe users."""
+    if not (getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')):
+        return  # Not frozen, no init needed - use source folder
+    
+    # Create the AppData folder if it doesn't exist
+    IRL_BUILDS_PATH.mkdir(parents=True, exist_ok=True)
+    
+    # Create blank build templates for each hunter if they don't exist
+    hunters = ['Borge', 'Knox', 'Ozzy']
+    for hunter in hunters:
+        build_file = IRL_BUILDS_PATH / f"my_{hunter.lower()}_build.json"
+        if not build_file.exists():
+            blank_build = {
+                "hunter": hunter,
+                "level": 1,
+                "irl_max_stage": 0,
+                "stats": {},
+                "talents": {},
+                "attributes": {},
+                "inscryptions": {},
+                "relics": {},
+                "gems": {},
+                "mods": {},
+                "gadgets": {},
+                "bonuses": {}
+            }
+            try:
+                with open(build_file, 'w') as f:
+                    json.dump(blank_build, f, indent=2)
+                print(f"Created blank build template: {build_file.name}")
+            except Exception as e:
+                print(f"Failed to create {build_file.name}: {e}")
+    
+    # Create blank global bonuses if it doesn't exist
+    if not GLOBAL_BONUSES_FILE.exists():
+        try:
+            with open(GLOBAL_BONUSES_FILE, 'w') as f:
+                json.dump({}, f)
+        except:
+            pass
+
 def main():
     """Main entry point."""
+    # Create blank builds in AppData for new exe users
+    _init_blank_builds_for_new_users()
+    
     root = tk.Tk()
     app = MultiHunterGUI(root)
     

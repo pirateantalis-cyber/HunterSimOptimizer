@@ -1,6 +1,21 @@
-# Release Notes - v2.0
+# Release Notes - v2.0.1
 
-## Major Changes
+## v2.0.1 - Frozen Mode Fix
+
+### 🐛 Bug Fixes
+- **Frozen exe optimization fix** - Fixed critical issue where optimization wouldn't run in the packaged .exe
+  - `sys.stderr` is `None` in PyInstaller GUI apps - all logging now uses safe wrapper
+  - Thread-based optimization now works correctly in frozen mode
+- **Build persistence** - IRL builds now save to `%LOCALAPPDATA%\HunterSimOptimizer` for the exe (persists between runs!)
+- **Battle Arena removed** - Removed the experimental battle arena visualization (was causing issues, not essential for optimization)
+
+### 📚 Documentation
+- **GitHub Issue Template** - Added build submission template for community validation data
+- **Updated README** - Removed battle arena references, clarified exe behavior
+
+---
+
+## v2.0.0 - Major Release
 
 ### 🐛 Bug Fixes
 - **Revive timing bug** - Fixed critical issue where revive mechanics weren't triggered at the correct health thresholds in both Python and Rust engines
@@ -13,7 +28,6 @@
   - Ozzy: Vibrant emerald theme
   - Knox: Clean cobalt blue theme
 - **Better progress indicators** - More granular feedback during optimization
-- **Smoother battle arena** - Improved animation frame rates and transitions
 - **Cleaner result displays** - Better formatting for large numbers and percentages
 
 ### ⚡ Performance Enhancements
