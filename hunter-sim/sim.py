@@ -138,10 +138,10 @@ class SimulationManager():
         # declare which stats belong to which categories
         output_format = {
             'main': ['elapsed_time', 'kills', 'first_revive_stage', 'second_revive_stage', 'enrage_stacks:_1st_boss', 'enrage_stacks:_2nd_boss', 'enrage_stacks:_3rd_boss'],
-            'offence': ['attacks', 'damage', 'crits', 'extra_damage_from_crits', 'multistrikes', 'extra_damage_from_ms', 'decay_damage', 'extra_damage_from_crippling_shots'],
+            'offence': ['attacks', 'damage', 'crits', 'extra_damage_from_crits', 'multistrikes', 'extra_damage_from_ms', 'decay_damage', 'extra_damage_from_crippling_shots', 'ghost_bullets', 'extra_salvo_damage', 'charges'],
             'sustain': ['damage_taken', 'regenerated_hp', 'attacks_suffered', 'lifesteal'],
-            'defence': ['evades', 'trickster_evades', 'mitigated_damage'],
-            'effects': ['effect_procs', 'stun_duration_inflicted', 'helltouch_barrier', 'helltouch_kills', 'trample_kills', 'medusa_kills', 'life_of_the_hunt_healing', 'echo_bullets', 'unfair_advantage_healing'],
+            'defence': ['evades', 'trickster_evades', 'mitigated_damage', 'blocked_damage'],
+            'effects': ['effect_procs', 'stun_duration_inflicted', 'helltouch_barrier', 'helltouch_kills', 'trample_kills', 'medusa_kills', 'life_of_the_hunt_healing', 'echo_bullets', 'unfair_advantage_healing', 'finishing_moves'],
             'loot': ['loot_per_hour'],
         }
         for k, v in output_format.items():

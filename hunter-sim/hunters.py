@@ -2214,6 +2214,7 @@ class Knox(Hunter):
         # statistics
         # offence
         self.total_ghost_bullets: int = 0
+        self.total_ghost_bullet_damage: float = 0  # Extra damage from ghost bullet projectiles
         self.total_finishing_moves: int = 0
         self.total_charges: int = 0
 
@@ -2419,6 +2420,7 @@ class Knox(Hunter):
         """
         # Calculate number of projectiles in this salvo
         num_projectiles = self.salvo_projectiles
+        base_projectiles = num_projectiles  # Track base for extra damage calc
         
         # Ghost Bullets - chance for extra projectile
         if self.talents["ghost_bullets"] > 0:
@@ -2444,6 +2446,12 @@ class Knox(Hunter):
                     self.total_finishing_moves += 1
             
             total_damage += bullet_damage
+        
+        # Track extra salvo damage from ghost bullets
+        if num_projectiles > base_projectiles:
+            extra_projectile_count = num_projectiles - base_projectiles
+            damage_per_projectile = total_damage / num_projectiles
+            self.total_ghost_bullet_damage += damage_per_projectile * extra_projectile_count
             
         logging.debug(f"[{self.name:>{hunter_name_spacing}}][@{self.sim.elapsed_time:>5}]:\tSALVO\t{total_damage:>6.2f} ({num_projectiles} projectiles)")
         super(Knox, self).attack(target, total_damage)
@@ -2549,6 +2557,7 @@ class Knox(Hunter):
             'blocked_damage': self.total_blocked,
             'hundred_souls': self.hundred_souls,
             'unfair_advantage_healing': self.total_potion,
+            'extra_salvo_damage': self.total_ghost_bullet_damage,  # Extra dmg from ghost bullets
         }
 
 

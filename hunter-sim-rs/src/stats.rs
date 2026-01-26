@@ -37,6 +37,9 @@ pub struct SimResult {
     pub echo_bullets: i32,
     pub unfair_advantage_healing: f64,
     pub life_of_the_hunt_healing: f64,
+    // Knox-specific stats
+    pub ghost_bullets: i32,           // Extra projectiles from Ghost Bullets talent
+    pub extra_salvo_damage: f64,      // Extra damage from ghost bullet projectiles
     // Debug stats
     pub on_kill_calls: i32,
 }
@@ -80,7 +83,14 @@ pub struct AggregatedStats {
     pub avg_loot_uncommon: f64,
     pub avg_loot_rare: f64,
     pub avg_xp: f64,
-    pub avg_on_kill_calls: f64,  // DEBUG: on_kill calls per run
+    // Hunter-specific aggregated stats
+    pub avg_extra_from_crits: f64,    // Borge: extra damage from crits
+    pub avg_multistrikes: f64,        // Ozzy: multistrike count
+    pub avg_ms_extra_damage: f64,     // Ozzy: extra damage from multistrikes
+    pub avg_helltouch: f64,           // Borge: helltouch barrier damage
+    pub avg_ghost_bullets: f64,       // Knox: ghost bullet procs
+    pub avg_extra_salvo_damage: f64,  // Knox: extra damage from ghost bullets
+    pub avg_on_kill_calls: f64,       // DEBUG: on_kill calls per run
 }
 
 impl AggregatedStats {
@@ -160,6 +170,13 @@ impl AggregatedStats {
             avg_loot_uncommon: results.iter().map(|r| r.loot_uncommon).sum::<f64>() / n,
             avg_loot_rare: results.iter().map(|r| r.loot_rare).sum::<f64>() / n,
             avg_xp: results.iter().map(|r| r.total_xp).sum::<f64>() / n,
+            // Hunter-specific stats
+            avg_extra_from_crits: results.iter().map(|r| r.extra_damage_from_crits).sum::<f64>() / n,
+            avg_multistrikes: results.iter().map(|r| r.multistrikes as f64).sum::<f64>() / n,
+            avg_ms_extra_damage: results.iter().map(|r| r.extra_damage_from_ms).sum::<f64>() / n,
+            avg_helltouch: results.iter().map(|r| r.helltouch_barrier).sum::<f64>() / n,
+            avg_ghost_bullets: results.iter().map(|r| r.ghost_bullets as f64).sum::<f64>() / n,
+            avg_extra_salvo_damage: results.iter().map(|r| r.extra_salvo_damage).sum::<f64>() / n,
             avg_on_kill_calls: results.iter().map(|r| r.on_kill_calls as f64).sum::<f64>() / n,
         }
     }

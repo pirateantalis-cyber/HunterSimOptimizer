@@ -200,6 +200,14 @@ fn main() {
                     "avg_loth_healing": stats.avg_loth_healing,
                     "avg_ua_healing": stats.avg_ua_healing,
                     "avg_trample_kills": stats.avg_trample_kills,
+                    // Hunter-specific stats
+                    "avg_extra_from_crits": stats.avg_extra_from_crits,  // Borge
+                    "avg_helltouch": stats.avg_helltouch,                // Borge
+                    "avg_multistrikes": stats.avg_multistrikes,          // Ozzy
+                    "avg_ms_extra_damage": stats.avg_ms_extra_damage,    // Ozzy
+                    "avg_ghost_bullets": stats.avg_ghost_bullets,        // Knox
+                    "avg_extra_salvo_damage": stats.avg_extra_salvo_damage, // Knox
+                    // Debug stats
                     "avg_on_kill_calls": stats.avg_on_kill_calls,
                     "survival_rate": stats.survival_rate,
                     "boss1_survival": stats.boss1_survival,

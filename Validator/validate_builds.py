@@ -385,6 +385,9 @@ def simulate_rust(config: Dict, num_sims: int = 100) -> Optional[SimData]:
             # Ozzy-specific
             ozzy_multistrike_hits_avg=result.get('avg_multistrikes', 0),
             ozzy_multistrike_damage_avg=result.get('avg_ms_extra_damage', 0),
+            # Knox-specific
+            knox_extra_salvos_avg=result.get('avg_ghost_bullets', 0),
+            knox_extra_salvo_damage_avg=result.get('avg_extra_salvo_damage', 0),
         )
     except Exception as e:
         print(f"    ⚠️ Rust simulation failed: {e}")
@@ -409,6 +412,7 @@ def simulate_python(config: Dict, num_sims: int = 100) -> Optional[SimData]:
         # Hunter-specific stats
         crits, extra_crit_dmg, helltouch_dmg = [], [], []
         multistrikes, ms_extra_dmg = [], []
+        ghost_bullets, extra_salvo_dmg = [], []
         
         for _ in range(num_sims):
             sim = Simulation(hunter_class(config))
@@ -428,6 +432,9 @@ def simulate_python(config: Dict, num_sims: int = 100) -> Optional[SimData]:
             # Ozzy-specific
             multistrikes.append(result.get('multistrikes', 0))
             ms_extra_dmg.append(result.get('extra_damage_from_ms', 0))
+            # Knox-specific
+            ghost_bullets.append(result.get('ghost_bullets', 0))
+            extra_salvo_dmg.append(result.get('extra_salvo_damage', 0))
         
         n = len(stages)
         return SimData(
@@ -449,6 +456,9 @@ def simulate_python(config: Dict, num_sims: int = 100) -> Optional[SimData]:
             # Ozzy-specific
             ozzy_multistrike_hits_avg=sum(multistrikes) / n,
             ozzy_multistrike_damage_avg=sum(ms_extra_dmg) / n,
+            # Knox-specific
+            knox_extra_salvos_avg=sum(ghost_bullets) / n,
+            knox_extra_salvo_damage_avg=sum(extra_salvo_dmg) / n,
         )
     except Exception as e:
         print(f"    ⚠️ Python simulation failed: {e}")

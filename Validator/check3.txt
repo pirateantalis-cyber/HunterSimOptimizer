@@ -1,0 +1,209 @@
+### Hunter
+
+Knox
+
+### Hunter Level
+
+30
+
+### Best Run Enemies Killed
+
+1010
+
+### Avg Run Enemies Killed
+
+1.00k
+
+### Highest Stage
+
+100
+
+### Highest Stage Run Avg
+
+100
+
+### Run Avg Time
+
+02:35:58
+
+### Common Resource - Best Run
+
+278.11k
+
+### Common Resource - Avg
+
+176.15k
+
+### Uncommon Resource - Best Run
+
+226.75k
+
+### Uncommon Resource - Avg
+
+152.68k
+
+### Rare Resource - Best Run
+
+171.19k
+
+### Rare Resource - Avg
+
+115.53k
+
+### XP Gained - Best Run
+
+115.80k
+
+### XP Gained - Avg
+
+72.78k
+
+### Build JSON (from Save/Export)
+
+```json
+{
+  "hunter": "Knox",
+  "level": 30,
+  "irl_max_stage": 100,
+  "stats": {
+    "hp": 185,
+    "power": 169,
+    "regen": 134,
+    "damage_reduction": 29,
+    "block_chance": 22,
+    "effect_chance": 22,
+    "charge_chance": 27,
+    "charge_gained": 22,
+    "reload_time": 20,
+    "projectiles_per_salvo": 2
+  },
+  "talents": {
+    "death_is_my_companion": 2,
+    "calypsos_advantage": 5,
+    "unfair_advantage": 3,
+    "ghost_bullets": 1,
+    "omen_of_defeat": 9,
+    "call_me_lucky_loot": 5,
+    "presence_of_god": 2,
+    "finishing_move": 3,
+    "legacy_of_ultima": 0
+  },
+  "attributes": {
+    "release_the_kraken": 10,
+    "space_pirate_armory": 2,
+    "soul_amplification": 10,
+    "serious_efficiency": 5,
+    "fortification_elixir": 10,
+    "a_pirates_life_for_knox": 8,
+    "dead_men_tell_no_tales": 3,
+    "passive_charge_tank": 0,
+    "shield_of_poseidon": 0,
+    "timeless_mastery": 2
+  },
+  "inscryptions": {
+    "i_knox_hp": 0,
+    "i_knox_power": 0,
+    "i_knox_block": 0,
+    "i_knox_charge": 0,
+    "i_knox_reload": 0
+  },
+  "relics": {
+    "r4": 39,
+    "r7": 30
+  },
+  "gems": {},
+  "mods": {},
+  "gadgets": {
+    "anchor": 20,
+    "anchor_of_ages": 20
+  },
+  "bonuses": {
+    "shard_milestone": 142,
+    "diamond_loot": 10,
+    "cm46": true,
+    "cm47": true,
+    "cm48": true,
+    "cm51": true,
+    "iap_travpack": true,
+    "ultima_multiplier": 1.0955
+  }
+}
+```
+
+### Simulation Results
+
+══════════════════════════════════════════════════════════════════════
+📊 BUILD COMPARISON: YOUR BUILD VS OPTIMAL BUILDS
+══════════════════════════════════════════════════════════════════════
+
+╔════════════════════════════════════════════════════════════════╗
+║         YOUR BUILD IS 101.52% OPTIMAL                      ║
+╚════════════════════════════════════════════════════════════════╝
+
+Rating: 🌟 PERFECT - No respec needed!
+💡 Advice: Your build is essentially optimal. Save your resources.
+
+──────────────────────────────────────────────────────────────────────
+📊 METRIC BREAKDOWN:
+──────────────────────────────────────────────────────────────────────
+
+  🏔️ Stage:    100.00% optimal  (100.0 vs 100.0)
+  💰 Loot/Hr:  111.43% optimal  (2086863.28 vs 1872791.97)
+  📈 XP/Run:   101.19% optimal  (891.87k vs 881.39k)
+  💥 Damage:    86.10% optimal  (303,216 vs 352,179)
+
+──────────────────────────────────────────────────────────────────────
+✨ POTENTIAL GAINS IF YOU RESPEC:
+──────────────────────────────────────────────────────────────────────
+
+  Stage:      +0.0 stages
+  Loot:       +-10.3% more loot per hour
+  XP:         +-1.2% more XP per run
+
+──────────────────────────────────────────────────────────────────────
+🏆 TOP 3 OPTIMAL BUILDS:
+──────────────────────────────────────────────────────────────────────
+
+🥇 Stage 100.0 (100.0% of best)
+   Talents: death_is_my_companion:2, calypsos_advantage:5, unfair_advantage:3, ghost_bullets:4, omen_of_defeat:3, call_me_lucky_loot:3, presence_of_god:3, finishing_move:3, legacy_of_ultima:4
+   Attrs: release_the_kraken:7, space_pirate_armory:2, soul_amplification:5, serious_efficiency:5, fortification_elixir:6, a_pirates_life_for_knox:2, dead_men_tell_no_tales:6, passive_charge_tank:5, shield_of_poseidon:5, timeless_mastery:3
+
+🥈 Stage 100.0 (100.0% of best)
+   Talents: death_is_my_companion:2, calypsos_advantage:1, unfair_advantage:5, ghost_bullets:3, omen_of_defeat:1, call_me_lucky_loot:4, presence_of_god:4, finishing_move:8, legacy_of_ultima:2
+   Attrs: release_the_kraken:4, space_pirate_armory:4, soul_amplification:7, serious_efficiency:2, fortification_elixir:4, a_pirates_life_for_knox:3, dead_men_tell_no_tales:9, passive_charge_tank:4, shield_of_poseidon:1, timeless_mastery:5
+
+🥉 Stage 100.0 (100.0% of best)
+   Talents: death_is_my_companion:2, calypsos_advantage:3, unfair_advantage:4, ghost_bullets:4, omen_of_defeat:2, call_me_lucky_loot:3, presence_of_god:2, finishing_move:5, legacy_of_ultima:5
+   Attrs: release_the_kraken:10, space_pirate_armory:3, soul_amplification:8, serious_efficiency:5, fortification_elixir:5, a_pirates_life_for_knox:3, dead_men_tell_no_tales:2, passive_charge_tank:5, shield_of_poseidon:4, timeless_mastery:3
+
+──────────────────────────────────────────────────────────────────────
+🔧 CHANGES NEEDED (Your Build → Best Build):
+──────────────────────────────────────────────────────────────────────
+
+  ⭐ TALENTS:
+    ghost_bullets: 1 → 4 (+3)
+    omen_of_defeat: 9 → 3 (-6)
+    call_me_lucky_loot: 5 → 3 (-2)
+    presence_of_god: 2 → 3 (+1)
+    legacy_of_ultima: 0 → 4 (+4)
+
+  🔮 ATTRIBUTES:
+    a_pirates_life_for_knox: 8 → 2 (-6)
+    passive_charge_tank: 0 → 5 (+5)
+    timeless_mastery: 2 → 3 (+1)
+    dead_men_tell_no_tales: 3 → 6 (+3)
+    release_the_kraken: 10 → 7 (-3)
+    shield_of_poseidon: 0 → 5 (+5)
+    soul_amplification: 10 → 5 (-5)
+    fortification_elixir: 10 → 6 (-4)
+
+
+
+### Additional Notes
+
+_No response_
+
+### Data Usage Consent
+
+- [x] I consent to my build being used for formula validation
+- [x] I'm okay with my build being included in test datasets (anonymized)

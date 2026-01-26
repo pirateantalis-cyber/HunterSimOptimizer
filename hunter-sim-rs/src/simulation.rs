@@ -636,6 +636,7 @@ fn knox_attack(
 ) -> f64 {
     // Python: num_projectiles = self.salvo_projectiles
     let mut num_projectiles = hunter.salvo_projectiles;
+    let base_projectiles = num_projectiles;  // Track base for extra damage calc
     
     // Ghost Bullets - chance for extra projectile
     // Python: ghost_chance = self.talents["ghost_bullets"] * 0.0667
@@ -643,6 +644,7 @@ fn knox_attack(
         let ghost_chance = hunter.ghost_bullets as f64 * 0.0667;
         if rng.gen::<f64>() < ghost_chance {
             num_projectiles += 1;
+            hunter.result.ghost_bullets += 1;  // Track ghost bullet procs
         }
     }
     
@@ -680,6 +682,14 @@ fn knox_attack(
     // Track stats - Python: self.total_damage += total_damage
     hunter.result.damage += total_damage;
     hunter.result.attacks += 1;
+    
+    // Track extra salvo damage (from ghost bullets)
+    // Extra damage = damage from projectiles beyond base salvo count
+    if num_projectiles > base_projectiles {
+        let extra_projectile_count = num_projectiles - base_projectiles;
+        let damage_per_projectile = total_damage / num_projectiles as f64;
+        hunter.result.extra_salvo_damage += damage_per_projectile * extra_projectile_count as f64;
+    }
     
     // Lifesteal (if Knox has any)
     if hunter.lifesteal > 0.0 {
