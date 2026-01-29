@@ -61,12 +61,32 @@ class BuildResult:
     highest_stage: int
     lowest_stage: int = 0
     avg_loot_per_hour: float = 0.0
+    min_loot_common: float = 0.0
+    max_loot_common: float = 0.0
+    avg_loot_common: float = 0.0
+    min_loot_uncommon: float = 0.0
+    max_loot_uncommon: float = 0.0
+    avg_loot_uncommon: float = 0.0
+    min_loot_rare: float = 0.0
+    max_loot_rare: float = 0.0
+    avg_loot_rare: float = 0.0
     avg_damage: float = 0.0
+    min_damage: float = 0.0
+    max_damage: float = 0.0
     avg_kills: float = 0.0
     avg_elapsed_time: float = 0.0
     avg_damage_taken: float = 0.0
+    min_damage_taken: float = 0.0
+    max_damage_taken: float = 0.0
     survival_rate: float = 1.0
+    boss1_survival: float = 0.0
+    boss2_survival: float = 0.0
+    boss3_survival: float = 0.0
+    boss4_survival: float = 0.0
+    boss5_survival: float = 0.0
     avg_xp: float = 0.0
+    min_xp: float = 0.0
+    max_xp: float = 0.0
     config: Dict = field(default_factory=dict)
     
     def __lt__(self, other):
@@ -84,6 +104,13 @@ class BuildGenerator:
         self.talent_points = level  # 1 talent point per level
         self.attribute_points = level * 3  # 3 attribute points per level
         self.costs = hunter_class.costs
+        
+        # Filter talents and attributes based on unlock level
+        self.costs["talents"] = {k: v for k, v in self.costs["talents"].items() 
+                                if v.get("unlock_level", 0) <= self.level}
+        self.costs["attributes"] = {k: v for k, v in self.costs["attributes"].items() 
+                                   if v.get("unlock_level", 0) <= self.level}
+        
         self.use_smart_sampling = use_smart_sampling
         
         # Calculate dynamic maxes for infinite attributes based on total points
@@ -386,6 +413,171 @@ HUNTER_COLORS = {
 
 
 # ============================================================================
+# COLORFUL TAB BAR - Custom tab bar with individual colored labels
+# ============================================================================
+
+class ColorfulTabBar:
+    """
+    A custom tab bar using individual colored tk.Label widgets.
+    Each tab has its own foreground color, which isn't possible with ttk.Notebook.
+    The notebook is hidden but still used for content management.
+    """
+    
+    def __init__(self, parent: tk.Widget, notebook: ttk.Notebook, 
+                 tabs: List[Tuple[str, str, str]],  # List of (name, emoji, color)
+                 bg_color: str = "#1e1e32",
+                 selected_bg: str = "#2a2a40",
+                 font: Tuple = ('Arial', 12, 'bold'),
+                 padding: int = 15,
+                 is_main: bool = True):
+        """
+        Create a colorful tab bar.
+        
+        Args:
+            parent: Parent widget to contain the tab bar
+            notebook: The ttk.Notebook this bar controls (will have its tabs hidden)
+            tabs: List of (tab_name, emoji, text_color) tuples
+            bg_color: Background color for the bar
+            selected_bg: Background color for selected tab
+            font: Font tuple for tab labels
+            padding: Horizontal padding around tab text
+            is_main: True for main tabs (bigger), False for sub-tabs (smaller)
+        """
+        self.notebook = notebook
+        self.tabs = tabs
+        self.bg_color = bg_color
+        self.selected_bg = selected_bg
+        self.font = font
+        self.padding = padding
+        self.is_main = is_main
+        self.current_tab = 0
+        self.tab_labels: List[tk.Label] = []
+        
+        # Create the tab bar frame
+        self.frame = tk.Frame(parent, bg=bg_color)
+        
+        # Create individual tab labels
+        for idx, (name, emoji, color) in enumerate(tabs):
+            tab_text = f"  {emoji} {name}  " if emoji else f"  {name}  "
+            
+            label = tk.Label(
+                self.frame,
+                text=tab_text,
+                font=font,
+                fg=color,
+                bg=selected_bg if idx == 0 else bg_color,
+                cursor="hand2",
+                padx=padding,
+                pady=8 if is_main else 4
+            )
+            label.pack(side=tk.LEFT, padx=(0, 2))
+            
+            # Bind click events
+            label.bind("<Button-1>", lambda e, i=idx: self._on_tab_click(i))
+            label.bind("<Enter>", lambda e, lbl=label, i=idx: self._on_hover_enter(lbl, i))
+            label.bind("<Leave>", lambda e, lbl=label, i=idx: self._on_hover_leave(lbl, i))
+            
+            self.tab_labels.append(label)
+        
+        # Store original colors for hover effects
+        self.original_colors = [color for (_, _, color) in tabs]
+    
+    def pack(self, **kwargs):
+        """Pack the tab bar frame."""
+        self.frame.pack(**kwargs)
+    
+    def grid(self, **kwargs):
+        """Grid the tab bar frame."""
+        self.frame.grid(**kwargs)
+    
+    def _on_tab_click(self, index: int):
+        """Handle tab click - switch notebook page and update visuals."""
+        if index == self.current_tab:
+            return
+        
+        # Update visual state
+        old_tab = self.current_tab
+        self.current_tab = index
+        
+        # Reset old tab appearance
+        self.tab_labels[old_tab].configure(bg=self.bg_color)
+        
+        # Highlight new tab
+        self.tab_labels[index].configure(bg=self.selected_bg)
+        
+        # Switch notebook page
+        self.notebook.select(index)
+    
+    def _on_hover_enter(self, label: tk.Label, index: int):
+        """Handle mouse hover enter."""
+        if index != self.current_tab:
+            # Lighten the background slightly on hover
+            hover_bg = self._lighten_color(self.bg_color, 1.2)
+            label.configure(bg=hover_bg)
+    
+    def _on_hover_leave(self, label: tk.Label, index: int):
+        """Handle mouse hover leave."""
+        if index != self.current_tab:
+            label.configure(bg=self.bg_color)
+        else:
+            label.configure(bg=self.selected_bg)
+    
+    def _lighten_color(self, hex_color: str, factor: float = 1.3) -> str:
+        """Lighten a hex color by a factor (>1)."""
+        try:
+            hex_color = hex_color.lstrip('#')
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            r = min(255, int(r * factor))
+            g = min(255, int(g * factor))
+            b = min(255, int(b * factor))
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except:
+            return hex_color
+    
+    def select(self, index: int):
+        """Programmatically select a tab."""
+        self._on_tab_click(index)
+    
+    def update_colors(self, bg_color: str, selected_bg: str, tab_colors: List[str] = None):
+        """Update the tab bar colors (for theme changes)."""
+        self.bg_color = bg_color
+        self.selected_bg = selected_bg
+        
+        if tab_colors:
+            self.original_colors = tab_colors
+        
+        for idx, label in enumerate(self.tab_labels):
+            if tab_colors and idx < len(tab_colors):
+                label.configure(fg=tab_colors[idx])
+            
+            if idx == self.current_tab:
+                label.configure(bg=selected_bg)
+            else:
+                label.configure(bg=bg_color)
+        
+        self.frame.configure(bg=bg_color)
+    
+    def sync_with_notebook(self):
+        """Sync tab bar selection with notebook (if notebook was changed externally)."""
+        try:
+            current_notebook_tab = self.notebook.index(self.notebook.select())
+            if current_notebook_tab != self.current_tab:
+                self._on_tab_click(current_notebook_tab)
+        except:
+            pass
+
+
+def hide_notebook_tabs(notebook: ttk.Notebook, style: ttk.Style):
+    """
+    Hide the tabs of a ttk.Notebook by setting tab height to 0.
+    The notebook content is still navigable programmatically.
+    """
+    # Create a style that hides tabs
+    style.layout("Hidden.TNotebook.Tab", [])
+    notebook.configure(style="Hidden.TNotebook")
+
+
+# ============================================================================
 # UPGRADE COST CALCULATION FUNCTIONS
 # ============================================================================
 # Ported from the WASM JavaScript implementation
@@ -476,16 +668,12 @@ def calculate_upgrade_cost(stat: str, level: int, hunter: str) -> int:
                     pow(4, max(n - 39, 0)))
             return math.ceil(0.9 * base * mult)
         elif hunter_lower == "ozzy":
-            base = math.ceil(3 * pow(0.024 * n + 1.17, n))
-            mult = (pow(3, max(n - 34, 0)) * pow(4, max(n - 35, 0)) * 
-                    pow(6, max(n - 36, 0)) * pow(8, max(n - 37, 0)) * 
-                    pow(100, max(n - 38, 0)))
+            base = math.ceil(3 * pow(0.0128 * n + 1.17, n))
+            mult = 1
             return math.ceil(base * mult)
         else:  # Borge
-            base = math.ceil(5 * pow(0.024 * n + 1.17, n))
-            mult = (pow(3, max(n - 34, 0)) * pow(4, max(n - 35, 0)) * 
-                    pow(6, max(n - 36, 0)) * pow(8, max(n - 37, 0)) * 
-                    pow(100, max(n - 38, 0)))
+            base = math.ceil(5 * pow(0.0128 * n + 1.17, n))
+            mult = 1
             return math.ceil(base * mult)
     
     # Evade/Block cost formula
@@ -566,7 +754,7 @@ def calculate_upgrade_cost(stat: str, level: int, hunter: str) -> int:
             base = math.ceil(1 * pow(0.025 * n + 1.35, n))
             mult = (pow(1.05, max(n - 59, 0)) * pow(1.2, max(n - 69, 0)) * 
                     pow(1.3, max(n - 79, 0)) * pow(1.4, max(n - 89, 0)))
-            return math.ceil(base * mult)
+            return math.ceil(base * mult / 1000000000000000000000000)  # Adjust for reasonable costs
     
     # ATK Speed / Reload cost formula
     elif wasm_stat in ("atkspeed", "reload"):
@@ -617,27 +805,76 @@ def get_stat_resource_type(stat: str, hunter: str) -> str:
         return "rare"
 
 
-def format_cost(cost: int) -> str:
-    """Format a cost number with K/M/B suffixes for readability."""
-    if cost < 1000:
-        return str(cost)
-    elif cost < 1_000_000:
-        return f"{cost / 1000:.1f}K"
-    elif cost < 1_000_000_000:
-        return f"{cost / 1_000_000:.2f}M"
-    elif cost < 1_000_000_000_000:
-        return f"{cost / 1_000_000_000:.2f}B"
+def get_stat_display_name(stat: str, hunter: str) -> str:
+    """
+    Get the proper display name for a stat as seen in the game.
+    
+    Args:
+        stat: The internal stat key
+        hunter: Hunter name (Borge, Ozzy, Knox)
+    
+    Returns:
+        The display name as shown in the game
+    """
+    hunter_lower = hunter.lower()
+    
+    # Common mappings for all hunters
+    common_map = {
+        "hp": "Max HP",
+        "power": "ATK Power",
+        "regen": "HP Regen",
+        "damage_reduction": "DMG Reduction",
+        "effect_chance": "Effect Chance",
+    }
+    
+    # Hunter-specific mappings
+    if hunter_lower == "borge":
+        stat_map = {
+            **common_map,
+            "evade_chance": "Evade Chance",
+            "special_chance": "Crit Chance",
+            "special_damage": "Crit Power",
+            "speed": "ATK Speed",
+        }
+    elif hunter_lower == "ozzy":
+        stat_map = {
+            **common_map,
+            "evade_chance": "Evade Chance",
+            "special_chance": "MultiStrike Chance",
+            "special_damage": "MultiStrike Power",
+            "speed": "ATK Speed",
+        }
+    elif hunter_lower == "knox":
+        stat_map = {
+            **common_map,
+            "block_chance": "Block Chance",
+            "charge_chance": "Charge Chance",
+            "charge_gained": "Charge Gained",
+            "reload_time": "Reload Time",
+            "projectiles_per_salvo": "Projectiles Per Salvo",
+        }
     else:
-        return f"{cost / 1_000_000_000_000:.2f}T"
+        # Fallback
+        stat_map = common_map
+    
+    return stat_map.get(stat, stat.replace("_", " ").title())
 
 
 class HunterTab:
     """Manages a single hunter's tab with sub-tabs for Build, Run, and Results."""
     
-    # Dark mode colors (matching MultiHunterGUI)
-    DARK_BG = "#1a1a2e"
-    DARK_BG_SECONDARY = "#16213e"
-    DARK_TEXT = "#e0e0e0"
+    # Colors are dynamically loaded from app
+    @property
+    def DARK_BG(self):
+        return self.app.DARK_BG
+    
+    @property
+    def DARK_BG_SECONDARY(self):
+        return self.app.DARK_BG_SECONDARY
+    
+    @property
+    def DARK_TEXT(self):
+        return self.app.DARK_TEXT
     
     def __init__(self, parent_notebook: ttk.Notebook, hunter_name: str, hunter_class, app: 'MultiHunterGUI'):
         self.hunter_name = hunter_name
@@ -664,6 +901,10 @@ class HunterTab:
         # State
         self.level = tk.IntVar(value=1)
         self.results: List[BuildResult] = []
+        self.generation_history: List[Dict] = []  # For Generations tab
+        self.generation_tabs: Dict[int, Any] = {}  # Store generation text widgets
+        self.is_completed = False  # Track if optimization has completed (persists even after results cleared)
+        self.completion_best_stage = 0.0  # Store best stage for display after completion
         self.result_queue = queue.Queue()
         self.is_running = False
         self.stop_event = threading.Event()
@@ -743,24 +984,36 @@ class HunterTab:
         
         # Portrait panel on left (if PIL available)
         if PIL_AVAILABLE and self.portrait_photo:
-            portrait_frame = tk.Frame(self.container, bg=self.colors["primary"], width=238)  # 15% thinner (280 * 0.85)
-            portrait_frame.pack(side=tk.LEFT, fill=tk.Y, padx=0, pady=0)
-            portrait_frame.pack_propagate(False)
+            # Get current color from app's arena_themes (respects colorblind themes)
+            portrait_color = self.colors["primary"]  # Default
+            if hasattr(self.app, 'arena_themes') and self.hunter_name in self.app.arena_themes:
+                portrait_color = self.app.arena_themes[self.hunter_name].get("accent_color", portrait_color)
+            
+            self.portrait_frame = tk.Frame(self.container, bg=portrait_color, width=238)  # 15% thinner (280 * 0.85)
+            self.portrait_frame.pack(side=tk.LEFT, fill=tk.Y, padx=0, pady=0)
+            self.portrait_frame.pack_propagate(False)
             
             # Hunter name at top
-            name_label = tk.Label(portrait_frame, text=self.hunter_name.upper(), 
+            self.name_label = tk.Label(self.portrait_frame, text=self.hunter_name.upper(), 
                                   font=('Arial', 18, 'bold'), fg=self.colors["text"], 
-                                  bg=self.colors["primary"])
-            name_label.pack(pady=(15, 10))
+                                  bg=portrait_color)
+            self.name_label.pack(pady=(15, 10))
             
             # Portrait image - centered and larger
-            portrait_label = tk.Label(portrait_frame, image=self.portrait_photo, 
-                                      bg=self.colors["primary"])
-            portrait_label.pack(pady=10, padx=15, expand=True)
+            self.portrait_label = tk.Label(self.portrait_frame, image=self.portrait_photo, 
+                                      bg=portrait_color)
+            self.portrait_label.pack(pady=10, padx=15, expand=True)
+        else:
+            self.portrait_frame = None
+            self.name_label = None
+            self.portrait_label = None
         
-        # Create sub-notebook
-        self.sub_notebook = ttk.Notebook(self.container)
-        self.sub_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Container for sub-tab bar + notebook content
+        self.sub_container = tk.Frame(self.container, bg=self.DARK_BG)
+        self.sub_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Create sub-notebook (tabs will be hidden)
+        self.sub_notebook = ttk.Notebook(self.sub_container)
         
         # Create sub-tabs
         self.build_frame = ttk.Frame(self.sub_notebook)
@@ -769,11 +1022,17 @@ class HunterTab:
         self.results_frame = ttk.Frame(self.sub_notebook)
         self.generations_frame = ttk.Frame(self.sub_notebook)
         
-        self.sub_notebook.add(self.build_frame, text="📝 Build")
-        self.sub_notebook.add(self.run_frame, text="🚀 Run")
-        self.sub_notebook.add(self.advisor_frame, text="🎯 Advisor")
-        self.sub_notebook.add(self.results_frame, text="🏆 Best")
-        self.sub_notebook.add(self.generations_frame, text="📊 Generations")
+        self.sub_notebook.add(self.build_frame, text="Build")
+        self.sub_notebook.add(self.run_frame, text="Run")
+        self.sub_notebook.add(self.advisor_frame, text="Advisor")
+        self.sub_notebook.add(self.results_frame, text="Best")
+        self.sub_notebook.add(self.generations_frame, text="Generations")
+        
+        # Hide sub-notebook tabs and create colorful tab bar
+        self._setup_sub_tab_bar()
+        
+        # Pack the notebook after the tab bar
+        self.sub_notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
         
         self._create_build_tab()
         self._create_run_tab()
@@ -784,6 +1043,218 @@ class HunterTab:
         # Try to auto-load IRL build
         self._auto_load_build()
     
+    def _setup_sub_tab_bar(self):
+        """Create a colorful tab bar for the sub-notebook (Build, Run, Advisor, Best, Generations)."""
+        theme_name = self.app.theme_var.get() if hasattr(self.app, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name.lower()
+        is_light = theme_name in ["Light", "White/Black"] or is_colorblind
+        
+        # Determine background colors
+        if is_light:
+            bg_color = "#e0e0e0"
+            selected_bg = "#ffffff"
+        else:
+            bg_color = self.DARK_BG
+            selected_bg = "#2a2a40"
+        
+        # Get hunter's accent color for colorful tabs
+        hunter_color = self.colors["primary"]
+        if hasattr(self.app, 'arena_themes') and self.hunter_name in self.app.arena_themes:
+            hunter_color = self.app.arena_themes[self.hunter_name].get("accent_color", hunter_color)
+        
+        # Define tab configurations with colorful text
+        if is_colorblind:
+            # Colorblind: all neutral gray
+            neutral_color = "#555555" if is_light else "#c0c0d0"
+            tab_configs = [
+                ("Build", "📝", neutral_color),
+                ("Run", "▶", neutral_color),
+                ("Advisor", "💡", neutral_color),
+                ("Best", "🏆", neutral_color),
+                ("Generations", "📈", neutral_color),
+            ]
+        else:
+            # Non-colorblind: COLORFUL text based on hunter theme!
+            if is_light:
+                tab_configs = [
+                    ("Build", "📝", "#666666"),      # Gray
+                    ("Run", "▶", "#228822"),          # Green
+                    ("Advisor", "💡", "#cc8800"),    # Gold/yellow
+                    ("Best", "🏆", "#dd6600"),       # Orange
+                    ("Generations", "📈", "#0066bb"), # Blue
+                ]
+            else:
+                tab_configs = [
+                    ("Build", "📝", "#c0c0d0"),      # Silver
+                    ("Run", "▶", "#66dd66"),          # Bright green
+                    ("Advisor", "💡", "#ffcc44"),    # Yellow/gold
+                    ("Best", "🏆", "#ff9944"),       # Orange
+                    ("Generations", "📈", "#66aaff"), # Bright blue
+                ]
+        
+        # Hide sub-notebook tabs completely
+        style = ttk.Style()
+        style.layout("SubHidden.TNotebook", [
+            ("SubHidden.TNotebook.client", {"sticky": "nswe"})
+        ])
+        style.layout("SubHidden.TNotebook.Tab", [])  # Empty layout = no tabs visible
+        style.configure("SubHidden.TNotebook", background=bg_color)
+        self.sub_notebook.configure(style="SubHidden.TNotebook")
+        
+        # Create the colorful tab bar
+        self.sub_tab_bar = ColorfulTabBar(
+            parent=self.sub_container,
+            notebook=self.sub_notebook,
+            tabs=tab_configs,
+            bg_color=bg_color,
+            selected_bg=selected_bg,
+            font=('Arial', 10, 'bold'),
+            padding=10,
+            is_main=False
+        )
+        self.sub_tab_bar.pack(fill=tk.X, pady=(0, 5))
+    
+    def update_sub_tab_bar_colors(self):
+        """Update sub tab bar colors based on current theme (called on theme change)."""
+        if not hasattr(self, 'sub_tab_bar'):
+            return
+        
+        theme_name = self.app.theme_var.get() if hasattr(self.app, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name.lower()
+        is_light = theme_name in ["Light", "White/Black"] or is_colorblind
+        
+        # Determine background colors
+        if is_light:
+            bg_color = "#e0e0e0"
+            selected_bg = "#ffffff"
+        else:
+            bg_color = self.DARK_BG
+            selected_bg = "#2a2a40"
+        
+        # Determine text colors
+        if is_colorblind:
+            neutral_color = "#555555" if is_light else "#c0c0d0"
+            tab_colors = [neutral_color] * 5
+        else:
+            if is_light:
+                tab_colors = ["#666666", "#228822", "#cc8800", "#dd6600", "#0066bb"]
+            else:
+                tab_colors = ["#c0c0d0", "#66dd66", "#ffcc44", "#ff9944", "#66aaff"]
+        
+        # Re-apply hidden style to ensure tabs stay hidden after theme change
+        if hasattr(self, 'sub_notebook'):
+            style = ttk.Style()
+            style.layout("SubHidden.TNotebook", [
+                ("SubHidden.TNotebook.client", {"sticky": "nswe"})
+            ])
+            style.layout("SubHidden.TNotebook.Tab", [])  # Empty layout = no tabs visible
+            style.configure("SubHidden.TNotebook", background=bg_color)
+            self.sub_notebook.configure(style="SubHidden.TNotebook")
+        
+        self.sub_tab_bar.update_colors(bg_color, selected_bg, tab_colors)
+    
+    def _setup_results_tab_bar(self, parent: tk.Frame, categories: list):
+        """Create a colorful tab bar for the results notebook (Avg Stage, Max Stage, Loot, etc.)."""
+        theme_name = self.app.theme_var.get() if hasattr(self.app, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name.lower()
+        is_light = theme_name in ["Light", "White/Black"] or is_colorblind
+        
+        # Determine background colors
+        if is_light:
+            bg_color = "#e0e0e0"
+            selected_bg = "#ffffff"
+        else:
+            bg_color = self.DARK_BG
+            selected_bg = "#2a2a40"
+        
+        # Define colorful tab configurations
+        if is_colorblind:
+            # Colorblind: all neutral gray
+            neutral_color = "#555555" if is_light else "#c0c0d0"
+            tab_configs = [(label, neutral_color) for label, key in categories]
+        else:
+            # Colorful tabs for results categories
+            if is_light:
+                result_colors = ["#666666", "#555555", "#cc8800", "#228822", "#cc4444", "#0066bb"]
+            else:
+                result_colors = ["#c0c0d0", "#a0a0b0", "#ffcc44", "#66dd66", "#ff6666", "#66aaff"]
+            tab_configs = [(label, result_colors[i % len(result_colors)]) for i, (label, key) in enumerate(categories)]
+        
+        # Convert to format expected by ColorfulTabBar: (name, emoji, color)
+        # Extract emoji from label
+        formatted_configs = []
+        for label, color in tab_configs:
+            parts = label.split(" ", 1)
+            if len(parts) == 2:
+                emoji, name = parts
+            else:
+                emoji, name = "", label
+            formatted_configs.append((name, emoji, color))
+        
+        # Hide results notebook tabs
+        style = ttk.Style()
+        style.layout("ResultsHidden.TNotebook", [
+            ("ResultsHidden.TNotebook.client", {"sticky": "nswe"})
+        ])
+        style.layout("ResultsHidden.TNotebook.Tab", [])
+        style.configure("ResultsHidden.TNotebook", background=bg_color)
+        self.results_notebook.configure(style="ResultsHidden.TNotebook")
+        
+        # Create the colorful tab bar
+        self.results_tab_bar = ColorfulTabBar(
+            parent=parent,
+            notebook=self.results_notebook,
+            tabs=formatted_configs,
+            bg_color=bg_color,
+            selected_bg=selected_bg,
+            font=('Arial', 9, 'bold'),
+            padding=8,
+            is_main=False
+        )
+        self.results_tab_bar.pack(fill=tk.X, pady=(0, 5))
+        
+        # Pack the notebook after the tab bar
+        self.results_notebook.pack(fill=tk.BOTH, expand=True)
+    
+    def update_results_tab_bar_colors(self):
+        """Update results tab bar colors based on current theme."""
+        if not hasattr(self, 'results_tab_bar'):
+            return
+        
+        theme_name = self.app.theme_var.get() if hasattr(self.app, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name.lower()
+        is_light = theme_name in ["Light", "White/Black"] or is_colorblind
+        
+        # Determine background colors
+        if is_light:
+            bg_color = "#e0e0e0"
+            selected_bg = "#ffffff"
+        else:
+            bg_color = self.DARK_BG
+            selected_bg = "#2a2a40"
+        
+        # Determine text colors
+        if is_colorblind:
+            neutral_color = "#555555" if is_light else "#c0c0d0"
+            tab_colors = [neutral_color] * 6
+        else:
+            if is_light:
+                tab_colors = ["#666666", "#555555", "#cc8800", "#228822", "#cc4444", "#0066bb"]
+            else:
+                tab_colors = ["#c0c0d0", "#a0a0b0", "#ffcc44", "#66dd66", "#ff6666", "#66aaff"]
+        
+        # Re-apply hidden style
+        if hasattr(self, 'results_notebook'):
+            style = ttk.Style()
+            style.layout("ResultsHidden.TNotebook", [
+                ("ResultsHidden.TNotebook.client", {"sticky": "nswe"})
+            ])
+            style.layout("ResultsHidden.TNotebook.Tab", [])
+            style.configure("ResultsHidden.TNotebook", background=bg_color)
+            self.results_notebook.configure(style="ResultsHidden.TNotebook")
+        
+        self.results_tab_bar.update_colors(bg_color, selected_bg, tab_colors)
+
     def _get_build_file_path(self) -> Path:
         """Get the path to this hunter's IRL build file."""
         return IRL_BUILDS_PATH / f"my_{self.hunter_name.lower()}_build.json"
@@ -959,10 +1430,22 @@ class HunterTab:
     def _load_config(self, config: Dict):
         """Load a configuration into the UI."""
         if config.get("level"):
-            self.level.set(config["level"])
+            try:
+                level_val = int(config["level"])
+                if level_val > 0 and level_val <= 600:
+                    self.level.set(level_val)
+                else:
+                    self.level.set(1)  # Invalid level, reset to default
+            except (ValueError, TypeError):
+                self.level.set(1)  # Invalid level value, reset to default
         
         if config.get("irl_max_stage"):
-            self.irl_max_stage.set(config["irl_max_stage"])
+            try:
+                irl_stage_val = int(config["irl_max_stage"])
+                if irl_stage_val >= 0:
+                    self.irl_max_stage.set(irl_stage_val)
+            except (ValueError, TypeError):
+                pass  # Keep current value
         
         for key, value in config.get("stats", {}).items():
             if key in self.stat_entries:
@@ -1014,14 +1497,18 @@ class HunterTab:
     
     def _create_build_tab(self):
         """Create the build configuration sub-tab."""
-        # Colored header banner
+        # Colored header banner - use dynamic color getter for theme safety
         icon = '🛡️' if self.hunter_name == 'Borge' else '🔫' if self.hunter_name == 'Knox' else '🐙'
-        header = tk.Frame(self.build_frame, bg=self.colors["primary"], height=40)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        header_label = tk.Label(header, text=f"{icon} {self.hunter_name} Build Configuration", 
-                                font=('Arial', 14, 'bold'), fg=self.colors["text"], bg=self.colors["primary"])
-        header_label.pack(expand=True)
+        
+        self.build_config_header = tk.Frame(self.build_frame, height=40)
+        self.build_config_header.pack(fill=tk.X)
+        self.build_config_header.pack_propagate(False)
+        self.build_config_header_label = tk.Label(self.build_config_header, text=f"{icon} {self.hunter_name} Build Configuration", 
+                                font=('Arial', 14, 'bold'), fg=self.colors["text"])
+        self.build_config_header_label.pack(expand=True)
+        
+        # Apply initial color
+        self._update_header_color()
         
         # Level at top
         top_frame = ttk.Frame(self.build_frame)
@@ -1035,7 +1522,15 @@ class HunterTab:
         level_spin.bind('<<Decrement>>', lambda e: self._update_max_points_label())
         self.level.trace_add('write', lambda *args: self._update_max_points_label())
         
-        self.max_points_label = ttk.Label(top_frame, text=f"(Max Talents: {self.level.get()}, Max Attrs: {self.level.get()*3})", 
+        # Initialize max points label with safe defaults
+        try:
+            current_level = self.level.get()
+            if not isinstance(current_level, int) or current_level <= 0:
+                current_level = 1
+        except (tk.TclError, ValueError, TypeError):
+            current_level = 1
+        
+        self.max_points_label = ttk.Label(top_frame, text=f"(Max Talents: {current_level}, Max Attrs: {current_level*3})", 
                   font=('Arial', 9, 'italic'))
         self.max_points_label.pack(side=tk.LEFT, padx=10)
         
@@ -1057,31 +1552,53 @@ class HunterTab:
     
     def _update_max_points_label(self):
         """Update the max points label when level changes."""
-        level = self.level.get()
-        max_talents = level
-        max_attrs = level * 3
-        self.max_points_label.configure(text=f"(Max Talents: {max_talents}, Max Attrs: {max_attrs})")
+        try:
+            level = self.level.get()
+            if not isinstance(level, int) or level <= 0:
+                level = 1  # Default fallback
+            max_talents = level
+            max_attrs = level * 3
+            self.max_points_label.configure(text=f"(Max Talents: {max_talents}, Max Attrs: {max_attrs})")
+        except (tk.TclError, ValueError, TypeError):
+            # If level is corrupted, reset to default
+            self.level.set(1)
+            self.max_points_label.configure(text="(Max Talents: 1, Max Attrs: 3)")
     
     def _manual_save(self):
         """Manual save with confirmation."""
         self._auto_save_build()
         messagebox.showinfo("Saved", f"{self.hunter_name} build saved to IRL Builds folder!")
     
+    def _update_header_color(self):
+        """Update main header color to current arena theme color."""
+        if hasattr(self, 'build_config_header') and self.build_config_header.winfo_exists():
+            color = self.app.arena_themes.get(self.hunter_name, {}).get('accent_color', self.colors["primary"])
+            self.build_config_header.configure(bg=color)
+            if hasattr(self, 'build_config_header_label'):
+                self.build_config_header_label.configure(bg=color)
+    
     def _create_section_frame(self, parent, title: str, emoji: str, color: str = None) -> ttk.Frame:
         """Create a colorful section with header banner and content frame."""
         # Container for the whole section
         container = ttk.Frame(parent)
         
-        # Colorful header banner
-        if color is None:
-            color = self.colors["primary"]
-        
-        header = tk.Frame(container, bg=color, height=28)
+        # Colorful header banner - will be updated dynamically
+        header = tk.Frame(container, height=28)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
         header_label = tk.Label(header, text=f"{emoji} {title}", 
-                                font=('Arial', 10, 'bold'), fg="white", bg=color)
+                                font=('Arial', 10, 'bold'), fg="white")
         header_label.pack(side=tk.LEFT, padx=10)
+        
+        # Store header references for theme updates
+        if not hasattr(self, 'section_headers'):
+            self.section_headers = []
+        self.section_headers.append((header, header_label))
+        
+        # Apply initial color
+        color = self.app.arena_themes.get(self.hunter_name, {}).get('accent_color', self.colors["primary"])
+        header.configure(bg=color)
+        header_label.configure(bg=color)
         
         # Content frame - use tk.Frame with dark background for proper dark mode
         content = tk.Frame(container, bg=self.DARK_BG)
@@ -1096,13 +1613,39 @@ class HunterTab:
         return tk.Label(parent, text=text, fg=fg, bg=self.DARK_BG, **kwargs)
     
     def _get_stat_color(self, stat_key: str) -> str:
-        """Get the color for a stat based on its resource type."""
+        """Get the color for a stat based on its resource type (colorblind-safe)."""
         resource_type = get_stat_resource_type(stat_key, self.hunter_name)
-        colors = {
-            "common": "#22c55e",    # Green (Obsidian)
-            "uncommon": "#3b82f6",  # Blue (Behlium)  
-            "rare": "#f97316",      # Orange (Hellish-Biomatter)
-        }
+        
+        # Check if colorblind theme is active
+        theme_name = self.app.theme_var.get() if hasattr(self.app, 'theme_var') else "Dark"
+        
+        if theme_name == "Protanopia (Red-blind)":
+            # NO red, orange, purple, magenta
+            colors = {
+                "common": "#22bb66",    # Green (safe)
+                "uncommon": "#4499ff",  # Blue (safe)
+                "rare": "#dddd00",      # Yellow (safe)
+            }
+        elif theme_name == "Deuteranopia (Green-blind)":
+            # NO green, cyan
+            colors = {
+                "common": "#ff7744",    # Orange (safe)
+                "uncommon": "#4499ff",  # Blue (safe)
+                "rare": "#dd55ff",      # Magenta (safe)
+            }
+        elif theme_name == "Tritanopia (Blue-blind)":
+            # NO blue, purple, cyan
+            colors = {
+                "common": "#22cc44",    # Green (safe)
+                "uncommon": "#ff6644",  # Orange-red (safe)
+                "rare": "#ffcc00",      # Yellow (safe)
+            }
+        else:
+            colors = {
+                "common": "#22c55e",    # Green (Obsidian)
+                "uncommon": "#3b82f6",  # Blue (Behlium)  
+                "rare": "#f97316",      # Orange (Hellish-Biomatter)
+            }
         return colors.get(resource_type, "#888888")
     
     def _populate_build_fields(self):
@@ -1157,14 +1700,29 @@ class HunterTab:
                 tk.Label(frame, text="/5", width=3, fg="#b0b0b0", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             self.stat_entries[stat_key] = entry
         
-        # Add resource type legend with actual resource names
+        # Add resource type legend with actual resource names (colorblind-safe)
         res_common, res_uncommon, res_rare = self._get_resource_names()
         legend_frame = tk.Frame(stats_frame, bg=self.DARK_BG)
         legend_frame.grid(row=10, column=0, columnspan=3, pady=(8, 2), sticky="w")
         tk.Label(legend_frame, text="Resource:", font=('Arial', 8), fg="#888888", bg=self.DARK_BG).pack(side=tk.LEFT, padx=(4, 8))
-        tk.Label(legend_frame, text=f"● {res_common}", font=('Arial', 8, 'bold'), fg="#22c55e", bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
-        tk.Label(legend_frame, text=f"● {res_uncommon}", font=('Arial', 8, 'bold'), fg="#3b82f6", bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
-        tk.Label(legend_frame, text=f"● {res_rare}", font=('Arial', 8, 'bold'), fg="#f97316", bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
+        
+        # Get colorblind-safe colors per theme type
+        theme_name = self.app.theme_var.get() if hasattr(self.app, 'theme_var') else "Dark"
+        if theme_name == "Protanopia (Red-blind)":
+            # NO red, orange, purple, magenta
+            common_color, uncommon_color, rare_color = "#22bb66", "#4499ff", "#dddd00"
+        elif theme_name == "Deuteranopia (Green-blind)":
+            # NO green, cyan
+            common_color, uncommon_color, rare_color = "#ff7744", "#4499ff", "#dd55ff"
+        elif theme_name == "Tritanopia (Blue-blind)":
+            # NO blue, purple, cyan
+            common_color, uncommon_color, rare_color = "#22cc44", "#ff6644", "#ffcc00"
+        else:
+            common_color, uncommon_color, rare_color = "#22c55e", "#3b82f6", "#f97316"
+        
+        tk.Label(legend_frame, text=f"● {res_common}", font=('Arial', 8, 'bold'), fg=common_color, bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
+        tk.Label(legend_frame, text=f"● {res_uncommon}", font=('Arial', 8, 'bold'), fg=uncommon_color, bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
+        tk.Label(legend_frame, text=f"● {res_rare}", font=('Arial', 8, 'bold'), fg=rare_color, bg=self.DARK_BG).pack(side=tk.LEFT, padx=4)
         
         # Talents Section (LEFT) - with colorful header
         talents_container, talents_frame = self._create_section_frame(
@@ -1178,6 +1736,9 @@ class HunterTab:
         
         talent_items = list(dummy.get("talents", {}).items())
         num_talent_cols = 2  # 2 columns for better readability
+        # Get colorblind-safe talent color (purple is safe for all)
+        talent_color = "#a855f7"  # Purple is colorblind-safe
+        
         for i, (talent_key, talent_val) in enumerate(talent_items):
             r, c = divmod(i, num_talent_cols)
             frame = tk.Frame(talents_frame, bg=self.DARK_BG)
@@ -1186,7 +1747,7 @@ class HunterTab:
             if len(label) > 22:
                 label = label[:21] + "…"
             tk.Label(frame, text=f"{label}:", width=22, anchor="w",
-                    fg="#a855f7", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
+                    fg=talent_color, bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             entry = ttk.Entry(frame, width=3)
             entry.insert(0, "0")
             entry.bind('<FocusOut>', lambda e: self._auto_save_build())
@@ -1232,13 +1793,24 @@ class HunterTab:
         
         attr_items = list(dummy.get("attributes", {}).items())
         num_attr_cols = 2  # 2 columns for better readability
+        # Get colorblind-safe attribute color per theme
+        theme_name = self.app.theme_var.get() if hasattr(self.app, 'theme_var') else "Dark"
+        if theme_name == "Protanopia (Red-blind)":
+            attr_color = "#4499ff"  # Blue (no red!)
+        elif theme_name == "Deuteranopia (Green-blind)":
+            attr_color = "#ff6644"  # Orange-red (safe)
+        elif theme_name == "Tritanopia (Blue-blind)":
+            attr_color = "#ff4444"  # Red (no blue!)
+        else:
+            attr_color = "#ef4444"  # Red for normal
+        
         for i, (attr_key, attr_val) in enumerate(attr_items):
             r, c = divmod(i, num_attr_cols)
             frame = tk.Frame(attrs_frame, bg=self.DARK_BG)
             frame.grid(row=r, column=c, padx=2, pady=2, sticky="w")
             label = self._format_attribute_label(attr_key)
             tk.Label(frame, text=f"{label}:", width=22, anchor="w",
-                    fg="#ef4444", bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
+                    fg=attr_color, bg=self.DARK_BG, font=('Arial', 9)).pack(side=tk.LEFT)
             entry = ttk.Entry(frame, width=3)
             entry.insert(0, "0")
             entry.bind('<FocusOut>', lambda e: self._auto_save_build())
@@ -1333,11 +1905,11 @@ class HunterTab:
         row1 = ttk.Frame(settings_frame)
         row1.pack(fill=tk.X, padx=10, pady=3)
         
-        ttk.Label(row1, text="Sims per build:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(row1, text="Baseline sims:").pack(side=tk.LEFT, padx=5)
         # num_sims is pre-initialized in __init__
         ttk.Spinbox(row1, textvariable=self.num_sims, from_=10, to=1000, width=6).pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(row1, text="Builds per tier:").pack(side=tk.LEFT, padx=15)
+        ttk.Label(row1, text="Initial generation size:").pack(side=tk.LEFT, padx=15)
         # builds_per_tier is pre-initialized in __init__
         ttk.Spinbox(row1, textvariable=self.builds_per_tier, from_=100, to=5000, width=6).pack(side=tk.LEFT, padx=5)
         
@@ -1347,6 +1919,8 @@ class HunterTab:
         # use_rust is pre-initialized in __init__
         ttk.Checkbutton(row2, text="🦀 Use Rust Engine", variable=self.use_rust,
                         state=tk.NORMAL if RUST_AVAILABLE else tk.DISABLED).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row2, text="(requires 100+ sims, 500+ builds)", font=('Arial', 8, 'italic'),
+                 foreground='#888888').pack(side=tk.LEFT, padx=2)
         
         # use_progressive is pre-initialized in __init__
         ttk.Checkbutton(row2, text="📈 Progressive Evolution", variable=self.use_progressive).pack(side=tk.LEFT, padx=15)
@@ -1453,12 +2027,29 @@ class HunterTab:
         self.advisor_status = ttk.Label(btn_frame, text="")
         self.advisor_status.pack(side=tk.LEFT, padx=10)
         
-        # Results
-        results_frame = ttk.LabelFrame(self.advisor_frame, text="📈 Upgrade Recommendations")
-        results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # Results - Two Column Layout
+        results_container = ttk.Frame(self.advisor_frame)
+        results_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Left Column: Current Build Simulation Results
+        left_frame = ttk.LabelFrame(results_container, text="📊 Current Build Simulation")
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        self.current_build_results = scrolledtext.ScrolledText(
+            left_frame, height=15, font=('Consolas', 10),
+            bg='#1e1e2e', fg='#e0e0e0', insertbackground='#e0e0e0',
+            selectbackground='#3d3d5c', selectforeground='#ffffff',
+            highlightbackground='#2d2d3d', highlightcolor='#3d3d5c',
+            relief=tk.FLAT, borderwidth=0
+        )
+        self.current_build_results.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Right Column: Upgrade Recommendations
+        right_frame = ttk.LabelFrame(results_container, text="📈 Upgrade Recommendations")
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
         
         self.advisor_results = scrolledtext.ScrolledText(
-            results_frame, height=15, font=('Consolas', 10),
+            right_frame, height=15, font=('Consolas', 10),
             bg='#1e1e2e', fg='#e0e0e0', insertbackground='#e0e0e0',
             selectbackground='#3d3d5c', selectforeground='#ffffff',
             highlightbackground='#2d2d3d', highlightcolor='#3d3d5c',
@@ -1466,13 +2057,16 @@ class HunterTab:
         )
         self.advisor_results.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Configure text tags for colorful output
+        # Configure text tags for both widgets
+        self._configure_text_tags(self.current_build_results)
         self._configure_text_tags(self.advisor_results)
     
     def _run_upgrade_advisor(self):
         """Run the upgrade advisor analysis."""
         self.advisor_btn.configure(state=tk.DISABLED)
         self.advisor_status.configure(text="Analyzing...")
+        self.current_build_results.configure(state=tk.NORMAL)
+        self.current_build_results.delete(1.0, tk.END)
         self.advisor_results.configure(state=tk.NORMAL)
         self.advisor_results.delete(1.0, tk.END)
         
@@ -1507,6 +2101,27 @@ class HunterTab:
             if not baseline:
                 self.frame.after(0, lambda: self._show_advisor_error("Could not simulate baseline build"))
                 return
+            
+            # Calculate resource frequencies for efficiency weighting
+            # Use daily loot rates as a proxy for resource availability
+            if baseline.avg_elapsed_time > 0:
+                runs_per_day = (3600 / baseline.avg_elapsed_time) * 24
+                resource_frequencies = {
+                    "common": baseline.avg_loot_common * runs_per_day,
+                    "uncommon": baseline.avg_loot_uncommon * runs_per_day,
+                    "rare": baseline.avg_loot_rare * runs_per_day
+                }
+                # Normalize frequencies (most common resource = 1.0)
+                max_freq = max(resource_frequencies.values())
+                if max_freq > 0:
+                    resource_frequencies = {k: v / max_freq for k, v in resource_frequencies.items()}
+                else:
+                    resource_frequencies = {"common": 1.0, "uncommon": 1.0, "rare": 1.0}
+            else:
+                resource_frequencies = {"common": 1.0, "uncommon": 1.0, "rare": 1.0}
+            
+            # Display current build simulation results
+            self.frame.after(0, lambda: self._display_current_build_results(baseline, num_sims))
             
             # Get stat keys based on hunter type
             stat_keys = list(self.stat_entries.keys())
@@ -1546,9 +2161,11 @@ class HunterTab:
                     upgrade_cost = calculate_upgrade_cost(stat, current_level + 1, self.hunter_name)
                     resource_type = get_stat_resource_type(stat, self.hunter_name)
                     
-                    # Calculate efficiency (score per unit cost)
+                    # Calculate efficiency (score per unit cost), adjusted for resource frequency
                     # Higher efficiency = more bang for your buck
-                    efficiency = score / max(upgrade_cost, 1) * 1000  # Scale for readability
+                    # Adjust cost by resource frequency - rarer resources make upgrades more valuable
+                    adjusted_cost = upgrade_cost / resource_frequencies.get(resource_type, 1.0)
+                    efficiency = score / max(adjusted_cost, 1) * 1000  # Scale for readability
                     
                     results.append({
                         "stat": stat,
@@ -1568,14 +2185,132 @@ class HunterTab:
             results.sort(key=lambda x: x["score"], reverse=True)
             
             # Display results
-            self.frame.after(0, lambda: self._display_advisor_results(baseline, results))
+            self.frame.after(0, lambda: self._display_advisor_results(baseline, results, resource_frequencies))
             
         except Exception as e:
             import traceback
             self.frame.after(0, lambda: self._show_advisor_error(f"Error: {str(e)}\n{traceback.format_exc()}"))
     
+    def _display_current_build_results(self, baseline, num_sims):
+        """Display current build simulation results in the left column."""
+        self.current_build_results.configure(state=tk.NORMAL)
+        self.current_build_results.delete(1.0, tk.END)
+        
+        text = self.current_build_results
+        
+        # Get resource names
+        res_common, res_uncommon, res_rare = self._get_resource_names()
+        
+        # ===== HEADER =====
+        text.insert(tk.END, "═" * 50 + "\n", "divider")
+        text.insert(tk.END, f"🎯 {self.hunter_name.upper()} BUILD SIMULATION\n", "header")
+        text.insert(tk.END, f"   ({num_sims} simulations)\n", "subheader")
+        text.insert(tk.END, "═" * 50 + "\n\n", "divider")
+        
+        # ===== STAGE RESULTS =====
+        text.insert(tk.END, "🏁 STAGE PERFORMANCE\n", "subheader")
+        text.insert(tk.END, "   Stages: [", "neutral")
+        text.insert(tk.END, f"{baseline.lowest_stage:.1f}", "dim_small")
+        text.insert(tk.END, "]-", "neutral")
+        text.insert(tk.END, f"{baseline.avg_final_stage:.1f}", "bright_large")
+        text.insert(tk.END, "-[", "neutral")
+        text.insert(tk.END, f"{baseline.highest_stage:.1f}", "dim_small")
+        text.insert(tk.END, "]\n\n", "neutral")
+        
+        # ===== DAMAGE RESULTS =====
+        text.insert(tk.END, "⚔️ DAMAGE STATS\n", "subheader")
+        text.insert(tk.END, "   Dealt: [", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.min_damage)}", "dim_small")
+        text.insert(tk.END, "]-", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.avg_damage)}", "positive")
+        text.insert(tk.END, "-[", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.max_damage)}", "dim_small")
+        text.insert(tk.END, "]\n", "neutral")
+        text.insert(tk.END, "   Taken: [", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.min_damage_taken)}", "dim_small")
+        text.insert(tk.END, "]-", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.avg_damage_taken)}", "negative")
+        text.insert(tk.END, "-[", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.max_damage_taken)}", "dim_small")
+        text.insert(tk.END, "]\n\n", "neutral")
+        
+        # ===== XP RESULTS =====
+        text.insert(tk.END, "⭐ EXPERIENCE\n", "subheader")
+        text.insert(tk.END, "   XP: [", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.min_xp)}", "dim_small")
+        text.insert(tk.END, "]-", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.avg_xp)}", "gold")
+        text.insert(tk.END, "-[", "neutral")
+        text.insert(tk.END, f"{self._format_number(baseline.max_xp)}", "dim_small")
+        text.insert(tk.END, "]\n\n", "neutral")
+        
+        # ===== LOOT RESULTS =====
+        text.insert(tk.END, "💰 LOOT BREAKDOWN\n", "subheader")
+        
+        # Common loot
+        text.insert(tk.END, f"   {res_common}: [", "common")
+        text.insert(tk.END, f"{self._format_number(baseline.min_loot_common)}", "dim_small")
+        text.insert(tk.END, "]-", "common")
+        text.insert(tk.END, f"{self._format_number(baseline.avg_loot_common)}", "bright_large")
+        text.insert(tk.END, "-[", "common")
+        text.insert(tk.END, f"{self._format_number(baseline.max_loot_common)}", "dim_small")
+        text.insert(tk.END, "]\n", "common")
+        
+        # Uncommon loot
+        text.insert(tk.END, f"   {res_uncommon}: [", "uncommon")
+        text.insert(tk.END, f"{self._format_number(baseline.min_loot_uncommon)}", "dim_small")
+        text.insert(tk.END, "]-", "uncommon")
+        text.insert(tk.END, f"{self._format_number(baseline.avg_loot_uncommon)}", "bright_large")
+        text.insert(tk.END, "-[", "uncommon")
+        text.insert(tk.END, f"{self._format_number(baseline.max_loot_uncommon)}", "dim_small")
+        text.insert(tk.END, "]\n", "uncommon")
+        
+        # Rare loot
+        text.insert(tk.END, f"   {res_rare}: [", "rare")
+        text.insert(tk.END, f"{self._format_number(baseline.min_loot_rare)}", "dim_small")
+        text.insert(tk.END, "]-", "rare")
+        text.insert(tk.END, f"{self._format_number(baseline.avg_loot_rare)}", "bright_large")
+        text.insert(tk.END, "-[", "rare")
+        text.insert(tk.END, f"{self._format_number(baseline.max_loot_rare)}", "dim_small")
+        text.insert(tk.END, "]\n", "rare")
+        
+        # Total loot
+        total_min = baseline.min_loot_common + baseline.min_loot_uncommon + baseline.min_loot_rare
+        total_max = baseline.max_loot_common + baseline.max_loot_uncommon + baseline.max_loot_rare
+        total_avg = baseline.avg_loot_common + baseline.avg_loot_uncommon + baseline.avg_loot_rare
+        
+        text.insert(tk.END, "   Total Loot: [", "neutral")
+        text.insert(tk.END, f"{self._format_number(total_min)}", "dim_small")
+        text.insert(tk.END, "]-", "neutral")
+        text.insert(tk.END, f"{self._format_number(total_avg)}", "bright_large")
+        text.insert(tk.END, "-[", "neutral")
+        text.insert(tk.END, f"{self._format_number(total_max)}", "dim_small")
+        text.insert(tk.END, "]\n\n", "neutral")
+        
+        # ===== SURVIVAL & TIME =====
+        text.insert(tk.END, "🛡️ SURVIVAL & TIME\n", "subheader")
+        survival_tag = "positive" if baseline.survival_rate >= 0.9 else "negative" if baseline.survival_rate < 0.5 else "neutral"
+        text.insert(tk.END, "   Survival Rate: ", "neutral")
+        text.insert(tk.END, f"{baseline.survival_rate*100:.1f}%\n", survival_tag)
+        text.insert(tk.END, "   Avg Run Time: ", "neutral")
+        text.insert(tk.END, f"{baseline.avg_elapsed_time:.1f}s\n", "neutral")
+        
+        if baseline.avg_elapsed_time > 0:
+            runs_per_hour = 3600 / baseline.avg_elapsed_time
+            text.insert(tk.END, "   Runs/Hour: ", "neutral")
+            text.insert(tk.END, f"{runs_per_hour:.1f}\n", "positive")
+            text.insert(tk.END, "   Loot/Hour: ", "neutral")
+            text.insert(tk.END, f"{baseline.avg_loot_per_hour:,.0f}\n", "gold")
+        
+        self.current_build_results.configure(state=tk.DISABLED)
+    
     def _show_advisor_error(self, message: str):
         """Show an error in the advisor results."""
+        self.current_build_results.configure(state=tk.NORMAL)
+        self.current_build_results.delete(1.0, tk.END)
+        self.current_build_results.insert(tk.END, "❌ Error occurred during analysis")
+        self.current_build_results.configure(state=tk.DISABLED)
+        
         self.advisor_results.configure(state=tk.NORMAL)
         self.advisor_results.delete(1.0, tk.END)
         self.advisor_results.insert(tk.END, f"❌ {message}")
@@ -1628,41 +2363,64 @@ class HunterTab:
             return ("Obsidian", "Behlium", "Hellish-Biomatter")
     
     def _configure_text_tags(self, text_widget):
-        """Configure colorful text tags for a text widget."""
-        # Headers and dividers
-        text_widget.tag_configure("header", foreground="#ffd700", font=('Consolas', 11, 'bold'))  # Gold
-        text_widget.tag_configure("subheader", foreground="#87ceeb", font=('Consolas', 10, 'bold'))  # Sky blue
-        text_widget.tag_configure("divider", foreground="#555577")  # Muted purple
+        """Configure colorful text tags for a text widget (colorblind-safe)."""
+        # Check if colorblind theme is active
+        theme_name = self.app.theme_var.get() if hasattr(self.app, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name.lower()
+        is_light = self.DARK_BG in ["#f5f5f5", "#fafafa", "#ffffff"]
         
-        # Medals and rankings
-        text_widget.tag_configure("gold", foreground="#ffd700", font=('Consolas', 10, 'bold'))  # Gold
-        text_widget.tag_configure("silver", foreground="#c0c0c0", font=('Consolas', 10, 'bold'))  # Silver
-        text_widget.tag_configure("bronze", foreground="#cd7f32", font=('Consolas', 10, 'bold'))  # Bronze
-        text_widget.tag_configure("rank", foreground="#888899")  # Other ranks
-        
-        # Stats and numbers
-        text_widget.tag_configure("positive", foreground="#00ff88")  # Bright green - good
-        text_widget.tag_configure("negative", foreground="#ff6666")  # Red - bad
-        text_widget.tag_configure("neutral", foreground="#aaaacc")  # Light purple - neutral
-        text_widget.tag_configure("cost", foreground="#ffaa44")  # Orange - costs
-        text_widget.tag_configure("stat_name", foreground="#66ccff")  # Cyan - stat names
-        text_widget.tag_configure("level", foreground="#cc99ff")  # Light purple - levels
-        
-        # Resource types
-        text_widget.tag_configure("common", foreground="#88cc88")  # Light green
-        text_widget.tag_configure("uncommon", foreground="#8888ff")  # Light blue
-        text_widget.tag_configure("rare", foreground="#ff8844")  # Orange
-        
-        # Section titles
-        text_widget.tag_configure("section_common", foreground="#88cc88", font=('Consolas', 10, 'bold'))
-        text_widget.tag_configure("section_uncommon", foreground="#8888ff", font=('Consolas', 10, 'bold'))
-        text_widget.tag_configure("section_rare", foreground="#ff8844", font=('Consolas', 10, 'bold'))
-        
-        # Tips and info
-        text_widget.tag_configure("tip", foreground="#aaddff", font=('Consolas', 9, 'italic'))
-        text_widget.tag_configure("efficiency", foreground="#00ddaa")  # Teal - efficiency callout
+        if is_colorblind:
+            # Colorblind: neutral grayscale with shapes/position for distinction
+            text_widget.tag_configure("header", foreground="#444444" if is_light else "#dddddd", font=('Consolas', 11, 'bold'))
+            text_widget.tag_configure("subheader", foreground="#555555" if is_light else "#cccccc", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("divider", foreground="#888888")
+            text_widget.tag_configure("gold", foreground="#666666" if is_light else "#dddddd", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("silver", foreground="#777777" if is_light else "#bbbbbb", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("bronze", foreground="#888888" if is_light else "#aaaaaa", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("rank", foreground="#888888" if is_light else "#999999")
+            text_widget.tag_configure("positive", foreground="#333333" if is_light else "#dddddd", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("negative", foreground="#555555" if is_light else "#aaaaaa", font=('Consolas', 10, 'italic'))
+            text_widget.tag_configure("neutral", foreground="#666666" if is_light else "#bbbbbb")
+            text_widget.tag_configure("cost", foreground="#555555" if is_light else "#cccccc")
+            text_widget.tag_configure("stat_name", foreground="#444444" if is_light else "#dddddd")
+            text_widget.tag_configure("level", foreground="#555555" if is_light else "#cccccc")
+            text_widget.tag_configure("common", foreground="#666666" if is_light else "#bbbbbb")
+            text_widget.tag_configure("uncommon", foreground="#555555" if is_light else "#cccccc")
+            text_widget.tag_configure("rare", foreground="#444444" if is_light else "#dddddd")
+            text_widget.tag_configure("section_common", foreground="#666666" if is_light else "#bbbbbb", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("section_uncommon", foreground="#555555" if is_light else "#cccccc", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("section_rare", foreground="#444444" if is_light else "#dddddd", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("tip", foreground="#666666" if is_light else "#aaaaaa", font=('Consolas', 9, 'italic'))
+            text_widget.tag_configure("efficiency", foreground="#555555" if is_light else "#cccccc")
+            text_widget.tag_configure("dim_small", foreground="#777777" if is_light else "#888888", font=('Consolas', 8))
+            text_widget.tag_configure("bright_large", foreground="#666666" if is_light else "#dddddd", font=('Consolas', 12, 'bold'))
+        else:
+            # Non-colorblind: colorful tags
+            text_widget.tag_configure("header", foreground="#ffd700", font=('Consolas', 11, 'bold'))  # Gold
+            text_widget.tag_configure("subheader", foreground="#87ceeb", font=('Consolas', 10, 'bold'))  # Sky blue
+            text_widget.tag_configure("divider", foreground="#555577")  # Muted purple
+            text_widget.tag_configure("gold", foreground="#ffd700", font=('Consolas', 10, 'bold'))  # Gold
+            text_widget.tag_configure("silver", foreground="#c0c0c0", font=('Consolas', 10, 'bold'))  # Silver
+            text_widget.tag_configure("bronze", foreground="#cd7f32", font=('Consolas', 10, 'bold'))  # Bronze
+            text_widget.tag_configure("rank", foreground="#888899")  # Other ranks
+            text_widget.tag_configure("positive", foreground="#00ff88")  # Bright green - good
+            text_widget.tag_configure("negative", foreground="#ff6666")  # Red - bad
+            text_widget.tag_configure("neutral", foreground="#aaaacc")  # Light purple - neutral
+            text_widget.tag_configure("cost", foreground="#ffaa44")  # Orange - costs
+            text_widget.tag_configure("stat_name", foreground="#66ccff")  # Cyan - stat names
+            text_widget.tag_configure("level", foreground="#cc99ff")  # Light purple - levels
+            text_widget.tag_configure("common", foreground="#88cc88")  # Light green
+            text_widget.tag_configure("uncommon", foreground="#8888ff")  # Light blue
+            text_widget.tag_configure("rare", foreground="#ff8844")  # Orange
+            text_widget.tag_configure("section_common", foreground="#88cc88", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("section_uncommon", foreground="#8888ff", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("section_rare", foreground="#ff8844", font=('Consolas', 10, 'bold'))
+            text_widget.tag_configure("tip", foreground="#aaddff", font=('Consolas', 9, 'italic'))
+            text_widget.tag_configure("efficiency", foreground="#00ddaa")  # Teal - efficiency callout
+            text_widget.tag_configure("dim_small", foreground="#666666", font=('Consolas', 8))
+            text_widget.tag_configure("bright_large", foreground="#ffff88", font=('Consolas', 12, 'bold'))
 
-    def _display_advisor_results(self, baseline, results):
+    def _display_advisor_results(self, baseline, results, resource_frequencies):
         """Display the upgrade advisor results with costs, efficiency, and colorful formatting."""
         self.advisor_results.configure(state=tk.NORMAL)
         self.advisor_results.delete(1.0, tk.END)
@@ -1687,31 +2445,6 @@ class HunterTab:
         text.insert(tk.END, " (with Costs)\n", "subheader")
         text.insert(tk.END, "═" * 70 + "\n\n", "divider")
         
-        # ===== BASELINE =====
-        text.insert(tk.END, "📊 BASELINE PERFORMANCE\n", "subheader")
-        text.insert(tk.END, "   Avg Stage: ", "neutral")
-        text.insert(tk.END, f"{baseline.avg_final_stage:.1f}\n", "positive")
-        
-        if baseline.avg_elapsed_time > 0:
-            runs_per_day = (3600 / baseline.avg_elapsed_time) * 24
-            text.insert(tk.END, "   📦 Loot/Run → Loot/Day:\n", "neutral")
-            text.insert(tk.END, f"      {res_common}: ", "common")
-            text.insert(tk.END, f"{self._format_number(baseline.avg_loot_common)} → {self._format_number(baseline.avg_loot_common * runs_per_day)}\n", "positive")
-            text.insert(tk.END, f"      {res_uncommon}: ", "uncommon")
-            text.insert(tk.END, f"{self._format_number(baseline.avg_loot_uncommon)} → {self._format_number(baseline.avg_loot_uncommon * runs_per_day)}\n", "positive")
-            text.insert(tk.END, f"      {res_rare}: ", "rare")
-            text.insert(tk.END, f"{self._format_number(baseline.avg_loot_rare)} → {self._format_number(baseline.avg_loot_rare * runs_per_day)}\n", "positive")
-        else:
-            text.insert(tk.END, f"   Loot/Hour: {baseline.avg_loot_per_hour:.2f}\n", "neutral")
-        
-        text.insert(tk.END, f"   Dmg Dealt: ", "neutral")
-        text.insert(tk.END, f"{baseline.avg_damage:,.0f}\n", "positive")
-        text.insert(tk.END, f"   Dmg Taken: ", "neutral")
-        text.insert(tk.END, f"{baseline.avg_damage_taken:,.0f}\n", "negative")
-        text.insert(tk.END, f"   Survival: ", "neutral")
-        survival_tag = "positive" if baseline.survival_rate >= 0.9 else "negative" if baseline.survival_rate < 0.5 else "neutral"
-        text.insert(tk.END, f"{baseline.survival_rate*100:.1f}%\n\n", survival_tag)
-        
         # ===== BEST OVERALL =====
         if results:
             best = results[0]
@@ -1720,7 +2453,7 @@ class HunterTab:
             text.insert(tk.END, "(highest impact)\n", "neutral")
             text.insert(tk.END, "═" * 70 + "\n", "divider")
             
-            stat_name = best["stat"].replace("_", " ").title()
+            stat_name = get_stat_display_name(best["stat"], self.hunter_name)
             text.insert(tk.END, "🥇 ", "gold")
             text.insert(tk.END, f"+1 {stat_name}", "stat_name")
             text.insert(tk.END, f" (Lv {best['current_level']} → {best['current_level'] + 1})\n", "level")
@@ -1739,7 +2472,7 @@ class HunterTab:
             res_name = res_common if best['resource_type'] == 'common' else res_uncommon if best['resource_type'] == 'uncommon' else res_rare
             res_tag = best['resource_type']
             text.insert(tk.END, "   💰 Cost: ", "neutral")
-            text.insert(tk.END, f"{format_cost(best['cost'])} ", "cost")
+            text.insert(tk.END, f"{self.format_cost(best['cost'])} ", "cost")
             text.insert(tk.END, f"{res_name}\n\n", res_tag)
         
         # ===== BEST VALUE =====
@@ -1749,10 +2482,10 @@ class HunterTab:
             
             text.insert(tk.END, "═" * 70 + "\n", "divider")
             text.insert(tk.END, "💎 BEST VALUE UPGRADE ", "header")
-            text.insert(tk.END, "(most efficient)\n", "neutral")
+            text.insert(tk.END, "(most efficient, factoring resource frequency)\n", "neutral")
             text.insert(tk.END, "═" * 70 + "\n", "divider")
             
-            stat_name = best_eff["stat"].replace("_", " ").title()
+            stat_name = get_stat_display_name(best_eff["stat"], self.hunter_name)
             res_name = res_common if best_eff['resource_type'] == 'common' else res_uncommon if best_eff['resource_type'] == 'uncommon' else res_rare
             
             text.insert(tk.END, "🏆 ", "gold")
@@ -1771,7 +2504,7 @@ class HunterTab:
             
             res_tag = best_eff['resource_type']
             text.insert(tk.END, "   💰 Cost: ", "neutral")
-            text.insert(tk.END, f"{format_cost(best_eff['cost'])} ", "cost")
+            text.insert(tk.END, f"{self.format_cost(best_eff['cost'])} ", "cost")
             text.insert(tk.END, f"{res_name}\n", res_tag)
             
             # Efficiency comparison
@@ -1803,7 +2536,7 @@ class HunterTab:
             category_results.sort(key=lambda x: x["efficiency"], reverse=True)
             
             for i, r in enumerate(category_results, 1):
-                stat_name = r["stat"].replace("_", " ").title()
+                stat_name = get_stat_display_name(r["stat"], self.hunter_name)
                 
                 # Medal with color
                 if i == 1:
@@ -1825,7 +2558,7 @@ class HunterTab:
                 loot_tag = "positive" if r['loot_improvement'] > 0 else "negative" if r['loot_improvement'] < 0 else "neutral"
                 text.insert(tk.END, f"{r['loot_improvement']:+.2f}", loot_tag)
                 text.insert(tk.END, "  │  Cost: ", "neutral")
-                text.insert(tk.END, f"{format_cost(r['cost'])}\n", "cost")
+                text.insert(tk.END, f"{self.format_cost(r['cost'])}\n", "cost")
             
             text.insert(tk.END, "\n")
         
@@ -1837,7 +2570,7 @@ class HunterTab:
         
         by_efficiency = sorted(results, key=lambda x: x["efficiency"], reverse=True)[:5]
         for i, r in enumerate(by_efficiency, 1):
-            stat_name = r["stat"].replace("_", " ").title()
+            stat_name = get_stat_display_name(r["stat"], self.hunter_name)
             res_name = res_common if r['resource_type'] == 'common' else res_uncommon if r['resource_type'] == 'uncommon' else res_rare
             res_tag = r['resource_type']
             
@@ -1855,15 +2588,15 @@ class HunterTab:
             stage_tag = "positive" if r['stage_improvement'] > 0 else "negative" if r['stage_improvement'] < 0 else "neutral"
             text.insert(tk.END, f"{r['stage_improvement']:+.2f}", stage_tag)
             text.insert(tk.END, " for ", "neutral")
-            text.insert(tk.END, f"{format_cost(r['cost'])} ", "cost")
+            text.insert(tk.END, f"{self.format_cost(r['cost'])} ", "cost")
             text.insert(tk.END, f"{res_name}\n", res_tag)
         
         # ===== TIP =====
         text.insert(tk.END, "\n")
         text.insert(tk.END, "═" * 70 + "\n", "divider")
         text.insert(tk.END, "💡 TIP: ", "header")
-        text.insert(tk.END, "'Best Value' may be cheaper than 'Best Overall'!\n", "tip")
-        text.insert(tk.END, "   Consider your available resources when choosing.\n", "tip")
+        text.insert(tk.END, "'Best Value' factors in resource frequency!\n", "tip")
+        text.insert(tk.END, "   Rarer resources make upgrades more valuable. Consider availability.\n", "tip")
         text.insert(tk.END, "═" * 70 + "\n", "divider")
         
         text.configure(state=tk.DISABLED)
@@ -1881,9 +2614,12 @@ class HunterTab:
                                 font=('Arial', 14, 'bold'), fg=self.colors["text"], bg=self.colors["primary"])
         header_label.pack(expand=True)
         
+        # Container for colorful tab bar + notebook content
+        results_container = tk.Frame(self.results_frame, bg=self.DARK_BG)
+        results_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
         # Results notebook for different sort criteria
-        self.results_notebook = ttk.Notebook(self.results_frame)
-        self.results_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.results_notebook = ttk.Notebook(results_container)
         
         self.result_tabs: Dict[str, scrolledtext.ScrolledText] = {}
         categories = [
@@ -1924,6 +2660,9 @@ class HunterTab:
             text.configure(state=tk.DISABLED)
             
             self.result_tabs[key] = text
+        
+        # Create colorful tab bar for results categories
+        self._setup_results_tab_bar(results_container, categories)
     
     def _create_generations_tab(self):
         """Create the generations sub-tab to show evolution progress."""
@@ -2326,6 +3065,20 @@ class HunterTab:
             config["bonuses"]["scavenger"] = self.app.global_scavenger.get()
             config["bonuses"]["scavenger2"] = self.app.global_scavenger2.get()
             
+            # LMOuro Loop Mods (critical for endgame loot!)
+            config["bonuses"]["lm_ouro1"] = self.app.global_lm_ouro1.get()
+            config["bonuses"]["lm_ouro11"] = self.app.global_lm_ouro11.get()
+            config["bonuses"]["lm_ouro18"] = self.app.global_lm_ouro18.get()
+            
+            # XP Bonuses (HuntersAttributes)
+            config["bonuses"]["pom3"] = self.app.global_pom3.get()
+            config["bonuses"]["poi3"] = self.app.global_poi3.get()
+            config["bonuses"]["pok3"] = self.app.global_pok3.get()
+            
+            # Skill 6 and Wastarian
+            config["bonuses"]["skill6_loot_bonus"] = float(self.app.global_skill6_loot_bonus.get() or 0.0)
+            config["bonuses"]["wastarian_relic_loot_bonus"] = int(self.app.global_wastarian_relic_loot_bonus.get() or 0)
+            
             # Construction Milestones
             config["bonuses"]["cm46"] = self.app.global_cm46.get()
             config["bonuses"]["cm47"] = self.app.global_cm47.get()
@@ -2351,6 +3104,12 @@ class HunterTab:
             config["bonuses"]["ultima_multiplier"] = 1.0
             config["bonuses"]["scavenger"] = 0
             config["bonuses"]["scavenger2"] = 0
+            config["bonuses"]["lm_ouro1"] = 0
+            config["bonuses"]["lm_ouro11"] = 0
+            config["bonuses"]["lm_ouro18"] = 0
+            config["bonuses"]["pom3"] = 0
+            config["bonuses"]["poi3"] = 0
+            config["bonuses"]["pok3"] = 0
             config["bonuses"]["cm46"] = False
             config["bonuses"]["cm47"] = False
             config["bonuses"]["cm48"] = False
@@ -2371,6 +3130,8 @@ class HunterTab:
             print(f"[DEBUG] Already running, returning")
             return
         self.is_running = True
+        self.is_completed = False  # Reset completion flag for new run
+        self.completion_best_stage = 0.0  # Reset stored best stage
         self.stop_event.clear()
         self.results.clear()
         self.generation_history.clear()  # Clear previous generation data
@@ -2404,16 +3165,41 @@ class HunterTab:
         self._thread_config = self._get_current_config()
         self._thread_use_progressive = self.use_progressive.get()
         
-        # Check if we're running as a frozen PyInstaller exe
-        is_frozen = getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
-        
-        if is_frozen:
-            # Running as frozen exe - use threaded optimization (no subprocess available)
-            self._log(f"🧊 Running in frozen mode - using threaded optimization")
-            self._start_threaded_optimization()
+        # RUST MINIMUM SETTINGS LOCK: Enforce 100/500 minimums for Rust
+        # If settings are below threshold, force Python engine
+        self._thread_use_rust = self.use_rust.get() and RUST_AVAILABLE
+        if self._thread_use_rust:
+            if self._thread_num_sims < 100 or self._thread_builds_per_tier < 500:
+                self._thread_use_rust = False
+                self._log(f"⚠️ Rust requires minimum 100 sims and 500 builds/tier")
+                self._log(f"   Your settings: {self._thread_num_sims} sims, {self._thread_builds_per_tier} builds/tier")
+                self._log(f"   ➡️ Auto-switched to Python engine")
+                # Also update the GUI checkbox to reflect the change
+                self.use_rust.set(False)
         else:
-            # Running from source - use subprocess for isolation
-            self._start_subprocess_optimization()
+            self._thread_use_rust = False
+        
+        # Load IRL build from JSON file for accurate baseline comparison
+        self._thread_irl_config = None
+        build_file = self._get_build_file_path()
+        if build_file.exists():
+            try:
+                with open(build_file, 'r') as f:
+                    self._thread_irl_config = json.load(f)
+                print(f"[IRL CONFIG] Loaded from {build_file}")
+                print(f"[IRL CONFIG] Relics: {self._thread_irl_config.get('relics', {})}")
+                print(f"[IRL CONFIG] Bonuses ultima_multiplier: {self._thread_irl_config.get('bonuses', {}).get('ultima_multiplier', 'N/A')}")
+            except Exception as e:
+                print(f"[IRL CONFIG] Failed to load: {e}")
+        
+        # DEBUG: Log what config was captured for optimization
+        print(f"[CONFIG DEBUG] Captured config for {self.hunter_name}:")
+        print(f"[CONFIG DEBUG] Level: {self._thread_level}")
+        print(f"[CONFIG DEBUG] Talents: {dict((k, v) for k, v in self._thread_config.get('talents', {}).items() if v > 0)}")
+        print(f"[CONFIG DEBUG] Attributes: {dict((k, v) for k, v in self._thread_config.get('attributes', {}).items() if v > 0)}")
+        
+        # Always use subprocess mode for better isolation and performance
+        self._start_subprocess_optimization()
     
     def _start_threaded_optimization(self):
         """Start optimization in a background thread (for frozen exe mode)."""
@@ -2482,7 +3268,23 @@ class HunterTab:
         
         self._log(f"🚀 Optimization thread started")
         self._log(f"📊 Level: {self._thread_level} → Talents: {self._thread_level}, Attrs: {self._thread_level * 3}")
-        self._log(f"⏳ Generating and simulating {self._thread_builds_per_tier} builds...")
+        # Calculate curriculum based on level
+        level = self._thread_level
+        if level <= 10:
+            curriculum = "100% point budgets"
+            num_tiers = 1
+        elif level <= 20:
+            curriculum = "50% → 100% point budgets"
+            num_tiers = 2
+        elif level <= 40:
+            curriculum = "25% → 50% → 100% point budgets"
+            num_tiers = 3
+        else:
+            curriculum = "5% → 10% → 25% → 50% → 75% → 100% point budgets"
+            num_tiers = 6
+        self._log(f"⏳ Starting progressive optimization: {self._thread_builds_per_tier} builds per tier, {num_tiers} tiers with successive halving...")
+        self._log(f"   📈 Curriculum: {curriculum}")
+        self._log(f"📈 Using progressive evolution with successive halving (baseline: {self._thread_num_sims} sims)")
         
         # Start polling (same as subprocess mode)
         self.poll_count = 0
@@ -2509,20 +3311,71 @@ class HunterTab:
         
         # Write config
         try:
+            # Auto-select optimization mode and batch size based on build count
+            builds_per_tier = self._thread_builds_per_tier
+            if builds_per_tier >= 5000000:  # 5M+ builds
+                fast_mode = False
+                massive_mode = False
+                ultra_mode = False
+                turbo_mode = True
+                max_batch_size = 20000  # Maximum batches for turbo scale
+                mode_name = "TURBO"
+            elif builds_per_tier >= 1000000:
+                fast_mode = False
+                massive_mode = False
+                ultra_mode = True
+                turbo_mode = False
+                max_batch_size = 10000  # Maximum batches for ultra scale
+                mode_name = "ULTRA"
+            elif builds_per_tier >= 50000:
+                fast_mode = False
+                massive_mode = True
+                ultra_mode = False
+                turbo_mode = False
+                max_batch_size = 5000  # Larger batches for massive scale
+                mode_name = "MASSIVE"
+            elif builds_per_tier >= 10000:
+                fast_mode = True
+                massive_mode = False
+                ultra_mode = False
+                turbo_mode = False
+                max_batch_size = 2000  # Medium batches for fast mode
+                mode_name = "FAST"
+            else:
+                fast_mode = False
+                massive_mode = False
+                ultra_mode = False
+                turbo_mode = False
+                max_batch_size = 1000  # Standard batch size
+                mode_name = "STANDARD"
+            
+            opt_config = {
+                'hunter_name': self.hunter_name,
+                'level': self._thread_level,
+                'base_config': self._thread_config,
+                'irl_config': self._thread_irl_config if hasattr(self, '_thread_irl_config') else None,
+                'num_sims': self._thread_num_sims,
+                'builds_per_tier': builds_per_tier,
+                'use_progressive': self._thread_use_progressive,
+                'use_rust': self.use_rust.get() and RUST_AVAILABLE,
+                'fast_mode': fast_mode,
+                'massive_mode': massive_mode,
+                'ultra_mode': ultra_mode,
+                'turbo_mode': turbo_mode,
+                'max_batch_size': max_batch_size
+            }
+            
+            self._log(f"🎯 Auto-selected {mode_name} mode for {builds_per_tier:,} builds per tier (batch size: {max_batch_size})")
             with open(config_file, 'w') as f:
-                json.dump({
-                    'hunter_name': self.hunter_name,
-                    'level': self._thread_level,
-                    'base_config': self._thread_config,
-                    'num_sims': self._thread_num_sims,
-                    'builds_per_tier': self._thread_builds_per_tier,
-                    'use_progressive': self._thread_use_progressive
-                }, f)
+                json.dump(opt_config, f)
             self._log(f"✅ Config written")
         except Exception as e:
             self._log(f"❌ Failed to write config: {e}")
             self._optimization_complete()
             return
+        
+        # Extract variables for subprocess call
+        use_rust = self.use_rust.get() and RUST_AVAILABLE
         
         # Launch process with error capture
         python_exe = sys.executable
@@ -2559,14 +3412,40 @@ class HunterTab:
             self.stderr_handle = open(self.stderr_file, 'w')
             
             self.opt_process = subprocess.Popen(
-                [python_exe, str(script_path), str(config_file), str(self.result_file)],
+                [
+                    python_exe, str(script_path),
+                    "--config-file", str(config_file),
+                    "--builds-per-tier", str(builds_per_tier),
+                    "--max-batch-size", str(max_batch_size),
+                    "--use-rust", str(use_rust).lower(),
+                    "--fast-mode", str(fast_mode).lower(),
+                    "--massive-mode", str(massive_mode).lower(),
+                    "--ultra-mode", str(ultra_mode).lower(),
+                    "--turbo-mode", str(turbo_mode).lower(),
+                    "--output-file", str(self.result_file)
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=self.stderr_handle,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
                 env=env
             )
             self._log(f"🚀 Subprocess launched (PID: {self.opt_process.pid})")
-            self._log(f"⏳ Generating and simulating {self._thread_builds_per_tier} builds...")
+            # Calculate curriculum based on level
+            level = self._thread_level
+            if level <= 10:
+                curriculum = "100% point budgets"
+                num_tiers = 1
+            elif level <= 20:
+                curriculum = "50% → 100% point budgets"
+                num_tiers = 2
+            elif level <= 40:
+                curriculum = "25% → 50% → 100% point budgets"
+                num_tiers = 3
+            else:
+                curriculum = "5% → 10% → 25% → 50% → 75% → 100% point budgets"
+                num_tiers = 6
+            self._log(f"⏳ Starting progressive optimization: {self._thread_builds_per_tier} builds per tier, {num_tiers} tiers with successive halving...")
+            self._log(f"   📈 Curriculum: {curriculum}")
         except Exception as e:
             self._log(f"❌ Failed to launch subprocess: {e}\n{traceback.format_exc()}")
             self._optimization_complete()
@@ -2619,34 +3498,55 @@ class HunterTab:
             self.result_queue.put(('error', str(e), None, None))
     
     def _run_irl_baseline(self, base_config: Dict):
-        """Run baseline simulation on the user's current IRL build."""
+        """Run baseline simulation on the user's current IRL build FROM JSON FILE."""
+        # Use IRL config from JSON file if available, otherwise fall back to GUI config
+        if hasattr(self, '_thread_irl_config') and self._thread_irl_config:
+            irl_config_raw = self._thread_irl_config
+            self._log("\n📊 Running IRL Baseline Simulation...")
+            self._log(f"   📁 Using build from JSON file: {self._get_build_file_path().name}")
+        else:
+            irl_config_raw = base_config
+            self._log("\n📊 Running IRL Baseline Simulation...")
+            self._log(f"   ⚠️ No JSON file found, using GUI config")
+        
+        # Convert to simulation format if needed
+        if "meta" not in irl_config_raw:
+            # Old format - convert
+            irl_config = self.hunter_class.load_dummy()
+            irl_config["meta"]["level"] = irl_config_raw.get("level", 0)
+            for key in ["stats", "talents", "attributes", "inscryptions", "mods", "relics", "gems", "gadgets", "bonuses"]:
+                if key in irl_config_raw:
+                    irl_config[key] = irl_config_raw[key]
+        else:
+            irl_config = irl_config_raw
+        
         # Use cached values from main thread
         num_sims = self._thread_num_sims
         use_rust = self._thread_use_rust
         irl_max_stage = self._thread_irl_max_stage
         
-        # Check if user has entered talents/attributes (from cached config)
-        has_talents = any(v > 0 for v in base_config.get("talents", {}).values())
-        has_attrs = any(v > 0 for v in base_config.get("attributes", {}).values())
+        # Check if user has entered talents/attributes
+        has_talents = any(v > 0 for v in irl_config.get("talents", {}).values())
+        has_attrs = any(v > 0 for v in irl_config.get("attributes", {}).values())
         
         if not (has_talents or has_attrs):
-            self._log("⚠️ No talents/attributes entered - skipping IRL baseline")
+            self._log("⚠️ No talents/attributes in build - skipping IRL baseline")
             self.irl_baseline_result = None
             return
         
         # Count actual talent and attribute points
-        talent_count = sum(base_config.get("talents", {}).values())
-        attr_count = sum(base_config.get("attributes", {}).values())
+        talent_count = sum(irl_config.get("talents", {}).values())
+        attr_count = sum(irl_config.get("attributes", {}).values())
         
-        self._log("\n📊 Running IRL Baseline Simulation...")
-        config_level = base_config.get("meta", {}).get("level") or base_config.get("level", 0)
+        config_level = irl_config.get("meta", {}).get("level") or irl_config.get("level", 0)
         self._log(f"   Your current build @ Level {config_level}")
         self._log(f"   Talents: {talent_count} points, Attributes: {attr_count} points")
         if irl_max_stage > 0:
             self._log(f"   IRL Max Stage: {irl_max_stage}")
         
-        # Use cached config (already captured before thread started)
-        irl_config = base_config
+        # DEBUG: Log what's being tested
+        print(f"[IRL BASELINE] Relics: {irl_config.get('relics', {})}")
+        print(f"[IRL BASELINE] Bonuses ultima_multiplier: {irl_config.get('bonuses', {}).get('ultima_multiplier', 'N/A')}")
         
         try:
             if use_rust:
@@ -2657,6 +3557,9 @@ class HunterTab:
             if result:
                 self.irl_baseline_result = result
                 self._log(f"   ✅ Sim predicts: Stage {result.avg_final_stage:.1f} (max {result.highest_stage})")
+                # DEBUG: Log what was actually simulated
+                self._log(f"   [DEBUG] IRL result talents: {dict((k, v) for k, v in result.talents.items() if v > 0)}")
+                self._log(f"   [DEBUG] IRL result attributes: {dict((k, v) for k, v in result.attributes.items() if v > 0)}")
                 
                 # Compare to IRL if provided
                 if irl_max_stage > 0:
@@ -3164,20 +4067,32 @@ class HunterTab:
                 highest_stage=result.get("max_stage", 0),
                 lowest_stage=result.get("min_stage", 0),
                 avg_loot_per_hour=result.get("avg_loot_per_hour", 0),
+                min_loot_common=result.get("min_loot_common", 0),
+                max_loot_common=result.get("max_loot_common", 0),
+                avg_loot_common=result.get("avg_loot_common", 0),
+                min_loot_uncommon=result.get("min_loot_uncommon", 0),
+                max_loot_uncommon=result.get("max_loot_uncommon", 0),
+                avg_loot_uncommon=result.get("avg_loot_uncommon", 0),
+                min_loot_rare=result.get("min_loot_rare", 0),
+                max_loot_rare=result.get("max_loot_rare", 0),
+                avg_loot_rare=result.get("avg_loot_rare", 0),
                 avg_damage=result.get("avg_damage", 0),
+                min_damage=result.get("min_damage", result.get("avg_damage", 0)),
+                max_damage=result.get("max_damage", result.get("avg_damage", 0)),
                 avg_kills=result.get("avg_kills", 0),
                 avg_elapsed_time=result.get("avg_time", 0),
                 avg_damage_taken=result.get("avg_damage_taken", 0),
+                min_damage_taken=result.get("min_damage_taken", result.get("avg_damage_taken", 0)),
+                max_damage_taken=result.get("max_damage_taken", result.get("avg_damage_taken", 0)),
                 survival_rate=result.get("survival_rate", 0),
                 boss1_survival=result.get("boss1_survival", 0),
                 boss2_survival=result.get("boss2_survival", 0),
                 boss3_survival=result.get("boss3_survival", 0),
                 boss4_survival=result.get("boss4_survival", 0),
                 boss5_survival=result.get("boss5_survival", 0),
-                avg_loot_common=result.get("avg_loot_common", 0),
-                avg_loot_uncommon=result.get("avg_loot_uncommon", 0),
-                avg_loot_rare=result.get("avg_loot_rare", 0),
                 avg_xp=result.get("avg_xp", 0),
+                min_xp=result.get("min_xp", result.get("avg_xp", 0)),
+                max_xp=result.get("max_xp", result.get("avg_xp", 0)),
                 config=config,
             )
         except Exception as e:
@@ -3225,20 +4140,32 @@ class HunterTab:
                     highest_stage=result.get("max_stage", 0),
                     lowest_stage=result.get("min_stage", 0),
                     avg_loot_per_hour=result.get("avg_loot_per_hour", 0),
+                    min_loot_common=result.get("min_loot_common", 0),
+                    max_loot_common=result.get("max_loot_common", 0),
+                    avg_loot_common=result.get("avg_loot_common", 0),
+                    min_loot_uncommon=result.get("min_loot_uncommon", 0),
+                    max_loot_uncommon=result.get("max_loot_uncommon", 0),
+                    avg_loot_uncommon=result.get("avg_loot_uncommon", 0),
+                    min_loot_rare=result.get("min_loot_rare", 0),
+                    max_loot_rare=result.get("max_loot_rare", 0),
+                    avg_loot_rare=result.get("avg_loot_rare", 0),
                     avg_damage=result.get("avg_damage", 0),
+                    min_damage=result.get("min_damage", result.get("avg_damage", 0)),
+                    max_damage=result.get("max_damage", result.get("avg_damage", 0)),
                     avg_kills=result.get("avg_kills", 0),
                     avg_elapsed_time=result.get("avg_time", 0),
                     avg_damage_taken=result.get("avg_damage_taken", 0),
+                    min_damage_taken=result.get("min_damage_taken", result.get("avg_damage_taken", 0)),
+                    max_damage_taken=result.get("max_damage_taken", result.get("avg_damage_taken", 0)),
                     survival_rate=result.get("survival_rate", 0),
                     boss1_survival=result.get("boss1_survival", 0),
                     boss2_survival=result.get("boss2_survival", 0),
                     boss3_survival=result.get("boss3_survival", 0),
                     boss4_survival=result.get("boss4_survival", 0),
                     boss5_survival=result.get("boss5_survival", 0),
-                    avg_loot_common=result.get("avg_loot_common", 0),
-                    avg_loot_uncommon=result.get("avg_loot_uncommon", 0),
-                    avg_loot_rare=result.get("avg_loot_rare", 0),
                     avg_xp=result.get("avg_xp", 0),
+                    min_xp=result.get("min_xp", result.get("avg_xp", 0)),
+                    max_xp=result.get("max_xp", result.get("avg_xp", 0)),
                     config=cfg
                 ))
             return build_results
@@ -3296,20 +4223,32 @@ class HunterTab:
             highest_stage=max(final_stages),
             lowest_stage=min(final_stages),
             avg_loot_per_hour=statistics.mean(loot_per_hours),
+            min_loot_common=min(loots_common) if loots_common else 0,
+            max_loot_common=max(loots_common) if loots_common else 0,
+            avg_loot_common=statistics.mean(loots_common),
+            min_loot_uncommon=min(loots_uncommon) if loots_uncommon else 0,
+            max_loot_uncommon=max(loots_uncommon) if loots_uncommon else 0,
+            avg_loot_uncommon=statistics.mean(loots_uncommon),
+            min_loot_rare=min(loots_rare) if loots_rare else 0,
+            max_loot_rare=max(loots_rare) if loots_rare else 0,
+            avg_loot_rare=statistics.mean(loots_rare),
             avg_damage=statistics.mean(damages),
+            min_damage=min(damages) if damages else 0,
+            max_damage=max(damages) if damages else 0,
             avg_kills=statistics.mean(kills),
             avg_elapsed_time=statistics.mean(elapsed_times),
             avg_damage_taken=statistics.mean(damage_takens),
+            min_damage_taken=min(damage_takens) if damage_takens else 0,
+            max_damage_taken=max(damage_takens) if damage_takens else 0,
             survival_rate=survival_rate,
             boss1_survival=boss1_survival,
             boss2_survival=boss2_survival,
             boss3_survival=boss3_survival,
             boss4_survival=boss4_survival,
             boss5_survival=boss5_survival,
-            avg_loot_common=statistics.mean(loots_common),
-            avg_loot_uncommon=statistics.mean(loots_uncommon),
-            avg_loot_rare=statistics.mean(loots_rare),
             avg_xp=statistics.mean(xps),
+            min_xp=min(xps) if xps else 0,
+            max_xp=max(xps) if xps else 0,
             config=config,
         )
     
@@ -3326,11 +4265,11 @@ class HunterTab:
                     progress_data = json.load(f)
                 
                 gen = progress_data.get('generation', 0)
-                builds_in_gen = progress_data.get('builds_in_gen', 0)
+                builds_in_gen = progress_data.get('builds_in_generation', 0)
                 print(f"[POLL #{self.poll_count}] gen={gen}, builds={builds_in_gen}, last_gen={self.last_logged_gen}, last_builds={self.last_logged_builds}")
                 
                 # Update global progress bar
-                progress_pct = progress_data.get('progress', 0)
+                progress_pct = progress_data.get('progress_percent', 0)
                 self.progress_var.set(progress_pct)
                 
                 # Log generation progress (only when generation changes OR significant progress within gen)
@@ -3343,16 +4282,24 @@ class HunterTab:
                         total_gen = progress_data.get('total_generations', 0)
                         speed = progress_data.get('sims_per_sec', 0)
                         elapsed = progress_data.get('elapsed', 0)
-                        self._log(f"✅ Gen {self.last_logged_gen}/{total_gen} complete | {speed:.0f} sims/sec ({elapsed:.1f}s)")
+                        tier = progress_data.get('tier', f'Tier {self.last_logged_gen}')
+                        self._log(f"✅ {tier} complete | {speed:.0f} sims/sec ({elapsed:.1f}s total)")
                     
                     self.last_logged_gen = gen
                     self.last_logged_builds = 0
-                
-                # Log in-progress updates (only when build count actually changes)
-                if builds_in_gen > self.last_logged_builds:
+                    
+                    # Update status label for new generation
+                    tier = progress_data.get('tier', f'Generation {gen}')
                     speed = progress_data.get('sims_per_sec', 0)
                     total_gen = progress_data.get('total_generations', 0)
-                    tier = progress_data.get('tier_name', '')
+                    self.status_label.configure(text=f"Stage {gen}/{total_gen}: {tier}: {builds_in_gen} builds | {speed:.0f} sims/sec")
+                    self.update_idletasks()  # Force GUI update
+                
+                # Log in-progress updates (only when build count actually changes)
+                if builds_in_gen != self.last_logged_builds:
+                    speed = progress_data.get('sims_per_sec', 0)
+                    total_gen = progress_data.get('total_generations', 0)
+                    tier = progress_data.get('tier', '')
                     total_sims = progress_data.get('total_sims', 0)
                     
                     # Calculate ETA
@@ -3361,7 +4308,10 @@ class HunterTab:
                     eta_seconds = sims_remaining / speed if speed > 0 else 0
                     eta_str = f"{int(eta_seconds)}s" if eta_seconds < 60 else f"{int(eta_seconds/60)}m {int(eta_seconds%60)}s"
                     
-                    self._log(f"📊 Gen {gen}/{total_gen} ({tier}): {builds_in_gen}/{builds_per_gen} builds | {speed:.0f} sims/sec | ETA: {eta_str}")
+                    self._log(f"📊 {tier}: {builds_in_gen} builds evaluating | {speed:.0f} sims/sec")
+                    # Update status label with current progress
+                    self.status_label.configure(text=f"Stage {gen}/{total_gen}: {tier}: {builds_in_gen} builds | {speed:.0f} sims/sec")
+                    self.update_idletasks()  # Force GUI update
                     self.last_logged_builds = builds_in_gen
             except Exception as e:
                 # File may be mid-write, ignore
@@ -3393,12 +4343,15 @@ class HunterTab:
                 if hasattr(self, 'stderr_handle') and self.stderr_handle:
                     self.stderr_handle.close()
         else:
-            # Threaded mode - check if thread is still alive
+            # Threaded mode - check if thread is still alive OR result file exists
             if hasattr(self, 'opt_thread') and self.opt_thread is not None:
-                if not self.opt_thread.is_alive():
+                thread_alive = self.opt_thread.is_alive()
+                result_exists = self.result_file.exists()
+                
+                if not thread_alive:
                     is_complete = True
                     # Check result file for errors
-                    if self.result_file.exists():
+                    if result_exists:
                         try:
                             with open(self.result_file, 'r') as f:
                                 temp_results = json.load(f)
@@ -3406,7 +4359,12 @@ class HunterTab:
                                 exit_code = 1  # Simulate error
                         except:
                             pass
-                print(f"[POLL #{self.poll_count}] thread alive={self.opt_thread.is_alive()}, result_file exists={self.result_file.exists()}")
+                elif result_exists and self.poll_count > 10:  # Give it some time, then check result file even if thread alive
+                    # Thread might be stuck but result file was written - force completion
+                    print(f"[POLL #{self.poll_count}] Thread still alive but result file exists - forcing completion")
+                    is_complete = True
+                    
+                print(f"[POLL #{self.poll_count}] thread alive={thread_alive}, result_file exists={result_exists}")
         
         if is_complete:
             print(f"[POLL] Process exited with code {exit_code}")
@@ -3482,6 +4440,15 @@ class HunterTab:
                             highest_stage=build['max_stage'],
                             lowest_stage=build['max_stage'],
                             avg_loot_per_hour=build.get('avg_loot_per_hour', 0),
+                            min_loot_common=build.get('min_loot_common', 0),
+                            max_loot_common=build.get('max_loot_common', 0),
+                            avg_loot_common=build.get('avg_loot_common', 0),
+                            min_loot_uncommon=build.get('min_loot_uncommon', 0),
+                            max_loot_uncommon=build.get('max_loot_uncommon', 0),
+                            avg_loot_uncommon=build.get('avg_loot_uncommon', 0),
+                            min_loot_rare=build.get('min_loot_rare', 0),
+                            max_loot_rare=build.get('max_loot_rare', 0),
+                            avg_loot_rare=build.get('avg_loot_rare', 0),
                             avg_damage=build.get('avg_damage', 0),
                             avg_kills=build.get('avg_kills', 0),
                             avg_elapsed_time=0,
@@ -3513,6 +4480,15 @@ class HunterTab:
                             highest_stage=irl_data.get('max_stage', 0),
                             lowest_stage=irl_data.get('max_stage', 0),
                             avg_loot_per_hour=irl_data.get('avg_loot_per_hour', 0),
+                            min_loot_common=irl_data.get('min_loot_common', 0),
+                            max_loot_common=irl_data.get('max_loot_common', 0),
+                            avg_loot_common=irl_data.get('avg_loot_common', 0),
+                            min_loot_uncommon=irl_data.get('min_loot_uncommon', 0),
+                            max_loot_uncommon=irl_data.get('max_loot_uncommon', 0),
+                            avg_loot_uncommon=irl_data.get('avg_loot_uncommon', 0),
+                            min_loot_rare=irl_data.get('min_loot_rare', 0),
+                            max_loot_rare=irl_data.get('max_loot_rare', 0),
+                            avg_loot_rare=irl_data.get('avg_loot_rare', 0),
                             avg_damage=irl_data.get('avg_damage', 0),
                             avg_kills=irl_data.get('avg_kills', 0),
                             avg_elapsed_time=irl_data.get('avg_time', 0),
@@ -3669,6 +4645,10 @@ class HunterTab:
     def _optimization_complete(self):
         """Handle optimization completion (called after results displayed or error occurred)."""
         self.is_running = False
+        self.is_completed = True  # Mark as completed
+        # Store best stage before results might be cleared
+        if self.results:
+            self.completion_best_stage = max(r.avg_final_stage for r in self.results)
         self.start_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
         self.progress_var.set(100)
@@ -3742,6 +4722,13 @@ class HunterTab:
             compare_text.configure(state=tk.DISABLED)
             return
         
+        # DEBUG: Log what we're comparing
+        print(f"[COMPARE DEBUG] IRL avg_stage={irl.avg_final_stage:.1f}, Best avg_stage={best.avg_final_stage:.1f}")
+        print(f"[COMPARE DEBUG] IRL talents: {dict((k, v) for k, v in irl.talents.items() if v > 0)}")
+        print(f"[COMPARE DEBUG] Best talents: {dict((k, v) for k, v in best.talents.items() if v > 0)}")
+        print(f"[COMPARE DEBUG] IRL attributes: {dict((k, v) for k, v in irl.attributes.items() if v > 0)}")
+        print(f"[COMPARE DEBUG] Best attributes: {dict((k, v) for k, v in best.attributes.items() if v > 0)}")
+        
         res_common, res_uncommon, res_rare = self._get_resource_names()
         
         # Header
@@ -3749,32 +4736,54 @@ class HunterTab:
         compare_text.insert(tk.END, "📊 BUILD COMPARISON: YOUR BUILD VS OPTIMAL BUILDS\n", "header")
         compare_text.insert(tk.END, "═" * 70 + "\n\n", "divider")
         
-        # Calculate optimal percentages based on different metrics
-        pct_stage = (irl.avg_final_stage / best.avg_final_stage * 100) if best.avg_final_stage > 0 else 100
-        pct_loot = (irl.avg_loot_per_hour / best.avg_loot_per_hour * 100) if best.avg_loot_per_hour > 0 else 100
-        pct_xp = (irl.avg_xp / best.avg_xp * 100) if best.avg_xp > 0 else 100
-        pct_damage = (irl.avg_damage / best.avg_damage * 100) if best.avg_damage > 0 else 100
+        # Calculate comparison percentages (user vs best found)
+        # For each metric, calculate how user's build compares to the best optimization result
+        def calc_comparison(user_val, best_val, higher_is_better=True):
+            if best_val == 0:
+                return 100.0 if user_val > 0 else 0.0
+            ratio = user_val / best_val
+            if higher_is_better:
+                return ratio * 100
+            else:
+                return (1 / ratio) * 100 if ratio > 0 else 0.0
         
-        # Overall optimal score (weighted average)
-        overall_pct = (pct_stage * 0.4 + pct_loot * 0.3 + pct_xp * 0.15 + pct_damage * 0.15)
+        pct_stage = calc_comparison(irl.avg_final_stage, best.avg_final_stage)
+        pct_loot = calc_comparison(irl.avg_loot_per_hour, best.avg_loot_per_hour)
+        pct_xp = calc_comparison(irl.avg_xp, best.avg_xp)
+        pct_damage = calc_comparison(irl.avg_damage, best.avg_damage)
+        
+        # Overall score using same weights as optimization (70% stage + 30% normalized loot)
+        user_composite = (irl.avg_final_stage * 0.7) + (min(irl.avg_loot_per_hour / 1e6, 1.0) * 300 * 0.3)
+        best_composite = (best.avg_final_stage * 0.7) + (min(best.avg_loot_per_hour / 1e6, 1.0) * 300 * 0.3)
+        overall_pct = (user_composite / best_composite * 100) if best_composite > 0 else 100
         
         # Big optimality display
         compare_text.insert(tk.END, "╔════════════════════════════════════════════════════════════════╗\n", "gold")
         compare_text.insert(tk.END, "║         YOUR BUILD IS ", "gold")
         # Color based on score
-        if overall_pct >= 95:
+        if overall_pct >= 100:
             compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "positive")
+            compare_text.insert(tk.END, " OF BEST FOUND                 ║\n", "gold")
+        elif overall_pct >= 95:
+            compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "positive")
+            compare_text.insert(tk.END, " OF BEST FOUND                 ║\n", "gold")
         elif overall_pct >= 80:
             compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "neutral")
+            compare_text.insert(tk.END, " OF BEST FOUND                 ║\n", "gold")
         elif overall_pct >= 60:
             compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "cost")
+            compare_text.insert(tk.END, " OF BEST FOUND                 ║\n", "gold")
         else:
             compare_text.insert(tk.END, f"{overall_pct:>6.2f}%", "negative")
-        compare_text.insert(tk.END, " OPTIMAL                      ║\n", "gold")
+            compare_text.insert(tk.END, " OF BEST FOUND                 ║\n", "gold")
         compare_text.insert(tk.END, "╚════════════════════════════════════════════════════════════════╝\n\n", "gold")
         
         # Rating and recommendation
-        if overall_pct >= 98:
+        if overall_pct >= 105:
+            grade = "🏆 EXCEPTIONAL - Better than optimization!"
+            advice = "Your build outperforms the optimization results. You're doing great!"
+            grade_color = "gold"
+        elif overall_pct >= 98:
             grade = "🌟 PERFECT - No respec needed!"
             advice = "Your build is essentially optimal. Save your resources."
             grade_color = "gold"
@@ -3821,36 +4830,55 @@ class HunterTab:
             else: return "negative"
         
         compare_text.insert(tk.END, "  🏔️ Stage:    ", "stat_name")
-        compare_text.insert(tk.END, f"{pct_stage:>6.2f}% optimal", get_pct_color(pct_stage))
+        compare_text.insert(tk.END, f"{pct_stage:>6.2f}% of best", get_pct_color(pct_stage))
         compare_text.insert(tk.END, f"  ({irl.avg_final_stage:.1f} vs {best.avg_final_stage:.1f})\n", "neutral")
         
         compare_text.insert(tk.END, "  💰 Loot/Hr:  ", "stat_name")
-        compare_text.insert(tk.END, f"{pct_loot:>6.2f}% optimal", get_pct_color(pct_loot))
-        compare_text.insert(tk.END, f"  ({irl.avg_loot_per_hour:.2f} vs {best.avg_loot_per_hour:.2f})\n", "neutral")
+        compare_text.insert(tk.END, f"{pct_loot:>6.2f}% of best", get_pct_color(pct_loot))
+        compare_text.insert(tk.END, f"  ({self._format_number(irl.avg_loot_per_hour)} vs {self._format_number(best.avg_loot_per_hour)})\n", "neutral")
+        
+        # Loot breakdown by material type
+        if hasattr(irl, 'avg_loot_common') and hasattr(best, 'avg_loot_common'):
+            res_common, res_uncommon, res_rare = self._get_resource_names()
+            compare_text.insert(tk.END, f"     • {res_common}:  ", "level")
+            compare_text.insert(tk.END, f"{self._format_number(irl.avg_loot_common)} vs {self._format_number(best.avg_loot_common)}\n", "neutral")
+            compare_text.insert(tk.END, f"     • {res_uncommon}:  ", "level")
+            compare_text.insert(tk.END, f"{self._format_number(irl.avg_loot_uncommon)} vs {self._format_number(best.avg_loot_uncommon)}\n", "neutral")
+            compare_text.insert(tk.END, f"     • {res_rare}:  ", "level")
+            compare_text.insert(tk.END, f"{self._format_number(irl.avg_loot_rare)} vs {self._format_number(best.avg_loot_rare)}\n", "neutral")
         
         compare_text.insert(tk.END, "  📈 XP/Run:   ", "stat_name")
-        compare_text.insert(tk.END, f"{pct_xp:>6.2f}% optimal", get_pct_color(pct_xp))
+        compare_text.insert(tk.END, f"{pct_xp:>6.2f}% of best", get_pct_color(pct_xp))
         compare_text.insert(tk.END, f"  ({self._format_number(irl.avg_xp)} vs {self._format_number(best.avg_xp)})\n", "neutral")
         
         compare_text.insert(tk.END, "  💥 Damage:   ", "stat_name")
-        compare_text.insert(tk.END, f"{pct_damage:>6.2f}% optimal", get_pct_color(pct_damage))
+        compare_text.insert(tk.END, f"{pct_damage:>6.2f}% of best", get_pct_color(pct_damage))
         compare_text.insert(tk.END, f"  ({irl.avg_damage:,.0f} vs {best.avg_damage:,.0f})\n\n", "neutral")
         
-        # Potential gains
+        # Potential gains or losses
         compare_text.insert(tk.END, "─" * 70 + "\n", "divider")
-        compare_text.insert(tk.END, "✨ POTENTIAL GAINS IF YOU RESPEC:\n", "subheader")
-        compare_text.insert(tk.END, "─" * 70 + "\n\n", "divider")
-        
-        stage_gain = best.avg_final_stage - irl.avg_final_stage
-        loot_gain_pct = ((best.avg_loot_per_hour / irl.avg_loot_per_hour) - 1) * 100 if irl.avg_loot_per_hour > 0 else 0
-        xp_gain_pct = ((best.avg_xp / irl.avg_xp) - 1) * 100 if irl.avg_xp > 0 else 0
-        
-        compare_text.insert(tk.END, "  Stage:      ", "stat_name")
-        compare_text.insert(tk.END, f"+{stage_gain:.1f} stages\n", "positive")
-        compare_text.insert(tk.END, "  Loot:       ", "stat_name")
-        compare_text.insert(tk.END, f"+{loot_gain_pct:.1f}% more loot per hour\n", "positive")
+        if overall_pct >= 100:
+            compare_text.insert(tk.END, "✨ COMPARISON WITH BEST FOUND BUILD:\n", "subheader")
+            compare_text.insert(tk.END, "─" * 70 + "\n\n", "divider")
+            compare_text.insert(tk.END, "  Your build performs better than the optimization results!\n", "positive")
+            compare_text.insert(tk.END, "  No respec needed - you're already optimal.\n\n", "positive")
+        else:
+            compare_text.insert(tk.END, "✨ POTENTIAL GAINS IF YOU RESPEC:\n", "subheader")
+            compare_text.insert(tk.END, "─" * 70 + "\n\n", "divider")
+            
+            stage_gain = best.avg_final_stage - irl.avg_final_stage
+            loot_gain_pct = ((best.avg_loot_per_hour / irl.avg_loot_per_hour) - 1) * 100 if irl.avg_loot_per_hour > 0 else 0
+            xp_gain_pct = ((best.avg_xp / irl.avg_xp) - 1) * 100 if irl.avg_xp > 0 else 0
+            
+            compare_text.insert(tk.END, "  Stage:      ", "stat_name")
+            sign = "+" if stage_gain >= 0 else ""
+            compare_text.insert(tk.END, f"{sign}{stage_gain:.1f} stages\n", "positive" if stage_gain >= 0 else "negative")
+            compare_text.insert(tk.END, "  Loot:       ", "stat_name")
+            sign = "+" if loot_gain_pct >= 0 else ""
+            compare_text.insert(tk.END, f"{sign}{loot_gain_pct:.1f}% more loot per hour\n", "positive" if loot_gain_pct >= 0 else "negative")
         compare_text.insert(tk.END, "  XP:         ", "stat_name")
-        compare_text.insert(tk.END, f"+{xp_gain_pct:.1f}% more XP per run\n\n", "positive")
+        sign = "+" if xp_gain_pct >= 0 else ""
+        compare_text.insert(tk.END, f"{sign}{xp_gain_pct:.1f}% more XP per run\n\n", "positive" if xp_gain_pct >= 0 else "negative")
         
         # Compare talents/attributes
         compare_text.insert(tk.END, "─" * 70 + "\n", "divider")
@@ -3991,40 +5019,102 @@ class HunterTab:
         text_widget.insert(tk.END, f"{attrs_str}\n", "level")
     
     def _format_number(self, num: float) -> str:
-        """Format large numbers with suffixes (k, m, b, t, qa, qi)."""
+        """Format large numbers with proper suffixes for readability."""
         if num < 1000:
             return f"{num:.2f}"
         elif num < 1_000_000:
-            return f"{num/1000:.2f}k"
+            return f"{num/1000:.2f}K"
         elif num < 1_000_000_000:
-            return f"{num/1_000_000:.2f}m"
+            return f"{num/1_000_000:.2f}M"
         elif num < 1_000_000_000_000:
-            return f"{num/1_000_000_000:.2f}b"
+            return f"{num/1_000_000_000:.2f}B"
         elif num < 1_000_000_000_000_000:
-            return f"{num/1_000_000_000_000:.2f}t"
+            return f"{num/1_000_000_000_000:.2f}T"
         elif num < 1_000_000_000_000_000_000:
-            return f"{num/1_000_000_000_000_000:.2f}qa"
+            return f"{num/1_000_000_000_000_000:.2f}Qa"
+        elif num < 1_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000:.2f}Qi"
+        elif num < 1_000_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000_000:.2f}Sx"
+        elif num < 1_000_000_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000_000_000:.2f}Sp"
+        elif num < 1_000_000_000_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000_000_000_000:.2f}Oc"
+        elif num < 1_000_000_000_000_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000_000_000_000_000:.2f}No"
         else:
-            return f"{num/1_000_000_000_000_000_000:.2f}qi"
+            return f"{num/1_000_000_000_000_000_000_000_000_000_000_000:.2f}Dc"
+
+    def format_cost(self, cost: int) -> str:
+        """Format cost values for display."""
+        num = float(cost)
+        if num < 1000:
+            return f"{num:.0f}"
+        elif num < 1_000_000:
+            return f"{num/1000:.1f}K"
+        elif num < 1_000_000_000:
+            return f"{num/1_000_000:.1f}M"
+        elif num < 1_000_000_000_000:
+            return f"{num/1_000_000_000:.1f}B"
+        elif num < 1_000_000_000_000_000:
+            return f"{num/1_000_000_000_000:.1f}T"
+        elif num < 1_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000:.1f}Qa"
+        elif num < 1_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000:.1f}Qi"
+        elif num < 1_000_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000_000:.1f}Sx"
+        elif num < 1_000_000_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000_000_000:.1f}Sp"
+        elif num < 1_000_000_000_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000_000_000_000:.1f}Oc"
+        elif num < 1_000_000_000_000_000_000_000_000_000_000_000:
+            return f"{num/1_000_000_000_000_000_000_000_000_000_000:.1f}No"
+        else:
+            return f"{num/1_000_000_000_000_000_000_000_000_000_000_000:.1f}Dc"
 
 
 class MultiHunterGUI:
     """Main GUI with tabs for each hunter."""
     
-    # Dark theme colors
-    DARK_BG = "#1a1a2e"
-    DARK_BG_SECONDARY = "#16213e"
-    DARK_BG_TERTIARY = "#0f0f1a"
-    DARK_TEXT = "#e0e0e0"
-    DARK_TEXT_DIM = "#888888"
-    DARK_ACCENT = "#4a4a6a"
-    DARK_BORDER = "#3a3a5a"
+    # Dark theme colors - Deep Purple theme
+    DARK_BG = "#1e1e32"
+    DARK_BG_SECONDARY = "#252540"
+    DARK_BG_TERTIARY = "#18182a"
+    DARK_TEXT = "#e8e8f0"
+    DARK_TEXT_DIM = "#9999bb"
+    DARK_ACCENT = "#6a5acd"
+    DARK_BORDER = "#4a4a6e"
     
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("🎮 Hunter Sim - Multi-Hunter Optimizer")
-        self.root.geometry("1400x900")
+        self.root.geometry("1750x1050")
         self.root.minsize(1000, 600)
+        
+        # Initialize arena_themes FIRST (before any theme loading)
+        self.arena_themes = {
+            "Borge": {
+                "bg_color": "#1a0a0a",
+                "accent_color": "#DC3545",  # Red
+                "field_color": "#2a0505",
+                "description": "Exon-12"
+            },
+            "Knox": {
+                "bg_color": "#0a0a1a",
+                "accent_color": "#0D6EFD",  # Blue
+                "field_color": "#050520",
+                "description": "Sirene-6"
+            },
+            "Ozzy": {
+                "bg_color": "#0a1a0a",
+                "accent_color": "#198754",  # Green
+                "field_color": "#052005",
+                "description": "Endo Prime"
+            }
+        }
+        # Store default for theme switching
+        self.arena_themes_default = {k: v.copy() for k, v in self.arena_themes.items()}
         
         # Apply dark theme to root window
         self.root.configure(bg=self.DARK_BG)
@@ -4035,26 +5125,66 @@ class MultiHunterGUI:
         # Create global log FIRST (before hunter tabs which may log on load)
         self._create_log_frame()
         
-        # Create main notebook
-        self.main_notebook = ttk.Notebook(self.root, style="Dark.TNotebook")
-        self.main_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Create top bar with theme selector (uses theme colors)
+        self.top_bar = tk.Frame(self.root, bg=self.DARK_BG, height=40)
+        self.top_bar.pack(fill=tk.X, padx=5, pady=(5, 0))
+        
+        # Theme selector on the far right
+        self.theme_frame = tk.Frame(self.top_bar, bg=self.DARK_BG)
+        self.theme_frame.pack(side=tk.RIGHT, padx=10)
+        
+        self.theme_label = tk.Label(self.theme_frame, text="Theme:", bg=self.DARK_BG, fg=self.DARK_TEXT,
+                font=('Arial', 9))
+        self.theme_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Load saved theme preference
+        saved_theme = self._load_theme_preference()
+        self.theme_var = tk.StringVar(value=saved_theme)
+        theme_options = [
+            "Dark",
+            "Light", 
+            "Black/White",
+            "Black/Green",
+            "White/Black",
+            "Protanopia (Red-blind)",
+            "Deuteranopia (Green-blind)",
+            "Tritanopia (Blue-blind)"
+        ]
+        
+        self.theme_dropdown = ttk.Combobox(self.theme_frame, textvariable=self.theme_var,
+                                     values=theme_options, state="readonly", width=22)
+        self.theme_dropdown.pack(side=tk.LEFT)
+        self.theme_dropdown.bind("<<ComboboxSelected>>", self._on_theme_changed)
+        
+        # Get current theme info for colorful tabs
+        theme_name = saved_theme
+        is_colorblind = "blind" in theme_name.lower() if theme_name else False
+        
+        # Create main notebook (tabs will be hidden, controlled by colorful tab bar)
+        self.main_notebook = ttk.Notebook(self.root)
+        
+        # Hide the notebook tabs (content controlled by custom tab bar)
+        self._setup_hidden_notebook_style()
         
         # Initialize hunter_tabs dict BEFORE creating control tab (which references it)
         self.hunter_tabs: Dict[str, HunterTab] = {}
         
         # Create control tab frame FIRST (so it's first in notebook)
         self.control_frame = ttk.Frame(self.main_notebook, style="Dark.TFrame")
-        self.main_notebook.add(self.control_frame, text="  ⚙️ Control  ")
+        self.main_notebook.add(self.control_frame, text="Control")
         
         # Create hunter tabs with colors in order: Borge, Ozzy, Knox
         for name, cls in [("Borge", Borge), ("Ozzy", Ozzy), ("Knox", Knox)]:
             self.hunter_tabs[name] = HunterTab(self.main_notebook, name, cls, self)
-            # Color the tab text
-            colors = HUNTER_COLORS[name]
-            idx = self.main_notebook.index("end") - 1
-            # Use colored icons in tab names
-            icon = '🛡️' if name == 'Borge' else '🔫' if name == 'Knox' else '🐙'
-            self.main_notebook.tab(idx, text=f"  {icon} {name}  ")
+        
+        # Re-apply hidden style AFTER all tabs are added (important for TTK)
+        self._setup_hidden_notebook_style()
+        
+        # Create the COLORFUL TAB BAR above the notebook
+        self._create_main_tab_bar(is_colorblind)
+        
+        # Now pack the notebook (after the tab bar)
+        self.main_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
         
         # Pre-initialize Borge tab since Control tab is shown first and 
         # Borge will be the first hunter tab selected
@@ -4062,6 +5192,902 @@ class MultiHunterGUI:
         
         # Now populate the control tab (hunter_tabs exists now)
         self._populate_control_tab()
+        
+        # Apply saved theme AFTER UI is created (so hidden styles work correctly)
+        if saved_theme != "Dark":
+            self._apply_theme_silently(saved_theme)
+    
+    def _on_theme_changed(self, event=None):
+        """Handle theme selection change."""
+        selected_theme = self.theme_var.get()
+        
+        # Map theme names to color schemes
+        theme_colors = {
+            "Dark": {
+                "bg": "#1e1e32", "bg2": "#252540", "bg3": "#18182a",
+                "text": "#e8e8f0", "text_dim": "#9999bb",
+                "accent": "#6a5acd", "border": "#4a4a6e"
+            },
+            "Light": {
+                "bg": "#f5f5f5", "bg2": "#ffffff", "bg3": "#e8e8e8",
+                "text": "#1a1a1a", "text_dim": "#666666",
+                "accent": "#4a90d9", "border": "#cccccc"
+            },
+            "Black/White": {
+                "bg": "#000000", "bg2": "#1a1a1a", "bg3": "#0a0a0a",
+                "text": "#ffffff", "text_dim": "#aaaaaa",
+                "accent": "#ffffff", "border": "#444444"
+            },
+            "Black/Green": {
+                "bg": "#000000", "bg2": "#001a00", "bg3": "#000a00",
+                "text": "#00ff00", "text_dim": "#00aa00",
+                "accent": "#00ff00", "border": "#003300"
+            },
+            "White/Black": {
+                "bg": "#ffffff", "bg2": "#f0f0f0", "bg3": "#fafafa",
+                "text": "#000000", "text_dim": "#444444",
+                "accent": "#000000", "border": "#cccccc"
+            },
+            "Protanopia (Red-blind)": {
+                "bg": "#f5f5f5", "bg2": "#ffffff", "bg3": "#e8e8e8",
+                "text": "#1a1a1a", "text_dim": "#666666",
+                "accent": "#0066cc", "border": "#4a90d9"  # Blue/yellow safe - no red/green
+            },
+            "Deuteranopia (Green-blind)": {
+                "bg": "#f5f5f5", "bg2": "#ffffff", "bg3": "#e8e8e8",
+                "text": "#1a1a1a", "text_dim": "#666666",
+                "accent": "#ff6600", "border": "#ff8844"  # Orange/blue safe - no green
+            },
+            "Tritanopia (Blue-blind)": {
+                "bg": "#f5f5f5", "bg2": "#ffffff", "bg3": "#e8e8e8",
+                "text": "#1a1a1a", "text_dim": "#666666",
+                "accent": "#cc0044", "border": "#ff4466"  # Red/magenta safe - no blue/yellow
+            }
+        }
+        
+        colors = theme_colors.get(selected_theme, theme_colors["Dark"])
+        
+        # Update class color attributes
+        self.DARK_BG = colors["bg"]
+        self.DARK_BG_SECONDARY = colors["bg2"]
+        self.DARK_BG_TERTIARY = colors["bg3"]
+        self.DARK_TEXT = colors["text"]
+        self.DARK_TEXT_DIM = colors["text_dim"]
+        self.DARK_ACCENT = colors["accent"]
+        self.DARK_BORDER = colors["border"]
+        
+        # Re-apply styles with new colors
+        self._setup_styles()
+        
+        # Update root window and all frames
+        self.root.configure(bg=self.DARK_BG)
+        
+        # Update hunter arena colors for colorblind themes
+        self._update_hunter_colors_for_theme(selected_theme)
+        
+        # Update button and tab colors
+        self._update_control_button_colors()
+        self._update_main_tab_bar_colors()
+        self._update_all_sub_tab_bar_colors()
+        
+        # Update Control tab widget colors
+        self._update_control_tab_widget_colors()
+        
+        # Update Hunter tab widget colors (Build/Run/etc content)
+        self._update_hunter_tab_widget_colors()
+        
+        # Re-hide notebook tabs
+        if hasattr(self, 'main_notebook'):
+            self._setup_hidden_notebook_style()
+        
+        # Save theme preference
+        self._save_theme_preference(selected_theme)
+    
+    def _apply_theme_silently(self, theme_name: str):
+        """Apply theme without showing messagebox (used on startup)."""
+        # Map theme names to color schemes (same as _on_theme_changed)
+        theme_colors = {
+            "Dark": {
+                "bg": "#1e1e32", "bg2": "#252540", "bg3": "#18182a",
+                "text": "#e8e8f0", "text_dim": "#9999bb",
+                "accent": "#6a5acd", "border": "#4a4a6e"
+            },
+            "Light": {
+                "bg": "#f5f5f5", "bg2": "#ffffff", "bg3": "#e8e8e8",
+                "text": "#1a1a1a", "text_dim": "#666666",
+                "accent": "#4a90d9", "border": "#cccccc"
+            },
+            "Black/White": {
+                "bg": "#000000", "bg2": "#1a1a1a", "bg3": "#0a0a0a",
+                "text": "#ffffff", "text_dim": "#aaaaaa",
+                "accent": "#ffffff", "border": "#444444"
+            },
+            "Black/Green": {
+                "bg": "#000000", "bg2": "#001a00", "bg3": "#000a00",
+                "text": "#00ff00", "text_dim": "#00aa00",
+                "accent": "#00ff00", "border": "#003300"
+            },
+            "White/Black": {
+                "bg": "#fafafa", "bg2": "#ffffff", "bg3": "#f0f0f0",
+                "text": "#000000", "text_dim": "#666666",
+                "accent": "#4a90d9", "border": "#cccccc"
+            },
+            "Protanopia (Red-blind)": {
+                "bg": "#f5f5f5", "bg2": "#ffffff", "bg3": "#e8e8e8",
+                "text": "#1a1a1a", "text_dim": "#666666",
+                "accent": "#0066cc", "border": "#4a90d9"  # Blue/yellow safe - no red/green
+            },
+            "Deuteranopia (Green-blind)": {
+                "bg": "#f5f5f5", "bg2": "#ffffff", "bg3": "#e8e8e8",
+                "text": "#1a1a1a", "text_dim": "#666666",
+                "accent": "#ff6600", "border": "#ff8844"  # Orange/blue safe - no green
+            },
+            "Tritanopia (Blue-blind)": {
+                "bg": "#f5f5f5", "bg2": "#ffffff", "bg3": "#e8e8e8",
+                "text": "#1a1a1a", "text_dim": "#666666",
+                "accent": "#cc0044", "border": "#ff4466"  # Red/magenta safe - no blue/yellow
+            }
+        }
+        
+        colors = theme_colors.get(theme_name, theme_colors["Dark"])
+        
+        # Update class color attributes
+        self.DARK_BG = colors["bg"]
+        self.DARK_BG_SECONDARY = colors["bg2"]
+        self.DARK_BG_TERTIARY = colors["bg3"]
+        self.DARK_TEXT = colors["text"]
+        self.DARK_TEXT_DIM = colors["text_dim"]
+        self.DARK_ACCENT = colors["accent"]
+        self.DARK_BORDER = colors["border"]
+        
+        # Re-apply styles with new colors
+        self._setup_styles()
+        
+        # Update root window
+        self.root.configure(bg=self.DARK_BG)
+        
+        # Update hunter arena colors for colorblind themes
+        self._update_hunter_colors_for_theme(theme_name)
+        
+        # Update Run/Stop button colors
+        self._update_control_button_colors()
+        
+        # Update main tab bar colors
+        self._update_main_tab_bar_colors()
+        
+        # Update hunter sub-tab bar colors
+        self._update_all_sub_tab_bar_colors()
+        
+        # Update Control tab widget colors
+        self._update_control_tab_widget_colors()
+        
+        # Re-hide main notebook tabs (style might have been overridden)
+        if hasattr(self, 'main_notebook'):
+            self._setup_hidden_notebook_style()
+    
+    def _update_all_sub_tab_bar_colors(self):
+        """Update all hunter sub-tab bar colors."""
+        if not hasattr(self, 'hunter_tabs'):
+            return
+        for tab in self.hunter_tabs.values():
+            if hasattr(tab, 'update_sub_tab_bar_colors'):
+                tab.update_sub_tab_bar_colors()
+            if hasattr(tab, 'update_results_tab_bar_colors'):
+                tab.update_results_tab_bar_colors()
+    
+    def _update_control_tab_widget_colors(self):
+        """Update all Control tab widget colors for theme changes."""
+        if not hasattr(self, 'control_frame'):
+            return
+        
+        # Helper to recursively update widget colors
+        def update_widget_colors(widget):
+            try:
+                widget_class = widget.winfo_class()
+                
+                # Update tk widgets (not ttk - those use styles)
+                if widget_class == 'Frame':
+                    widget.configure(bg=self.DARK_BG)
+                elif widget_class == 'Label':
+                    # Check if it's a hunter-colored label (preserve hunter colors)
+                    current_fg = str(widget.cget('fg'))
+                    # Only update if not a hunter accent color
+                    if current_fg not in ['#0066cc', '#ff6600', '#cc0044', '#DC3545', '#0D6EFD', '#198754']:
+                        widget.configure(bg=self.DARK_BG, fg=self.DARK_TEXT)
+                    else:
+                        widget.configure(bg=self.DARK_BG)
+                elif widget_class == 'Labelframe':
+                    widget.configure(bg=self.DARK_BG, fg=self.DARK_TEXT)
+                elif widget_class == 'Spinbox':
+                    widget.configure(bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT,
+                                   insertbackground=self.DARK_TEXT)
+                elif widget_class == 'Text':
+                    widget.configure(bg=self.DARK_BG_TERTIARY, fg=self.DARK_TEXT,
+                                   insertbackground=self.DARK_TEXT)
+                elif widget_class == 'Checkbutton':
+                    widget.configure(bg=self.DARK_BG, fg=self.DARK_TEXT,
+                                   selectcolor=self.DARK_BG_SECONDARY,
+                                   activebackground=self.DARK_BG)
+                
+                # Recurse into children
+                for child in widget.winfo_children():
+                    update_widget_colors(child)
+            except Exception:
+                pass  # Skip widgets that don't support these options
+        
+        # Update the control frame and all its children
+        update_widget_colors(self.control_frame)
+        
+        # Update the global progress/log area
+        if hasattr(self, 'global_progress') and self.global_progress.winfo_exists():
+            try:
+                self.global_progress.configure(bg=self.DARK_BG_SECONDARY)
+            except:
+                pass
+        
+        if hasattr(self, 'global_log') and self.global_log.winfo_exists():
+            self.global_log.configure(
+                bg=self.DARK_BG_TERTIARY,
+                fg=self.DARK_TEXT,
+                insertbackground=self.DARK_TEXT
+            )
+
+    def _update_hunter_tab_widget_colors(self):
+        """Update all Hunter tab widget colors for theme changes."""
+        if not hasattr(self, 'hunter_tabs'):
+            return
+        
+        # Helper to recursively update widget colors
+        def update_widget_colors(widget, hunter_accent=None):
+            try:
+                widget_class = widget.winfo_class()
+                
+                # Update tk widgets (not ttk - those use styles)
+                if widget_class == 'Frame':
+                    # Check if it's the portrait frame (should keep accent color)
+                    try:
+                        current_bg = str(widget.cget('bg'))
+                        # If it's a hunter accent color, keep it
+                        if hunter_accent and current_bg == hunter_accent:
+                            pass  # Keep accent color
+                        else:
+                            widget.configure(bg=self.DARK_BG)
+                    except:
+                        widget.configure(bg=self.DARK_BG)
+                elif widget_class == 'Label':
+                    try:
+                        current_bg = str(widget.cget('bg'))
+                        # Preserve hunter accent backgrounds (portrait area)
+                        if hunter_accent and current_bg == hunter_accent:
+                            pass  # Keep accent color
+                        else:
+                            widget.configure(bg=self.DARK_BG, fg=self.DARK_TEXT)
+                    except:
+                        widget.configure(bg=self.DARK_BG, fg=self.DARK_TEXT)
+                elif widget_class == 'Labelframe':
+                    widget.configure(bg=self.DARK_BG, fg=self.DARK_TEXT)
+                elif widget_class == 'Spinbox':
+                    widget.configure(bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT,
+                                   insertbackground=self.DARK_TEXT)
+                elif widget_class == 'Text':
+                    widget.configure(bg=self.DARK_BG_TERTIARY, fg=self.DARK_TEXT,
+                                   insertbackground=self.DARK_TEXT)
+                elif widget_class == 'Checkbutton':
+                    widget.configure(bg=self.DARK_BG, fg=self.DARK_TEXT,
+                                   selectcolor=self.DARK_BG_SECONDARY,
+                                   activebackground=self.DARK_BG)
+                elif widget_class == 'Canvas':
+                    widget.configure(bg=self.DARK_BG_SECONDARY)
+                
+                # Recurse into children
+                for child in widget.winfo_children():
+                    update_widget_colors(child, hunter_accent)
+            except Exception:
+                pass  # Skip widgets that don't support these options
+        
+        # Update each hunter tab
+        for hunter_name, tab in self.hunter_tabs.items():
+            if tab._content_initialized and hasattr(tab, 'frame'):
+                # Get the current accent color for this hunter
+                hunter_accent = None
+                if hunter_name in self.arena_themes:
+                    hunter_accent = self.arena_themes[hunter_name]["accent_color"]
+                
+                update_widget_colors(tab.frame, hunter_accent)
+                
+                # Also update sub-notebook frames if they exist
+                if hasattr(tab, 'sub_notebook'):
+                    for child in tab.sub_notebook.winfo_children():
+                        update_widget_colors(child, hunter_accent)
+
+    def _update_control_button_colors(self):
+        """Update Run/Stop button colors based on current theme (colorblind-safe)."""
+        if not hasattr(self, 'run_all_btn') or not hasattr(self, 'stop_all_btn'):
+            return
+        
+        # Determine colors based on theme
+        is_light = self.DARK_BG in ["#f5f5f5", "#ffffff"]
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name
+        
+        if is_light:
+            if is_colorblind:
+                # Colorblind: blue/gray, NO red or green
+                run_bg = "#0066cc"  # Blue for run
+                run_active = "#0077dd"
+                stop_bg = "#666666"  # Gray for stop
+                stop_active = "#888888"
+            else:
+                run_bg = "#28a745"  # Green for light themes
+                run_active = "#218838"
+                stop_bg = "#dc3545"  # Red for light themes
+                stop_active = "#c82333"
+        else:
+            if theme_name == "Protanopia (Red-blind)":
+                # NO red - use blue/gray
+                run_bg = "#004499"  # Blue
+                run_active = "#0055aa"
+                stop_bg = "#555555"  # Gray
+                stop_active = "#777777"
+            elif theme_name == "Deuteranopia (Green-blind)":
+                # NO green - use blue/gray
+                run_bg = "#004499"  # Blue
+                run_active = "#0055aa"
+                stop_bg = "#555555"  # Gray
+                stop_active = "#777777"
+            elif theme_name == "Tritanopia (Blue-blind)":
+                # NO blue - use green/gray
+                run_bg = "#227722"  # Green
+                run_active = "#339933"
+                stop_bg = "#555555"  # Gray
+                stop_active = "#777777"
+            elif is_colorblind:
+                # Fallback for any other colorblind type
+                run_bg = "#555555"  # Gray
+                run_active = "#666666"
+                stop_bg = "#444444"  # Darker gray
+                stop_active = "#555555"
+            else:
+                run_bg = self.DARK_ACCENT if self.DARK_ACCENT != "#00ff00" else "#2d5a27"
+                run_active = "#3d7a37"
+                stop_bg = "#8b2500"
+                stop_active = "#ab3500"
+        
+        # Update button colors
+        self.run_all_btn.configure(bg=run_bg, activebackground=run_active)
+        self.stop_all_btn.configure(bg=stop_bg, activebackground=stop_active)
+        
+        # Re-apply hunter-specific ttk styles with new arena colors
+        self._update_hunter_ttk_styles()
+    
+    def _update_hunter_tab_colors(self):
+        """Update hunter tab colors to reflect current theme/colorblind settings."""
+        if not hasattr(self, 'main_notebook') or not hasattr(self, 'arena_themes'):
+            return
+        
+        # Get current arena theme colors
+        for i, (name, _) in enumerate([("Borge", None), ("Ozzy", None), ("Knox", None)]):
+            if name in self.arena_themes:
+                color = self.arena_themes[name]["accent_color"]
+                icon = '🛡️' if name == 'Borge' else '🔫' if name == 'Knox' else '🐙'
+                # Note: ttk.Notebook doesn't support direct tab foreground color changes easily
+                # But we can update the tab text to reflect the change
+                try:
+                    self.main_notebook.tab(i + 1, text=f"  {icon} {name}  ")  # +1 to skip Control tab
+                except:
+                    pass
+    
+    def _update_hunter_colors_for_theme(self, theme_name: str):
+        """Update hunter arena colors to be colorblind-safe based on active theme."""
+        # Check if arena_themes exists yet (might be called during initialization)
+        if not hasattr(self, 'arena_themes') or not hasattr(self, 'arena_themes_default'):
+            return
+        
+        if theme_name == "Protanopia (Red-blind)":
+            # Red-blind: NO red, orange, pink, purple, magenta
+            # Safe: Blue, Yellow, Cyan, Gray, Black
+            self.arena_themes["Borge"]["accent_color"] = "#0066cc"  # Pure Blue
+            self.arena_themes["Knox"]["accent_color"] = "#ccaa00"  # Yellow/Gold
+            self.arena_themes["Ozzy"]["accent_color"] = "#008888"  # Teal/Cyan
+        elif theme_name == "Deuteranopia (Green-blind)":
+            # Green-blind: NO green, lime, cyan, teal
+            # Safe: Blue, Red, Orange, Magenta, Yellow, Gray
+            self.arena_themes["Borge"]["accent_color"] = "#cc4400"  # Orange (no green)
+            self.arena_themes["Knox"]["accent_color"] = "#0055cc"  # Blue
+            self.arena_themes["Ozzy"]["accent_color"] = "#cc44aa"  # Magenta/Pink
+        elif theme_name == "Tritanopia (Blue-blind)":
+            # Blue-blind: NO blue, cyan, purple, violet
+            # Safe: Red, Orange, Yellow, Green, Gray
+            self.arena_themes["Borge"]["accent_color"] = "#cc2222"  # Red
+            self.arena_themes["Knox"]["accent_color"] = "#cc8800"  # Orange
+            self.arena_themes["Ozzy"]["accent_color"] = "#228822"  # Green
+        else:
+            # Default themes: restore original colors
+            for hunter in ["Borge", "Knox", "Ozzy"]:
+                self.arena_themes[hunter]["accent_color"] = self.arena_themes_default[hunter]["accent_color"]
+        
+        # Now update the actual UI elements with the new colors
+        self._apply_hunter_colors_to_ui()
+        
+        # Force update all section headers with new colors (only if hunter_tabs exists)
+        if hasattr(self, 'hunter_tabs'):
+            for hunter_name, tab in self.hunter_tabs.items():
+                if tab._content_initialized and hasattr(tab, '_update_header_color'):
+                    try:
+                        tab._update_header_color()
+                    except:
+                        pass
+    
+    def _apply_hunter_colors_to_ui(self):
+        """Apply current arena theme colors to all hunter UI elements (sidebars, text)."""
+        if not hasattr(self, 'hunter_tabs') or not hasattr(self, 'arena_themes'):
+            return
+        
+        for hunter_name, tab in self.hunter_tabs.items():
+            # Update colors dict reference (even for uninitialized tabs)
+            if hunter_name in self.arena_themes:
+                new_color = self.arena_themes[hunter_name]["accent_color"]
+                HUNTER_COLORS[hunter_name]["primary"] = new_color
+                HUNTER_COLORS[hunter_name]["accent"] = new_color
+                tab.colors = HUNTER_COLORS[hunter_name]
+            
+            # Update UI elements if tab is initialized
+            if tab._content_initialized:
+                # Update portrait frame background if it exists
+                if hasattr(tab, 'portrait_frame') and tab.portrait_frame:
+                    new_color = self.arena_themes[hunter_name]["accent_color"]
+                    try:
+                        tab.portrait_frame.configure(bg=new_color)
+                        # Update name label
+                        if hasattr(tab, 'name_label') and tab.name_label:
+                            tab.name_label.configure(bg=new_color)
+                        # Update portrait label
+                        if hasattr(tab, 'portrait_label') and tab.portrait_label:
+                            tab.portrait_label.configure(bg=new_color)
+                    except:
+                        pass
+        
+        # Update all text widget tag colors to be colorblind-safe
+        self._update_all_text_tags()
+        
+        # Update colored labels (hunter-specific colored text)
+        self._update_colored_labels()
+        
+        # Update hunter selection checkboxes (Select: Borge/Knox/Ozzy)
+        self._update_hunter_select_checkboxes()
+        
+        # Update Rust status label color
+        self._update_rust_status_color()
+        
+        # Update global UI elements
+        self._update_global_ui_colors()
+    
+    def _update_global_ui_colors(self):
+        """Update global UI elements (progress, top bar) with current theme colors."""
+        # Update global progress canvas
+        if hasattr(self, 'global_progress_canvas') and self.global_progress_canvas.winfo_exists():
+            self.global_progress_canvas.configure(
+                bg=self.DARK_BG_SECONDARY,
+                highlightbackground=self.DARK_BORDER
+            )
+        
+        # Update top bar
+        if hasattr(self, 'top_bar') and self.top_bar.winfo_exists():
+            self.top_bar.configure(bg=self.DARK_BG)
+        
+        # Update theme frame
+        if hasattr(self, 'theme_frame') and self.theme_frame.winfo_exists():
+            self.theme_frame.configure(bg=self.DARK_BG)
+        
+        # Update theme label
+        if hasattr(self, 'theme_label') and self.theme_label.winfo_exists():
+            self.theme_label.configure(bg=self.DARK_BG, fg=self.DARK_TEXT)
+        
+        # Update global log colors
+        if hasattr(self, 'global_log') and self.global_log.winfo_exists():
+            self.global_log.configure(
+                bg=self.DARK_BG_TERTIARY,
+                fg=self.DARK_TEXT,
+                insertbackground=self.DARK_TEXT
+            )
+            # Update log tag colors for colorblind safety
+            if hasattr(self, '_configure_global_log_tags'):
+                self._configure_global_log_tags()
+        
+        # Ensure main notebook tabs stay hidden (using ColorfulTabBar instead)
+        self._setup_hidden_notebook_style()
+    
+    def _setup_hidden_notebook_style(self):
+        """Setup a style that hides notebook tabs (content controlled by custom tab bar)."""
+        style = ttk.Style()
+        # Create a layout with no tab area
+        style.layout("Hidden.TNotebook", [
+            ("Hidden.TNotebook.client", {"sticky": "nswe"})
+        ])
+        style.layout("Hidden.TNotebook.Tab", [])  # Empty layout = no tabs visible
+        style.configure("Hidden.TNotebook", background=self.DARK_BG)
+        self.main_notebook.configure(style="Hidden.TNotebook")
+    
+    def _create_main_tab_bar(self, is_colorblind: bool = False):
+        """Create the colorful main tab bar above the notebook."""
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_light = theme_name in ["Light", "White/Black"] or "blind" in theme_name.lower()
+        
+        # Determine colors based on theme
+        if is_light:
+            bg_color = "#e0e0e0"
+            selected_bg = "#ffffff"
+        else:
+            bg_color = self.DARK_BG
+            selected_bg = "#2a2a40"
+        
+        # Define tab configurations: (name, emoji, text_color)
+        if is_colorblind:
+            # Colorblind: all neutral gray, no colors
+            tab_configs = [
+                ("Control", "⚙️", "#555555" if is_light else "#c0c0d0"),
+                ("Borge", "🛡️", "#555555" if is_light else "#c0c0d0"),
+                ("Ozzy", "🐙", "#555555" if is_light else "#c0c0d0"),
+                ("Knox", "🔫", "#555555" if is_light else "#c0c0d0"),
+            ]
+        else:
+            # Non-colorblind: COLORFUL text!
+            if is_light:
+                tab_configs = [
+                    ("Control", "⚙️", "#666666"),      # Gray
+                    ("Borge", "🛡️", "#cc2222"),        # Red
+                    ("Ozzy", "🐙", "#118844"),         # Green
+                    ("Knox", "🔫", "#0055cc"),         # Blue
+                ]
+            else:
+                tab_configs = [
+                    ("Control", "⚙️", "#c0c0d0"),      # Silver
+                    ("Borge", "🛡️", "#ff6666"),        # Bright red
+                    ("Ozzy", "🐙", "#66dd66"),         # Bright green
+                    ("Knox", "🔫", "#66aaff"),         # Bright blue
+                ]
+        
+        # Create the tab bar
+        self.main_tab_bar = ColorfulTabBar(
+            parent=self.root,
+            notebook=self.main_notebook,
+            tabs=tab_configs,
+            bg_color=bg_color,
+            selected_bg=selected_bg,
+            font=('Arial', 12, 'bold'),
+            padding=15,
+            is_main=True
+        )
+        self.main_tab_bar.pack(fill=tk.X, padx=5, pady=(5, 0))
+    
+    def _update_main_tab_bar_colors(self):
+        """Update main tab bar colors based on current theme."""
+        if not hasattr(self, 'main_tab_bar'):
+            return
+        
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name.lower()
+        is_light = theme_name in ["Light", "White/Black"] or is_colorblind
+        
+        # Determine background colors
+        if is_light:
+            bg_color = "#e0e0e0"
+            selected_bg = "#ffffff"
+        else:
+            bg_color = self.DARK_BG
+            selected_bg = "#2a2a40"
+        
+        # Determine text colors
+        if is_colorblind:
+            text_color = "#555555" if is_light else "#c0c0d0"
+            tab_colors = [text_color, text_color, text_color, text_color]
+        else:
+            if is_light:
+                tab_colors = ["#666666", "#cc2222", "#118844", "#0055cc"]
+            else:
+                tab_colors = ["#c0c0d0", "#ff6666", "#66dd66", "#66aaff"]
+        
+        self.main_tab_bar.update_colors(bg_color, selected_bg, tab_colors)
+
+    def _darken_color(self, hex_color: str, factor: float = 0.8) -> str:
+        """Darken a hex color by a factor (0-1)."""
+        try:
+            # Remove '#' if present
+            hex_color = hex_color.lstrip('#')
+            # Convert to RGB
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            # Darken
+            r, g, b = int(r * factor), int(g * factor), int(b * factor)
+            # Convert back to hex
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except:
+            return hex_color
+    
+    def _lighten_color(self, hex_color: str, factor: float = 1.3) -> str:
+        """Lighten a hex color by a factor (>1)."""
+        try:
+            # Remove '#' if present
+            hex_color = hex_color.lstrip('#')
+            # Convert to RGB
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            # Lighten
+            r = min(255, int(r * factor))
+            g = min(255, int(g * factor))
+            b = min(255, int(b * factor))
+            # Convert back to hex
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except:
+            return hex_color
+    
+    def _get_health_color(self, hp_percent: float) -> str:
+        """Get colorblind-safe health bar color based on HP percentage."""
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        
+        if theme_name == "Protanopia (Red-blind)" or theme_name == "Deuteranopia (Green-blind)":
+            # Red/green blind: use blue (high) to orange (low)
+            if hp_percent > 0.5:
+                return '#4a90ff'  # Blue - healthy
+            elif hp_percent > 0.25:
+                return '#ffaa44'  # Orange - warning
+            else:
+                return '#ff6600'  # Dark orange - critical
+        elif theme_name == "Tritanopia (Blue-blind)":
+            # Blue-blind: use green to red (they can see these)
+            if hp_percent > 0.5:
+                return '#00dd88'  # Cyan-green
+            elif hp_percent > 0.25:
+                return '#ffdd00'  # Yellow
+            else:
+                return '#ff4466'  # Red
+        else:
+            # Default: traditional green/yellow/red
+            if hp_percent > 0.5:
+                return '#00FF00'
+            elif hp_percent > 0.25:
+                return '#FFFF00'
+            else:
+                return '#FF0000'
+    
+    def _get_negative_color(self) -> str:
+        """Get colorblind-safe negative/danger color."""
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        
+        if theme_name == "Protanopia (Red-blind)" or theme_name == "Deuteranopia (Green-blind)":
+            return '#ff8844'  # Orange instead of red
+        elif theme_name == "Tritanopia (Blue-blind)":
+            return '#ff4466'  # Red (they can see it)
+        else:
+            return '#FF6666'  # Default red
+    
+    def _update_hunter_ttk_styles(self):
+        """Update hunter-specific ttk styles with current arena_themes colors."""
+        if not hasattr(self, 'arena_themes'):
+            return
+        
+        style = ttk.Style()
+        
+        for hunter, colors in HUNTER_COLORS.items():
+            # Get colorblind-safe color from arena_themes
+            hunter_color = self.arena_themes.get(hunter, {}).get('accent_color', colors["primary"])
+            
+            # Update all hunter-specific styles
+            style.configure(f"{hunter}.TNotebook.Tab", foreground=hunter_color)
+            style.configure(f"{hunter}.TLabel", foreground=hunter_color)
+            style.configure(f"{hunter}Light.TLabel", foreground=hunter_color)
+            style.configure(f"{hunter}.TLabelframe", bordercolor=hunter_color)
+            style.configure(f"{hunter}.TLabelframe.Label", foreground=hunter_color)
+            style.configure(f"{hunter}.Horizontal.TProgressbar", background=hunter_color)
+            style.configure(f"{hunter}.TButton", foreground=hunter_color)
+        
+        # Update all section headers in hunter tabs
+        for hunter_name, tab in self.hunter_tabs.items():
+            if not tab._content_initialized:
+                continue
+            
+            hunter_color = self.arena_themes.get(hunter_name, {}).get('accent_color', '#DC3545')
+            
+            # Update build config header using tab's method
+            if hasattr(tab, '_update_header_color'):
+                try:
+                    tab._update_header_color()
+                except:
+                    pass
+            
+            # Also update directly for safety
+            if hasattr(tab, 'build_config_header') and tab.build_config_header.winfo_exists():
+                tab.build_config_header.configure(bg=hunter_color)
+                if hasattr(tab, 'build_config_header_label'):
+                    tab.build_config_header_label.configure(bg=hunter_color)
+            
+            # Update section headers
+            if hasattr(tab, 'section_headers'):
+                for header_frame, header_label in tab.section_headers:
+                    try:
+                        if header_frame.winfo_exists():
+                            header_frame.configure(bg=hunter_color)
+                            header_label.configure(bg=hunter_color)
+                    except:
+                        pass
+    
+    def _restart_gui(self):
+        """Restart the GUI application to fully apply theme changes."""
+        import sys
+        import os
+        
+        # Get the script path
+        script = sys.argv[0]
+        
+        # Close current window
+        self.root.destroy()
+        
+        # Restart using the same python executable
+        if getattr(sys, 'frozen', False):
+            # Running as exe
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        else:
+            # Running as script
+            os.execv(sys.executable, [sys.executable, script] + sys.argv[1:])
+    
+    def _update_all_text_tags(self):
+        """Update text tag colors in all text widgets to be colorblind-safe for current theme."""
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        
+        # Determine colorblind-safe positive/negative colors
+        if theme_name == "Protanopia (Red-blind)":
+            positive_color = "#4a90ff"  # Blue instead of green
+            negative_color = "#ff8844"  # Orange instead of red
+        elif theme_name == "Deuteranopia (Green-blind)":
+            positive_color = "#4a90ff"  # Blue instead of green
+            negative_color = "#ff8844"  # Orange instead of red
+        elif theme_name == "Tritanopia (Blue-blind)":
+            positive_color = "#00dd88"  # Cyan-green (still visible)
+            negative_color = "#ff4466"  # Red (visible to blue-blind)
+        else:
+            positive_color = "#00ff88"  # Default bright green
+            negative_color = "#ff6666"  # Default red
+        
+        # Update all hunter tabs
+        if hasattr(self, 'hunter_tabs'):
+            for tab in self.hunter_tabs.values():
+                if not tab._content_initialized:
+                    continue
+                
+                # Get all text widgets in this tab
+                text_widgets = []
+                if hasattr(tab, 'result_tabs'):
+                    text_widgets.extend(tab.result_tabs.values())
+                if hasattr(tab, 'advisor_results'):
+                    text_widgets.append(tab.advisor_results)
+                if hasattr(tab, 'log_text'):
+                    text_widgets.append(tab.log_text)
+                
+                # Update tag colors
+                for text_widget in text_widgets:
+                    if text_widget and text_widget.winfo_exists():
+                        text_widget.tag_configure("positive", foreground=positive_color)
+                        text_widget.tag_configure("negative", foreground=negative_color)
+    
+    def _update_colored_labels(self):
+        """Update all colored labels (hunter-specific colors) based on current theme."""
+        if not hasattr(self, 'colored_labels') or not hasattr(self, 'arena_themes'):
+            return
+        
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name
+        
+        if is_colorblind:
+            # Colorblind: use neutral colors instead of hunter colors
+            color_map = {
+                'borge': self.DARK_TEXT,
+                'ozzy': self.DARK_TEXT,
+                'knox': self.DARK_TEXT
+            }
+        else:
+            # Non-colorblind: use hunter accent colors
+            color_map = {
+                'borge': self.arena_themes.get('Borge', {}).get('accent_color', '#DC3545'),
+                'ozzy': self.arena_themes.get('Ozzy', {}).get('accent_color', '#198754'),
+                'knox': self.arena_themes.get('Knox', {}).get('accent_color', '#0D6EFD')
+            }
+        
+        # Update all stored colored labels
+        for widget, color_key in self.colored_labels:
+            if widget.winfo_exists():
+                color = color_map.get(color_key, self.DARK_TEXT)
+                widget.configure(foreground=color)
+    
+    def _update_hunter_select_checkboxes(self):
+        """Update hunter selection checkbox colors based on current theme."""
+        if not hasattr(self, 'hunter_select_checkboxes') or not hasattr(self, 'arena_themes'):
+            return
+        
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name
+        
+        for hunter_key, cb in self.hunter_select_checkboxes.items():
+            if cb.winfo_exists():
+                if is_colorblind:
+                    # Colorblind: use neutral text color
+                    color = self.DARK_TEXT
+                else:
+                    # Non-colorblind: use hunter accent colors
+                    color = self.arena_themes.get(hunter_key, {}).get('accent_color', self.DARK_TEXT)
+                cb.configure(fg=color)
+    
+    def _update_rust_status_color(self):
+        """Update Rust status label color based on colorblind settings."""
+        if not hasattr(self, 'rust_status_label'):
+            return
+        
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name
+        
+        if RUST_AVAILABLE:
+            color = "#0066cc" if is_colorblind else "green"
+        else:
+            color = "#888888" if is_colorblind else "red"
+        
+        if self.rust_status_label.winfo_exists():
+            self.rust_status_label.configure(foreground=color)
+    
+    def _get_config_dir(self) -> Path:
+        """Get the appropriate config directory (AppData for exe, script dir for source)."""
+        # Check if running as frozen exe
+        is_frozen = getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
+        
+        if is_frozen:
+            # Running as exe - use AppData
+            if sys.platform == 'win32':
+                config_dir = Path(os.environ.get('APPDATA', Path.home())) / 'hunter-sim'
+            else:
+                # Linux/Mac - use home directory
+                config_dir = Path.home() / '.hunter-sim'
+            
+            # Create directory if it doesn't exist
+            config_dir.mkdir(parents=True, exist_ok=True)
+            return config_dir
+        else:
+            # Running from source - use script directory
+            return Path(__file__).parent
+    
+    def _save_theme_preference(self, theme_name: str):
+        """Save theme preference to config file."""
+        try:
+            config_file = self._get_config_dir() / "gui_config.json"
+            config = {}
+            
+            # Load existing config if it exists
+            if config_file.exists():
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+            
+            # Update theme
+            config["theme"] = theme_name
+            
+            # Save config
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"[THEME] Saved preference to: {config_file}")
+        except Exception as e:
+            print(f"[THEME] Failed to save theme preference: {e}")
+    
+    def _load_theme_preference(self) -> str:
+        """Load theme preference from config file."""
+        try:
+            config_file = self._get_config_dir() / "gui_config.json"
+            print(f"[THEME] Looking for config at: {config_file}")
+            if config_file.exists():
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                    theme = config.get("theme", "Dark")
+                    print(f"[THEME] Loaded theme: {theme}")
+                    return theme
+            else:
+                print(f"[THEME] Config file not found, using default 'Dark'")
+        except Exception as e:
+            print(f"[THEME] Failed to load theme preference: {e}")
+        
+        return "Dark"  # Default theme
     
     def _setup_styles(self):
         """Configure ttk styles with hunter colors and dark theme."""
@@ -4113,23 +6139,73 @@ class MultiHunterGUI:
         style.map("TButton",
                  background=[("active", "#5a5a8a"), ("pressed", "#3a3a5a")])
         
-        # TCheckbutton - dark with bright checkmark
+        # TCheckbutton - colorblind-safe checkmark colors
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name
+        is_green_blind = "Deuteranopia" in theme_name
+        
+        if is_colorblind:
+            # Colorblind: use neutral black/gray checkmarks (universally safe)
+            check_fg = "#222222"  # Dark gray/black
+            check_bg = "#888888"  # Medium gray when selected
+        else:
+            # Non-colorblind: bright green
+            check_fg = "#00ff88"
+            check_bg = "#2a4a3a"
+        
         style.configure("TCheckbutton", background=self.DARK_BG, foreground=self.DARK_TEXT,
                        indicatorbackground=self.DARK_BG_SECONDARY,
-                       indicatorforeground="#00ff88")  # Bright green checkmark
+                       indicatorforeground=check_fg)
         style.map("TCheckbutton",
                  background=[("active", self.DARK_BG)],
-                 indicatorbackground=[("selected", "#2a4a3a")],  # Dark green bg when selected
-                 indicatorforeground=[("selected", "#00ff88")])  # Bright green X when checked
+                 indicatorbackground=[("selected", check_bg)],
+                 indicatorforeground=[("selected", check_fg)])
         
-        # TNotebook - dark tabs
-        style.configure("TNotebook", background=self.DARK_BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=self.DARK_BG_SECONDARY,
-                       foreground=self.DARK_TEXT, padding=[12, 4],
-                       font=('Arial', 10, 'bold'))
-        style.map("TNotebook.Tab",
-                 background=[("selected", self.DARK_BG), ("active", self.DARK_ACCENT)],
-                 foreground=[("selected", "#ffffff"), ("active", "#ffffff")])
+        # TNotebook - styled tabs for SUB-TABS (Build/Run/Advisor/Best/Generations)
+        is_light_theme = self.DARK_BG in ["#f5f5f5", "#fafafa", "#ffffff"]
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name
+        
+        if is_light_theme:
+            style.configure("TNotebook", background=self.DARK_BG, borderwidth=0)
+            if is_colorblind:
+                # Colorblind: neutral gray, no accent colors
+                style.configure("TNotebook.Tab", background="#d8d8e8",
+                              foreground="#444444", padding=[12, 4],
+                              font=('Arial', 10, 'bold'))
+                style.map("TNotebook.Tab",
+                         background=[("selected", "#ffffff"), ("active", "#e8e8f0")],
+                         foreground=[("selected", "#000000"), ("active", "#333333")])
+            else:
+                # Non-colorblind: colorful blue text!
+                style.configure("TNotebook.Tab", background="#e0e0e8",
+                              foreground="#4466aa", padding=[12, 4],  # Blue text
+                              font=('Arial', 10, 'bold'))
+                style.map("TNotebook.Tab",
+                         background=[("selected", "#ffffff"), ("active", "#e8e8f0")],
+                         foreground=[("selected", "#2244aa"), ("active", "#3355bb")])
+        else:
+            style.configure("TNotebook", background=self.DARK_BG, borderwidth=0)
+            if is_colorblind:
+                # Colorblind: neutral gray, no accent colors
+                style.configure("TNotebook.Tab", background=self.DARK_BG_SECONDARY,
+                              foreground="#b0b0c0", padding=[12, 4],
+                              font=('Arial', 10, 'bold'))
+                style.map("TNotebook.Tab",
+                         background=[("selected", self.DARK_BG), ("active", self.DARK_ACCENT)],
+                         foreground=[("selected", "#ffffff"), ("active", "#d0d0e0")])
+            else:
+                # Non-colorblind Dark: COLORFUL sub-tabs!
+                # Purple/violet theme for sub-tabs with bright accents
+                style.configure("TNotebook.Tab", background="#2a2a40",
+                              foreground="#bb99ff", padding=[12, 4],  # Light purple text
+                              font=('Arial', 10, 'bold'))
+                style.map("TNotebook.Tab",
+                         background=[("selected", self.DARK_BG), ("active", "#3a3a5a")],
+                         foreground=[("selected", "#ddccff"), ("active", "#ccaaff")])
+        
+        # Note: Main notebook tabs are hidden - we use ColorfulTabBar instead
+        # BigTab styles are no longer needed
         
         # TProgressbar - dark with accent
         style.configure("Horizontal.TProgressbar",
@@ -4180,40 +6256,43 @@ class MultiHunterGUI:
         style.configure("Dark.Vertical.TScrollbar", background=self.DARK_BG_SECONDARY,
                        troughcolor=self.DARK_BG, borderwidth=0)
         
-        # Configure styles for each hunter
+        # Configure styles for each hunter using arena_themes (colorblind-safe)
         for hunter, colors in HUNTER_COLORS.items():
+            # Get colorblind-safe color from arena_themes
+            hunter_color = self.arena_themes.get(hunter, {}).get('accent_color', colors["primary"])
+            
             # Tab style - colored text
             style.configure(f"{hunter}.TNotebook.Tab", 
-                          foreground=colors["dark"],
+                          foreground=hunter_color,
                           font=('Arial', 10, 'bold'))
             
             # Label styles (dark theme compatible)
             style.configure(f"{hunter}.TLabel",
                           background=self.DARK_BG,
-                          foreground=colors["primary"],
+                          foreground=hunter_color,
                           font=('Arial', 10, 'bold'))
             
             style.configure(f"{hunter}Light.TLabel",
                           background=self.DARK_BG,
-                          foreground=colors["light"])
+                          foreground=hunter_color)
             
             # Frame style with colored border effect
             style.configure(f"{hunter}.TLabelframe",
                           background=self.DARK_BG,
-                          bordercolor=colors["primary"])
+                          bordercolor=hunter_color)
             style.configure(f"{hunter}.TLabelframe.Label",
                           background=self.DARK_BG,
-                          foreground=colors["primary"],
+                          foreground=hunter_color,
                           font=('Arial', 10, 'bold'))
             
             # Progress bar colors
             style.configure(f"{hunter}.Horizontal.TProgressbar",
                           troughcolor=self.DARK_BG_TERTIARY,
-                          background=colors["primary"])
+                          background=hunter_color)
             
             # Button style
             style.configure(f"{hunter}.TButton",
-                          foreground=colors["primary"])
+                          foreground=hunter_color)
     
     def _save_global_bonuses(self, *args):
         """Save global bonuses to file."""
@@ -4270,12 +6349,27 @@ class MultiHunterGUI:
             gem_creation_node2 = safe_get_int(self.global_gem_creation_node2)
             gem_creation_node3 = safe_get_int(self.global_gem_creation_node3)
             
+            # Loop Mods (LMOuro)
+            lm_ouro1 = safe_get_int(self.global_lm_ouro1)
+            lm_ouro11 = safe_get_int(self.global_lm_ouro11)
+            lm_ouro18 = safe_get_int(self.global_lm_ouro18)
+            
+            # XP Bonuses (POM/POI/POK)
+            pom3 = safe_get_int(self.global_pom3)
+            poi3 = safe_get_int(self.global_poi3)
+            pok3 = safe_get_int(self.global_pok3)
+            
+            # Skill 6 and Wastarian
+            skill6_loot = safe_get_float(self.global_skill6_loot_bonus)
+            wastarian_loot = safe_get_int(self.global_wastarian_relic_loot_bonus)
+            
             all_values = [shard, relic7, research81, scavenger, scavenger2, 
                           diamond, cm46, cm47, cm48, cm51, gaiden, iridian, iap, ultima,
                           relic_r4, relic_r16, relic_r17, relic_r19,
                           gem_attraction, gem_loot_borge, gem_loot_ozzy, gem_catchup, 
                           gem_attraction_node3, gem_innovation_node3,
-                          gem_creation_node1, gem_creation_node2, gem_creation_node3]
+                          gem_creation_node1, gem_creation_node2, gem_creation_node3,
+                          lm_ouro1, lm_ouro11, lm_ouro18, pom3, poi3, pok3, skill6_loot, wastarian_loot]
             
             if any(v is None for v in all_values):
                 return  # Skip save during invalid typing
@@ -4309,7 +6403,18 @@ class MultiHunterGUI:
                 "gem_innovation_node3": gem_innovation_node3,
                 "gem_creation_node1": gem_creation_node1,
                 "gem_creation_node2": gem_creation_node2,
-                "gem_creation_node3": gem_creation_node3
+                "gem_creation_node3": gem_creation_node3,
+                # Loop Mods (LMOuro) - critical for endgame loot accuracy!
+                "lm_ouro1": lm_ouro1,
+                "lm_ouro11": lm_ouro11,
+                "lm_ouro18": lm_ouro18,
+                # XP Bonuses (HuntersAttributes)
+                "pom3": pom3,
+                "poi3": poi3,
+                "pok3": pok3,
+                # Skill 6 and Wastarian
+                "skill6_loot_bonus": skill6_loot,
+                "wastarian_relic_loot_bonus": wastarian_loot
             }
             IRL_BUILDS_PATH.mkdir(exist_ok=True)
             with open(GLOBAL_BONUSES_FILE, 'w') as f:
@@ -4352,6 +6457,17 @@ class MultiHunterGUI:
                 self.global_gem_creation_node1.set(config.get("gem_creation_node1", 0))
                 self.global_gem_creation_node2.set(config.get("gem_creation_node2", 0))
                 self.global_gem_creation_node3.set(config.get("gem_creation_node3", 0))
+                # Loop Mods (LMOuro)
+                self.global_lm_ouro1.set(config.get("lm_ouro1", 0))
+                self.global_lm_ouro11.set(config.get("lm_ouro11", 0))
+                self.global_lm_ouro18.set(config.get("lm_ouro18", 0))
+                # XP Bonuses (HuntersAttributes)
+                self.global_pom3.set(config.get("pom3", 0))
+                self.global_poi3.set(config.get("poi3", 0))
+                self.global_pok3.set(config.get("pok3", 0))
+                # Skill 6 and Wastarian
+                self.global_skill6_loot_bonus.set(float(config.get("skill6_loot_bonus", 0.0) or 0.0))
+                self.global_wastarian_relic_loot_bonus.set(int(config.get("wastarian_relic_loot_bonus", 0) or 0))
                 self._log("✅ Loaded global bonuses")
             except Exception as e:
                 self._log(f"⚠️ Failed to load global bonuses: {e}")
@@ -4361,18 +6477,13 @@ class MultiHunterGUI:
         control_frame = self.control_frame  # Use the pre-created frame
         control_frame.configure(style="Dark.TFrame")
         
-        # Split into left (settings) and right (battle arena + run controls)
-        left_frame = tk.Frame(control_frame, bg=self.DARK_BG)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Single-column layout (no scrollbar needed) - fill vertical space
+        main_container = tk.Frame(control_frame, bg=self.DARK_BG)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        right_frame = tk.Frame(control_frame, bg=self.DARK_BG)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=5, pady=5)
-        
-        # Battle arena removed for performance
-        
-        # ============ RUN CONTROLS (below arena) ============
-        run_panel = tk.Frame(right_frame, bg=self.DARK_BG_SECONDARY, relief='groove', bd=1)
-        run_panel.pack(fill=tk.X, padx=5, pady=5)
+        # ============ RUN CONTROLS (top section) ============
+        run_panel = tk.Frame(main_container, bg=self.DARK_BG_SECONDARY, relief='groove', bd=1)
+        run_panel.pack(fill=tk.X, pady=(0, 10))
         
         run_label = tk.Label(run_panel, text="🚀 Run Optimizations", 
                             bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT, font=('Arial', 10, 'bold'))
@@ -4382,17 +6493,35 @@ class MultiHunterGUI:
         btn_frame = tk.Frame(run_panel, bg=self.DARK_BG_SECONDARY)
         btn_frame.pack(fill=tk.X, padx=10, pady=5)
         
+        # Get colorblind-safe button colors per theme
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        if theme_name == "Protanopia (Red-blind)":
+            # NO red - use blue/gray
+            run_bg, run_active = "#004499", "#0055aa"  # Blue
+            stop_bg, stop_active = "#555555", "#777777"  # Gray
+        elif theme_name == "Deuteranopia (Green-blind)":
+            # NO green - use blue/gray
+            run_bg, run_active = "#004499", "#0055aa"  # Blue
+            stop_bg, stop_active = "#555555", "#777777"  # Gray
+        elif theme_name == "Tritanopia (Blue-blind)":
+            # NO blue - use green/gray
+            run_bg, run_active = "#227722", "#339933"  # Green
+            stop_bg, stop_active = "#555555", "#777777"  # Gray
+        else:
+            run_bg, run_active = "#2d5a27", "#3d7a37"  # Green
+            stop_bg, stop_active = "#8b2500", "#ab3500"  # Red
+        
         self.run_all_btn = tk.Button(btn_frame, text="🚀 Run ALL Hunters", 
                                      command=self._run_all_hunters,
-                                     bg='#2d5a27', fg='white', font=('Arial', 10, 'bold'),
-                                     activebackground='#3d7a37', activeforeground='white',
+                                     bg=run_bg, fg='white', font=('Arial', 10, 'bold'),
+                                     activebackground=run_active, activeforeground='white',
                                      relief='raised', bd=2, padx=10, pady=5)
         self.run_all_btn.pack(side=tk.LEFT, padx=5)
         
         self.stop_all_btn = tk.Button(btn_frame, text="⏹️ Stop All", 
                                       command=self._stop_all_hunters, state=tk.DISABLED,
-                                      bg='#8b2500', fg='white', font=('Arial', 10, 'bold'),
-                                      activebackground='#ab3500', activeforeground='white',
+                                      bg=stop_bg, fg='white', font=('Arial', 10, 'bold'),
+                                      activebackground=stop_active, activeforeground='white',
                                       relief='raised', bd=2, padx=10, pady=5)
         self.stop_all_btn.pack(side=tk.LEFT, padx=5)
         
@@ -4407,43 +6536,42 @@ class MultiHunterGUI:
         self.run_knox_var = tk.BooleanVar(value=True)
         self.run_ozzy_var = tk.BooleanVar(value=True)
         
-        for name, var, color in [("🛡️ Borge", self.run_borge_var, "#DC3545"), 
-                                  ("🔫 Knox", self.run_knox_var, "#0D6EFD"),
-                                  ("🐙 Ozzy", self.run_ozzy_var, "#198754")]:
+        # Store references to hunter checkboxes for theme updates
+        self.hunter_select_checkboxes = {}
+        
+        for name, var, hunter_key in [("🛡️ Borge", self.run_borge_var, "Borge"), 
+                                       ("🔫 Knox", self.run_knox_var, "Knox"),
+                                       ("🐙 Ozzy", self.run_ozzy_var, "Ozzy")]:
+            # Get color from arena_themes (respects colorblind settings)
+            color = self.arena_themes.get(hunter_key, {}).get("accent_color", self.DARK_TEXT)
             cb = tk.Checkbutton(selection_frame, text=name, variable=var,
                                bg=self.DARK_BG_SECONDARY, fg=color, 
                                selectcolor=self.DARK_BG_TERTIARY, activebackground=self.DARK_BG_SECONDARY,
                                font=('Arial', 9, 'bold'))
             cb.pack(side=tk.LEFT, padx=8)
+            self.hunter_select_checkboxes[hunter_key] = cb
         
         # Status panel removed - individual hunter tabs show details
         self.leaderboard_labels = {}
         self.hunter_status_frames = {}
         self.all_status = tk.Label(run_panel, text="")  # Dummy for compatibility
         
+        # Store colored labels/widgets for theme updates
+        self.colored_labels = []  # List of (widget, color_key) tuples
+        
         # Initialize battle state
         # Battle arena disabled
-        # self._init_battle_arena()
         
-        # Create scrollable content for left side with dark theme
-        canvas = tk.Canvas(left_frame, bg=self.DARK_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=canvas.yview)
-        scrollable = tk.Frame(canvas, bg=self.DARK_BG)
+        # ============ SETTINGS SECTION (below run panel) ============
+        # Two-column layout for settings and bonuses
+        settings_row = tk.Frame(main_container, bg=self.DARK_BG)
+        settings_row.pack(fill=tk.BOTH, expand=True)
         
-        scrollable.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # Left column: Optimization settings
+        left_col = tk.Frame(settings_row, bg=self.DARK_BG)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
-        # Enable mousewheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # ============ GLOBAL SETTINGS ============
-        settings_frame = tk.LabelFrame(scrollable, text="⚙️ Global Optimization Settings", 
+        settings_frame = tk.LabelFrame(left_col, text="⚙️ Optimization Settings", 
                                        bg=self.DARK_BG, fg=self.DARK_TEXT, font=('Arial', 10, 'bold'))
         settings_frame.pack(fill=tk.X, padx=20, pady=10)
         
@@ -4451,21 +6579,21 @@ class MultiHunterGUI:
         row1 = tk.Frame(settings_frame, bg=self.DARK_BG)
         row1.pack(fill=tk.X, padx=10, pady=5)
         
-        tk.Label(row1, text="Simulations per build:", bg=self.DARK_BG, fg=self.DARK_TEXT).pack(side=tk.LEFT, padx=5)
+        tk.Label(row1, text="Baseline sims:", bg=self.DARK_BG, fg=self.DARK_TEXT).pack(side=tk.LEFT, padx=5)
         self.global_num_sims = tk.IntVar(value=100 if RUST_AVAILABLE else 10)
         tk.Spinbox(row1, textvariable=self.global_num_sims, from_=10, to=1000, increment=10, width=8,
                   bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT, insertbackground=self.DARK_TEXT).pack(side=tk.LEFT, padx=5)
-        tk.Label(row1, text="(100-500 recommended)", bg=self.DARK_BG, fg=self.DARK_TEXT_DIM,
+        tk.Label(row1, text="(for IRL comparison)", bg=self.DARK_BG, fg=self.DARK_TEXT_DIM,
                 font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
         
         # Builds per tier
         row2 = tk.Frame(settings_frame, bg=self.DARK_BG)
         row2.pack(fill=tk.X, padx=10, pady=5)
         
-        ttk.Label(row2, text="Builds per tier:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(row2, text="Initial generation size:").pack(side=tk.LEFT, padx=5)
         self.global_builds_per_tier = tk.IntVar(value=500)
         ttk.Spinbox(row2, textvariable=self.global_builds_per_tier, from_=100, to=10000, increment=100, width=8).pack(side=tk.LEFT, padx=5)
-        ttk.Label(row2, text="(6 tiers × this = total builds tested)", 
+        ttk.Label(row2, text="(per tier, with successive halving)", 
                   font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
         
         # CPU processes (Python only)
@@ -4488,12 +6616,22 @@ class MultiHunterGUI:
                                      state=tk.NORMAL if RUST_AVAILABLE else tk.DISABLED)
         rust_check.pack(side=tk.LEFT, padx=5)
         
+        # Get colorblind-safe color
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name
+        
         if RUST_AVAILABLE:
-            ttk.Label(row4, text="✅ Rust engine available", 
-                     font=('Arial', 9), foreground='green').pack(side=tk.LEFT, padx=10)
+            # Use blue for colorblind themes, green for normal
+            rust_color = "#0066cc" if is_colorblind else "green"
+            self.rust_status_label = ttk.Label(row4, text="✅ Rust engine available", 
+                     font=('Arial', 9), foreground=rust_color)
+            self.rust_status_label.pack(side=tk.LEFT, padx=10)
         else:
-            ttk.Label(row4, text="❌ Rust not found (run 'cargo build --release' in hunter-sim-rs/)", 
-                     font=('Arial', 9), foreground='red').pack(side=tk.LEFT, padx=10)
+            # Use gray for colorblind themes, red for normal
+            rust_color = "#888888" if is_colorblind else "red"
+            self.rust_status_label = ttk.Label(row4, text="❌ Rust not found (run 'cargo build --release' in hunter-sim-rs/)", 
+                     font=('Arial', 9), foreground=rust_color)
+            self.rust_status_label.pack(side=tk.LEFT, padx=10)
         
         # Progressive evolution
         row5 = ttk.Frame(settings_frame)
@@ -4524,9 +6662,33 @@ class MultiHunterGUI:
         ttk.Label(row7, text="(Updates each hunter's Run tab)", 
                  font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
         
+        # ============ BUILD BUTTON (below settings) ============
+        save_frame = tk.LabelFrame(left_col, text="💾 Save & Share Builds",
+                                   bg=self.DARK_BG, fg=self.DARK_TEXT, font=('Arial', 10, 'bold'))
+        save_frame.pack(fill=tk.X)
+        
+        btn_row = tk.Frame(save_frame, bg=self.DARK_BG)
+        btn_row.pack(pady=10)
+        
+        save_btn = tk.Button(btn_row, text="💾 Save All Builds", 
+                            command=self._save_all_builds,
+                            bg=self.DARK_ACCENT, fg=self.DARK_TEXT,
+                            font=('Arial', 10), padx=10, pady=5)
+        save_btn.pack(side=tk.LEFT, padx=5)
+        
+        open_btn = tk.Button(btn_row, text="📁 Open IRL Builds Folder", 
+                            command=self._open_irl_builds_folder,
+                            bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT,
+                            font=('Arial', 10), padx=10, pady=5)
+        open_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Right column: Global bonuses (relics, gems, etc.)
+        right_col = tk.Frame(settings_row, bg=self.DARK_BG)
+        right_col.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
         # ============ GLOBAL RELICS (shared across all hunters) ============
-        relics_frame = ttk.LabelFrame(scrollable, text="🏆 Global Relics (Shared Across All Hunters)")
-        relics_frame.pack(fill=tk.X, padx=20, pady=10)
+        relics_frame = ttk.LabelFrame(right_col, text="🏆 Global Relics (Shared Across All Hunters)")
+        relics_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Create two-column grid layout for relics (like hunter builds)
         relics_container = ttk.Frame(relics_frame)
@@ -4585,9 +6747,104 @@ class MultiHunterGUI:
         ttk.Label(r19_frame, text="/8", width=5).pack(side=tk.LEFT)
         ttk.Label(r19_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
         
+        self.global_relic_r4.trace_add("write", self._save_global_bonuses)
+        self.global_relic_r16.trace_add("write", self._save_global_bonuses)
+        self.global_relic_r17.trace_add("write", self._save_global_bonuses)
+        self.global_relic_r19.trace_add("write", self._save_global_bonuses)
+        
+        # ============ GLOBAL GEMS (shared across all hunters) ============
+        gems_frame = ttk.LabelFrame(right_col, text="💎 Global Gems (Shared Across All Hunters)")
+        gems_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Create two-column grid layout for gems
+        gems_container = ttk.Frame(gems_frame)
+        gems_container.pack(fill=tk.X, padx=10, pady=5)
+        gems_container.columnconfigure(0, weight=1)
+        gems_container.columnconfigure(1, weight=1)
+        
+        # Left column gems
+        left_gems_frame = ttk.Frame(gems_container)
+        left_gems_frame.grid(row=0, column=0, sticky="nsew", padx=5)
+        
+        # Attraction Gem Level
+        gem1_frame = ttk.Frame(left_gems_frame)
+        gem1_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem1_frame, text="Attraction Gem:", width=22).pack(side=tk.LEFT)
+        self.global_gem_attraction = tk.IntVar(value=0)
+        ttk.Spinbox(gem1_frame, textvariable=self.global_gem_attraction, from_=0, to=3, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Loot (Borge) - CRITICAL MULTIPLIER!
+        loot_borge_frame = ttk.Frame(left_gems_frame)
+        loot_borge_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(loot_borge_frame, text="Loot (Borge):", width=22).pack(side=tk.LEFT)
+        self.global_gem_loot_borge = tk.IntVar(value=0)
+        ttk.Spinbox(loot_borge_frame, textvariable=self.global_gem_loot_borge, from_=0, to=50, width=5).pack(side=tk.LEFT, padx=5)
+        loot_borge_label = ttk.Label(loot_borge_frame, text="(1.07^lvl)", font=('Arial', 8))
+        loot_borge_label.pack(side=tk.LEFT, padx=2)
+        self.colored_labels.append((loot_borge_label, 'borge'))
+        
+        # Loot (Ozzy) - CRITICAL MULTIPLIER!
+        loot_ozzy_frame = ttk.Frame(left_gems_frame)
+        loot_ozzy_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(loot_ozzy_frame, text="Loot (Ozzy):", width=22).pack(side=tk.LEFT)
+        self.global_gem_loot_ozzy = tk.IntVar(value=0)
+        ttk.Spinbox(loot_ozzy_frame, textvariable=self.global_gem_loot_ozzy, from_=0, to=50, width=5).pack(side=tk.LEFT, padx=5)
+        loot_ozzy_label = ttk.Label(loot_ozzy_frame, text="(1.07^lvl)", font=('Arial', 8))
+        loot_ozzy_label.pack(side=tk.LEFT, padx=2)
+        self.colored_labels.append((loot_ozzy_label, 'ozzy'))
+        
+        # Attraction Catch-Up
+        gem2_frame = ttk.Frame(left_gems_frame)
+        gem2_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem2_frame, text="Catch-Up Power:", width=22).pack(side=tk.LEFT)
+        self.global_gem_catchup = tk.IntVar(value=0)
+        ttk.Spinbox(gem2_frame, textvariable=self.global_gem_catchup, from_=0, to=5, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Attraction Node #3
+        gem3_frame = ttk.Frame(left_gems_frame)
+        gem3_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem3_frame, text="Attraction Node #3:", width=22).pack(side=tk.LEFT)
+        self.global_gem_attraction_node3 = tk.IntVar(value=0)
+        ttk.Spinbox(gem3_frame, textvariable=self.global_gem_attraction_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Innovation Node #3
+        gem4_frame = ttk.Frame(left_gems_frame)
+        gem4_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem4_frame, text="Innovation Node #3:", width=22).pack(side=tk.LEFT)
+        self.global_gem_innovation_node3 = tk.IntVar(value=0)
+        ttk.Spinbox(gem4_frame, textvariable=self.global_gem_innovation_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Right column gems (Borge-only Creation nodes)
+        right_gems_frame = ttk.Frame(gems_container)
+        right_gems_frame.grid(row=0, column=1, sticky="nsew", padx=5)
+        
+        # Creation Node #1
+        gem5_frame = ttk.Frame(right_gems_frame)
+        gem5_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem5_frame, text="Creation Node #1:", width=22).pack(side=tk.LEFT)
+        self.global_gem_creation_node1 = tk.IntVar(value=0)
+        ttk.Spinbox(gem5_frame, textvariable=self.global_gem_creation_node1, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(gem5_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
+        # Creation Node #2
+        gem6_frame = ttk.Frame(right_gems_frame)
+        gem6_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem6_frame, text="Creation Node #2:", width=22).pack(side=tk.LEFT)
+        self.global_gem_creation_node2 = tk.IntVar(value=0)
+        ttk.Spinbox(gem6_frame, textvariable=self.global_gem_creation_node2, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(gem6_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
+        # Creation Node #3
+        gem7_frame = ttk.Frame(right_gems_frame)
+        gem7_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(gem7_frame, text="Creation Node #3:", width=22).pack(side=tk.LEFT)
+        self.global_gem_creation_node3 = tk.IntVar(value=0)
+        ttk.Spinbox(gem7_frame, textvariable=self.global_gem_creation_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(gem7_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
+        
         # ============ GLOBAL BONUSES (shared across all hunters) ============
-        bonuses_frame = ttk.LabelFrame(scrollable, text="💎 Global Bonuses (Shared Across All Hunters)")
-        bonuses_frame.pack(fill=tk.X, padx=20, pady=10)
+        bonuses_frame = ttk.LabelFrame(right_col, text="🎁 Global Bonuses (Events, IAP, Ultima)")
+        bonuses_frame.pack(fill=tk.X)
         
         # Row 1: Core multipliers
         bonuses_row1 = ttk.Frame(bonuses_frame)
@@ -4603,7 +6860,7 @@ class MultiHunterGUI:
         self.global_research81 = tk.IntVar(value=0)
         ttk.Spinbox(bonuses_row1, textvariable=self.global_research81, from_=0, to=6, width=5).pack(side=tk.LEFT, padx=5)
         
-        # Row 2: Loop mods
+        # Row 2: Loop mods (Scavenger)
         bonuses_row2 = ttk.Frame(bonuses_frame)
         bonuses_row2.pack(fill=tk.X, padx=10, pady=5)
         
@@ -4618,6 +6875,68 @@ class MultiHunterGUI:
         ttk.Label(bonuses_row2, text="Scavenger 2 (Ozzy):").pack(side=tk.LEFT, padx=10)
         self.global_scavenger2 = tk.IntVar(value=0)
         ttk.Spinbox(bonuses_row2, textvariable=self.global_scavenger2, from_=0, to=25, width=5).pack(side=tk.LEFT, padx=5)
+        
+        # Row 2b: LMOuro Loop Mods (Base Loot Bonuses) - CRITICAL for endgame players!
+        # Found in: Ouroboros menu → Loop Modifiers section
+        bonuses_row2b = ttk.Frame(bonuses_frame)
+        bonuses_row2b.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(bonuses_row2b, text="🐍 Ouroboros Loop Mods:", font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
+        
+        # LMOuro1: Base Hunt Loot Bonus (Borge) - In Ouroboros → Borge section
+        ttk.Label(bonuses_row2b, text="Hunt Loot (Borge):").pack(side=tk.LEFT, padx=10)
+        self.global_lm_ouro1 = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row2b, textvariable=self.global_lm_ouro1, from_=0, to=500, width=5).pack(side=tk.LEFT, padx=5)
+        lm_ouro1_label = ttk.Label(bonuses_row2b, text="(1.03^lvl)", font=('Arial', 8))
+        lm_ouro1_label.pack(side=tk.LEFT, padx=2)
+        self.colored_labels.append((lm_ouro1_label, 'borge'))
+        
+        # LMOuro11: Boon Eternity (Borge loot component) - In Ouroboros → Borge section
+        ttk.Label(bonuses_row2b, text="Boon Eternity:").pack(side=tk.LEFT, padx=10)
+        self.global_lm_ouro11 = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row2b, textvariable=self.global_lm_ouro11, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        lm_ouro11_label = ttk.Label(bonuses_row2b, text="(Borge 1.05^lvl)", font=('Arial', 8))
+        lm_ouro11_label.pack(side=tk.LEFT, padx=2)
+        self.colored_labels.append((lm_ouro11_label, 'borge'))
+        
+        # LMOuro18: Base Hunt Loot Bonus (Ozzy) - In Ouroboros → Ozzy section
+        ttk.Label(bonuses_row2b, text="Hunt Loot (Ozzy):").pack(side=tk.LEFT, padx=10)
+        self.global_lm_ouro18 = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row2b, textvariable=self.global_lm_ouro18, from_=0, to=500, width=5).pack(side=tk.LEFT, padx=5)
+        lm_ouro18_label = ttk.Label(bonuses_row2b, text="(1.03^lvl)", font=('Arial', 8))
+        lm_ouro18_label.pack(side=tk.LEFT, padx=2)
+        self.colored_labels.append((lm_ouro18_label, 'ozzy'))
+        
+        # Row 2c: XP Bonuses from HuntersAttributes (Path of Might/Instinct/Knights)
+        # Found in: Hunters Headquarters → Each hunter's skill tree → Node #3
+        bonuses_row2c = ttk.Frame(bonuses_frame)
+        bonuses_row2c.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(bonuses_row2c, text="🏠 Hunters HQ - XP Nodes:", font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
+        
+        # POM3: Path of Might Node 3 - In HQ → Borge → 3rd node in skill tree
+        ttk.Label(bonuses_row2c, text="Path of Might #3:").pack(side=tk.LEFT, padx=10)
+        self.global_pom3 = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row2c, textvariable=self.global_pom3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        pom3_label = ttk.Label(bonuses_row2c, text="(Borge +10%)", font=('Arial', 8))
+        pom3_label.pack(side=tk.LEFT, padx=2)
+        self.colored_labels.append((pom3_label, 'borge'))
+        
+        # POI3: Path of Instinct Node 3 - In HQ → Ozzy → 3rd node in skill tree
+        ttk.Label(bonuses_row2c, text="Path of Instinct #3:").pack(side=tk.LEFT, padx=10)
+        self.global_poi3 = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row2c, textvariable=self.global_poi3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        poi3_label = ttk.Label(bonuses_row2c, text="(Ozzy +15%)", font=('Arial', 8))
+        poi3_label.pack(side=tk.LEFT, padx=2)
+        self.colored_labels.append((poi3_label, 'ozzy'))
+        
+        # POK3: Path of Knights Node 3 - In HQ → Knox → 3rd node in skill tree
+        ttk.Label(bonuses_row2c, text="Path of Knights #3:").pack(side=tk.LEFT, padx=10)
+        self.global_pok3 = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row2c, textvariable=self.global_pok3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        pok3_label = ttk.Label(bonuses_row2c, text="(Knox +15%)", font=('Arial', 8))
+        pok3_label.pack(side=tk.LEFT, padx=2)
+        self.colored_labels.append((pok3_label, 'knox'))
         
         # Row 3: Construction Milestones
         bonuses_row3 = ttk.Frame(bonuses_frame)
@@ -4670,131 +6989,49 @@ class MultiHunterGUI:
         ttk.Label(bonuses_row5, text="(Enter displayed value, e.g. 1.5 for 50% boost)", 
                   font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=5)
         
-        # ============ GLOBAL GEMS (shared across all hunters) ============
-        gems_frame = ttk.LabelFrame(scrollable, text="💎 Global Gems (Shared Across All Hunters)")
-        gems_frame.pack(fill=tk.X, padx=20, pady=10)
+        # Row 6: Skill 6 Loot Bonuses and Wastarian Relic
+        bonuses_row6 = ttk.Frame(bonuses_frame)
+        bonuses_row6.pack(fill=tk.X, padx=10, pady=5)
         
-        # Create two-column grid layout for gems
-        gems_container = ttk.Frame(gems_frame)
-        gems_container.pack(fill=tk.X, padx=10, pady=5)
-        gems_container.columnconfigure(0, weight=1)
-        gems_container.columnconfigure(1, weight=1)
+        ttk.Label(bonuses_row6, text="🎯 Skill 6 Loot:", font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
         
-        # Left column gems
-        left_gems_frame = ttk.Frame(gems_container)
-        left_gems_frame.grid(row=0, column=0, sticky="nsew", padx=5)
+        # Skill 6 Loot Bonus (all hunters)
+        ttk.Label(bonuses_row6, text="Extra Loot (%):").pack(side=tk.LEFT, padx=10)
+        self.global_skill6_loot_bonus = tk.DoubleVar(value=0.0)
+        ttk.Entry(bonuses_row6, textvariable=self.global_skill6_loot_bonus, width=8).pack(side=tk.LEFT, padx=5)
+        ttk.Label(bonuses_row6, text="(e.g. 0.10 for 10%)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=5)
         
-        # Attraction Gem Level
-        gem1_frame = ttk.Frame(left_gems_frame)
-        gem1_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(gem1_frame, text="Attraction Gem:", width=22).pack(side=tk.LEFT)
-        self.global_gem_attraction = tk.IntVar(value=0)
-        ttk.Spinbox(gem1_frame, textvariable=self.global_gem_attraction, from_=0, to=3, width=5).pack(side=tk.LEFT, padx=5)
+        # Wastarian Relic Loot Bonus
+        ttk.Label(bonuses_row6, text="Wastarian Relic:").pack(side=tk.LEFT, padx=15)
+        self.global_wastarian_relic_loot_bonus = tk.IntVar(value=0)
+        ttk.Spinbox(bonuses_row6, textvariable=self.global_wastarian_relic_loot_bonus, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(bonuses_row6, text="(+5% per level)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=5)
         
-        # Loot (Borge) - CRITICAL MULTIPLIER!
-        loot_borge_frame = ttk.Frame(left_gems_frame)
-        loot_borge_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(loot_borge_frame, text="Loot (Borge):", width=22).pack(side=tk.LEFT)
-        self.global_gem_loot_borge = tk.IntVar(value=0)
-        ttk.Spinbox(loot_borge_frame, textvariable=self.global_gem_loot_borge, from_=0, to=50, width=5).pack(side=tk.LEFT, padx=5)
-        ttk.Label(loot_borge_frame, text="(1.07^lvl)", font=('Arial', 8), foreground='red').pack(side=tk.LEFT, padx=2)
-        
-        # Loot (Ozzy) - CRITICAL MULTIPLIER!
-        loot_ozzy_frame = ttk.Frame(left_gems_frame)
-        loot_ozzy_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(loot_ozzy_frame, text="Loot (Ozzy):", width=22).pack(side=tk.LEFT)
-        self.global_gem_loot_ozzy = tk.IntVar(value=0)
-        ttk.Spinbox(loot_ozzy_frame, textvariable=self.global_gem_loot_ozzy, from_=0, to=50, width=5).pack(side=tk.LEFT, padx=5)
-        ttk.Label(loot_ozzy_frame, text="(1.07^lvl)", font=('Arial', 8), foreground='green').pack(side=tk.LEFT, padx=2)
-        
-        # Attraction Catch-Up
-        gem2_frame = ttk.Frame(left_gems_frame)
-        gem2_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(gem2_frame, text="Catch-Up Power:", width=22).pack(side=tk.LEFT)
-        self.global_gem_catchup = tk.IntVar(value=0)
-        ttk.Spinbox(gem2_frame, textvariable=self.global_gem_catchup, from_=0, to=5, width=5).pack(side=tk.LEFT, padx=5)
-        
-        # Attraction Node #3
-        gem3_frame = ttk.Frame(left_gems_frame)
-        gem3_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(gem3_frame, text="Attraction Node #3:", width=22).pack(side=tk.LEFT)
-        self.global_gem_attraction_node3 = tk.IntVar(value=0)
-        ttk.Spinbox(gem3_frame, textvariable=self.global_gem_attraction_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
-        
-        # Innovation Node #3
-        gem4_frame = ttk.Frame(left_gems_frame)
-        gem4_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(gem4_frame, text="Innovation Node #3:", width=22).pack(side=tk.LEFT)
-        self.global_gem_innovation_node3 = tk.IntVar(value=0)
-        ttk.Spinbox(gem4_frame, textvariable=self.global_gem_innovation_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
-        
-        # Right column gems (Borge-only Creation nodes)
-        right_gems_frame = ttk.Frame(gems_container)
-        right_gems_frame.grid(row=0, column=1, sticky="nsew", padx=5)
-        
-        # Creation Node #1
-        gem5_frame = ttk.Frame(right_gems_frame)
-        gem5_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(gem5_frame, text="Creation Node #1:", width=22).pack(side=tk.LEFT)
-        self.global_gem_creation_node1 = tk.IntVar(value=0)
-        ttk.Spinbox(gem5_frame, textvariable=self.global_gem_creation_node1, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
-        ttk.Label(gem5_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
-        
-        # Creation Node #2
-        gem6_frame = ttk.Frame(right_gems_frame)
-        gem6_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(gem6_frame, text="Creation Node #2:", width=22).pack(side=tk.LEFT)
-        self.global_gem_creation_node2 = tk.IntVar(value=0)
-        ttk.Spinbox(gem6_frame, textvariable=self.global_gem_creation_node2, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
-        ttk.Label(gem6_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
-        
-        # Creation Node #3
-        gem7_frame = ttk.Frame(right_gems_frame)
-        gem7_frame.pack(fill=tk.X, pady=2)
-        ttk.Label(gem7_frame, text="Creation Node #3:", width=22).pack(side=tk.LEFT)
-        self.global_gem_creation_node3 = tk.IntVar(value=0)
-        ttk.Spinbox(gem7_frame, textvariable=self.global_gem_creation_node3, from_=0, to=100, width=5).pack(side=tk.LEFT, padx=5)
-        ttk.Label(gem7_frame, text="(Borge)", font=('Arial', 8), foreground='gray').pack(side=tk.LEFT, padx=2)
-        
-        # Load saved global bonuses (after all fields created, before traces)
-        self._load_global_bonuses()
+        # Apply initial colors to all colored labels
+        self._update_colored_labels()
         
         # Set up auto-save traces for all bonus, relic, and gem fields
         for var in [self.global_shard_milestone, self.global_relic7, self.global_research81,
                     self.global_scavenger, self.global_scavenger2,
+                    self.global_lm_ouro1, self.global_lm_ouro11, self.global_lm_ouro18,
+                    self.global_pom3, self.global_poi3, self.global_pok3,
                     self.global_cm46, self.global_cm47, self.global_cm48, self.global_cm51,
                     self.global_diamond_loot, self.global_gaiden_card, self.global_iridian_card,
                     self.global_iap_travpack, self.global_ultima_multiplier,
                     self.global_relic_r4, self.global_relic_r16, self.global_relic_r17, self.global_relic_r19,
                     self.global_gem_attraction, self.global_gem_loot_borge, self.global_gem_loot_ozzy,
                     self.global_gem_catchup, self.global_gem_attraction_node3,
-                    self.global_gem_innovation_node3, self.global_gem_creation_node1, 
-                    self.global_gem_creation_node2, self.global_gem_creation_node3]:
+                    self.global_gem_innovation_node3, self.global_gem_creation_node1,
+                    self.global_gem_creation_node2, self.global_gem_creation_node3,
+                    self.global_skill6_loot_bonus, self.global_wastarian_relic_loot_bonus]:
             var.trace_add("write", self._save_global_bonuses)
         
         # Start battle animation loop
         self.battle_frame = 0
         self._animate_battles()
         
-        # Save All button - dark themed
-        save_frame = tk.LabelFrame(scrollable, text="💾 Save & Share Builds",
-                                   bg=self.DARK_BG, fg=self.DARK_TEXT, font=('Arial', 10, 'bold'))
-        save_frame.pack(fill=tk.X, padx=20, pady=10)
-        
-        btn_row = tk.Frame(save_frame, bg=self.DARK_BG)
-        btn_row.pack(pady=10)
-        
-        save_btn = tk.Button(btn_row, text="💾 Save All Builds", 
-                            command=self._save_all_builds,
-                            bg=self.DARK_ACCENT, fg=self.DARK_TEXT,
-                            font=('Arial', 10), padx=10, pady=5)
-        save_btn.pack(side=tk.LEFT, padx=5)
-        
-        open_btn = tk.Button(btn_row, text="📁 Open IRL Builds Folder", 
-                            command=self._open_irl_builds_folder,
-                            bg=self.DARK_BG_SECONDARY, fg=self.DARK_TEXT,
-                            font=('Arial', 10), padx=10, pady=5)
-        open_btn.pack(side=tk.LEFT, padx=5)
+        # Load saved global bonuses after creating all widgets
+        self._load_global_bonuses()
     
     def _animate_battles(self):
         """Animate hunter battle scenes when running."""
@@ -4895,29 +7132,7 @@ class MultiHunterGUI:
                 except Exception as e:
                     self._log(f"⚠️ Could not load {hunter_name} image: {e}")
         
-        # Hunter-specific arena themes
-        self.arena_themes = {
-            "Borge": {
-                "bg_color": "#1a0a0a",
-                "accent_color": "#DC3545",
-                "field_color": "#2a0505",
-                "description": "Exon-12"
-            },
-            "Knox": {
-                "bg_color": "#0a0a1a",
-                "accent_color": "#0D6EFD",
-                "field_color": "#050520",
-                "description": "Sirene-6"
-            },
-            "Ozzy": {
-                "bg_color": "#0a1a0a",
-                "accent_color": "#198754",
-                "field_color": "#052005",
-                "description": "Endo Prime"
-            }
-        }
-        
-        # Current enemy state for display
+        # Current enemy state for display (arena_themes already defined in __init__)
         self.current_enemy = {
             "icon": "👹",
             "hp_percent": 100,
@@ -5144,7 +7359,7 @@ class MultiHunterGUI:
             hp_pct = self.live_sim_hp_percent / 100
             canvas.create_rectangle(hunter_x - bar_width//2, bar_y, hunter_x + bar_width//2, bar_y + 8,
                                    fill='#333333', outline='#555555')
-            hp_color = '#00FF00' if hp_pct > 0.5 else '#FFFF00' if hp_pct > 0.25 else '#FF0000'
+            hp_color = self._get_health_color(hp_pct)
             canvas.create_rectangle(hunter_x - bar_width//2, bar_y, 
                                    hunter_x - bar_width//2 + bar_width * hp_pct, bar_y + 8,
                                    fill=hp_color, outline='')
@@ -5200,7 +7415,7 @@ class MultiHunterGUI:
             canvas.create_text(effect_x - 25, effect_y, text="→",
                               font=('Arial', 16, 'bold'), fill=theme["accent_color"])
             canvas.create_text(effect_x + 25, effect_y, text="←",
-                              font=('Arial', 16, 'bold'), fill='#FF6666')
+                              font=('Arial', 16, 'bold'), fill=self._get_negative_color())
         
         # === DRAW 10 ENEMIES AT BOTTOM (stage queue) ===
         queue_y = self.arena_height - 30
@@ -5386,8 +7601,9 @@ class MultiHunterGUI:
                                 eta_str = f" ({remaining/3600:.1f}h)"
                     
                     status_label.configure(text=f"⏳ Running... {pct:.0f}%{eta_str}", fg='#ffcc00')
-                elif tab.results:
-                    best = max(tab.results, key=lambda r: r.avg_final_stage).avg_final_stage
+                elif tab.is_completed:  # Use completion flag instead of checking results
+                    # Use stored best stage (persists even if results list is cleared)
+                    best = tab.completion_best_stage if tab.completion_best_stage > 0 else 0
                     progress_var.set(100)
                     status_label.configure(text=f"✅ Stage {best:.1f}", fg='#00ff00')
                 else:
@@ -5400,12 +7616,10 @@ class MultiHunterGUI:
                 if tab.is_running:
                     self.hunter_progress_state[name]["progress"] = tab.progress_var.get()
                     self.hunter_progress_state[name]["complete"] = False
-                elif tab.results:
+                elif tab.is_completed:  # Use completion flag instead of checking results
                     self.hunter_progress_state[name]["progress"] = 100
                     self.hunter_progress_state[name]["complete"] = True
-                else:
-                    self.hunter_progress_state[name]["progress"] = 0
-                    self.hunter_progress_state[name]["complete"] = False
+                # else: preserve existing state (don't reset completed hunters to 0)
         
         # Draw color-coded progress bar
         self._draw_global_progress()
@@ -5431,9 +7645,9 @@ class MultiHunterGUI:
         progress_inner = ttk.Frame(progress_frame, style='Dark.TFrame')
         progress_inner.pack(fill=tk.X, padx=10, pady=5)
         
-        # Hunter-colored progress canvas (3 segments)
-        self.global_progress_canvas = tk.Canvas(progress_inner, height=20, bg='#1a1a2e', 
-                                                 highlightthickness=1, highlightbackground='#3d3d5c')
+        # Hunter-colored progress canvas (3 segments) - theme-aware
+        self.global_progress_canvas = tk.Canvas(progress_inner, height=20, bg=self.DARK_BG_SECONDARY, 
+                                                 highlightthickness=1, highlightbackground=self.DARK_BORDER)
         self.global_progress_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
         # Track progress for each hunter: {name: {progress: 0-100, complete: bool}}
@@ -5460,16 +7674,43 @@ class MultiHunterGUI:
         self._configure_global_log_tags()
     
     def _configure_global_log_tags(self):
-        """Configure colorful text tags for the global log."""
+        """Configure colorful text tags for the global log (colorblind-safe)."""
+        theme_name = self.theme_var.get() if hasattr(self, 'theme_var') else "Dark"
+        is_colorblind = "blind" in theme_name.lower()
+        is_light = self.DARK_BG in ["#f5f5f5", "#fafafa", "#ffffff"]
+        
         log = self.global_log
-        log.tag_configure("timestamp", foreground="#888899")
-        log.tag_configure("info", foreground="#aaddff")
-        log.tag_configure("success", foreground="#00ff88")
-        log.tag_configure("warning", foreground="#ffaa44")
-        log.tag_configure("error", foreground="#ff6666")
-        log.tag_configure("hunter", foreground="#66ccff", font=('Consolas', 9, 'bold'))
-        log.tag_configure("stage", foreground="#ffd700")
-        log.tag_configure("loot", foreground="#88cc88")
+        
+        if is_colorblind:
+            # Colorblind: use neutral grayscale - rely on text content for meaning
+            if is_light:
+                log.tag_configure("timestamp", foreground="#888888")
+                log.tag_configure("info", foreground="#555555")
+                log.tag_configure("success", foreground="#333333", font=('Consolas', 9, 'bold'))
+                log.tag_configure("warning", foreground="#555555", font=('Consolas', 9, 'italic'))
+                log.tag_configure("error", foreground="#222222", font=('Consolas', 9, 'bold'))
+                log.tag_configure("hunter", foreground="#444444", font=('Consolas', 9, 'bold'))
+                log.tag_configure("stage", foreground="#333333")
+                log.tag_configure("loot", foreground="#555555")
+            else:
+                log.tag_configure("timestamp", foreground="#888888")
+                log.tag_configure("info", foreground="#aaaaaa")
+                log.tag_configure("success", foreground="#dddddd", font=('Consolas', 9, 'bold'))
+                log.tag_configure("warning", foreground="#bbbbbb", font=('Consolas', 9, 'italic'))
+                log.tag_configure("error", foreground="#ffffff", font=('Consolas', 9, 'bold'))
+                log.tag_configure("hunter", foreground="#cccccc", font=('Consolas', 9, 'bold'))
+                log.tag_configure("stage", foreground="#dddddd")
+                log.tag_configure("loot", foreground="#aaaaaa")
+        else:
+            # Non-colorblind: colorful tags
+            log.tag_configure("timestamp", foreground="#888899")
+            log.tag_configure("info", foreground="#aaddff")
+            log.tag_configure("success", foreground="#00ff88")
+            log.tag_configure("warning", foreground="#ffaa44")
+            log.tag_configure("error", foreground="#ff6666")
+            log.tag_configure("hunter", foreground="#66ccff", font=('Consolas', 9, 'bold'))
+            log.tag_configure("stage", foreground="#ffd700")
+            log.tag_configure("loot", foreground="#88cc88")
     
     def _log(self, message: str, tag: str = None):
         """Add message to global log with optional color tag."""
@@ -5616,6 +7857,37 @@ class MultiHunterGUI:
     def _start_hunter_after_init(self, tab, hunter_name: str):
         """Start a hunter's optimization after ensuring tab is initialized."""
         if not tab.is_running:
+            # CRITICAL: Ensure global bonuses AND build are loaded before starting
+            # The lazy loading initializes the GUI widgets, but we need to
+            # reload both global bonuses and the build file
+            self._load_global_bonuses()  # Load global bonuses first
+            tab._auto_load_build()  # Then load hunter-specific build
+            
+            # DEBUG: Log what config we're about to use AND save it to file for inspection
+            try:
+                config = tab._get_current_config()
+                level = config.get('meta', {}).get('level', config.get('level', 0))
+                talents_sum = sum(config.get('talents', {}).values())
+                gadgets_list = [k for k, v in config.get('gadgets', {}).items() if v > 0]
+                relics_list = [f"{k}={v}" for k, v in config.get('relics', {}).items() if v > 0]
+                gems_list = [f"{k}={v}" for k, v in config.get('gems', {}).items() if v > 0]
+                shard = config.get('bonuses', {}).get('shard_milestone', 0)
+                hp = config.get('stats', {}).get('hp', 0)
+                power = config.get('stats', {}).get('power', 0)
+                self._log(f"   🔍 {hunter_name} L{level}: HP={hp} Power={power} Talents={talents_sum}")
+                self._log(f"      Gadgets={gadgets_list} Shard={shard}")
+                self._log(f"      Relics={relics_list}")
+                self._log(f"      Gems={gems_list}")
+                
+                # DUMP FULL CONFIG TO FILE FOR DEBUGGING
+                import tempfile
+                debug_path = Path(tempfile.gettempdir()) / f"gui_config_{hunter_name}.json"
+                with open(debug_path, 'w') as f:
+                    json.dump(config, f, indent=2)
+                self._log(f"      📋 Full config saved to: {debug_path}")
+            except Exception as e:
+                self._log(f"   ⚠️ Config debug failed: {e}")
+            
             self._log(f"   ▶️ Starting {hunter_name}...")
             self.all_status.configure(text=f"Running: {hunter_name} ({len(self.sequential_queue)} remaining)")
             tab._start_optimization()
