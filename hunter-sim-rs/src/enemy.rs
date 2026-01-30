@@ -1,7 +1,7 @@
 //! Enemy and Boss implementations - Updated to match CIFI Tools formulas
 
 use crate::config::HunterType;
-use rand::Rng;
+use crate::simulation::FastRng;
 
 /// A regular enemy in combat
 /// Secondary attack type for bosses
@@ -235,11 +235,11 @@ impl Enemy {
                     * if is_boss { 3.63 } else { 1.0 }
                     * if is_stage_300 { 0.9 } else { 1.0 };
                 
-                // Crit chance: 0.0322 + stage * 0.0004 + boss(0.08), capped at 0.25
-                let special_chance = (s * 0.0004 + 0.0322 + if is_boss { 0.08 } else { 0.0 }).min(0.25);
+                // Crit chance: 0.0322 + stage * 0.0004 + boss(0.04), capped at 0.25 (APK verified)
+                let special_chance = (s * 0.0004 + 0.0322 + if is_boss { 0.04 } else { 0.0 }).min(0.25);
                 
-                // Crit damage: 1.212 + stage * 0.008 + boss(0.5), capped at 2.5
-                let special_damage = (s * 0.008 + 1.212 + if is_boss { 0.5 } else { 0.0 }).min(2.5);
+                // Crit damage: 1.212 + stage * 0.008 + boss(0.25), capped at 2.5 (APK verified)
+                let special_damage = (s * 0.008 + 1.212 + if is_boss { 0.25 } else { 0.0 }).min(2.5);
                 
                 // Damage reduction (boss only): min(0.05 + stage * 0.0004, 0.25)
                 let actual_dr = if is_boss { (0.05 + s * 0.0004).min(0.25) } else { 0.0 };
@@ -250,13 +250,13 @@ impl Enemy {
                 // Effect chance (not used for Borge enemies in Python)
                 let effect = 0.0;
                 
-                // Regen: (stage-1) * 0.08 * 1.052 (if stage > 100) * multi_wasm * boss(2.5x)
+                // Regen: (stage-1) * 0.08 * 1.052 (if stage > 100) * multi_wasm * boss(1.92x) (APK verified)
                 let regen_tier = if stage > 100 { 1.052 } else { 1.0 };
                 let regen = if stage > 1 { (s - 1.0) * 0.08 } else { 0.0 } * regen_tier * f
-                    * if is_boss { 2.5 } else { 1.0 };
+                    * if is_boss { 1.92 } else { 1.0 };
                 
-                // Speed: (4.53 - stage * 0.006) * boss(2.1x)
-                let speed = (4.53 - s * 0.006) * if is_boss { 2.1 } else { 1.0 };
+                // Speed: (4.53 - stage * 0.006) * boss(2.42x) (APK verified)
+                let speed = (4.53 - s * 0.006) * if is_boss { 2.42 } else { 1.0 };
                 
                 (hp, power, regen, special_chance, special_damage, actual_dr, evade, effect, speed)
             }
@@ -274,8 +274,8 @@ impl Enemy {
                     * if is_boss { 3.0 } else { 1.0 }
                     * if is_stage_300 { 0.94 } else { 1.0 };
                 
-                // Crit chance: 0.0994 + stage * 0.0006 + boss(0.1)
-                let special_chance = (s * 0.0006 + 0.0994 + if is_boss { 0.1 } else { 0.0 }).min(0.25);
+                // Crit chance: 0.0994 + stage * 0.0006 + boss(0.13) (APK verified)
+                let special_chance = (s * 0.0006 + 0.0994 + if is_boss { 0.13 } else { 0.0 }).min(0.25);
                 
                 // Crit damage: min(1.03 + stage * 0.008, 2.5)
                 let special_damage = (s * 0.008 + 1.03).min(2.5);
@@ -315,11 +315,11 @@ impl Enemy {
                 let power = (1.5 + s * 0.65) * power_100_mult * f
                     * if is_boss { 4.0 } else { 1.0 };
                 
-                // Crit chance: 0.075 + stage * 0.00055 + boss_bonus
-                let special_chance = (s * 0.00055 + 0.075 + if is_boss { 0.06 } else { 0.0 }).min(0.25);
+                // Crit chance: 0.075 + stage * 0.00055 + boss_bonus (APK verified: +13%)
+                let special_chance = (s * 0.00055 + 0.075 + if is_boss { 0.13 } else { 0.0 }).min(0.25);
                 
-                // Crit damage: 1.15 + stage * 0.0075 + boss_bonus
-                let special_damage = (s * 0.0075 + 1.15 + if is_boss { 0.4 } else { 0.0 }).min(2.5);
+                // Crit damage: 1.15 + stage * 0.0075 + boss_bonus (APK verified: +0%)
+                let special_damage = (s * 0.0075 + 1.15 + if is_boss { 0.0 } else { 0.0 }).min(2.5);
                 
                 // Damage reduction (boss only)
                 let dr = if is_boss { 0.05 } else { 0.0 };
@@ -331,13 +331,13 @@ impl Enemy {
                 // Effect chance: 0.03 + stage * 0.0003
                 let effect = s * 0.0003 + 0.03;
                 
-                // Regen: (stage - 1) * 0.09 * 1.15 (if stage > 100) * knox_scaling * boss(3x)
+                // Regen: (stage - 1) * 0.09 * 1.15 (if stage > 100) * knox_scaling * boss(2.0x) (APK verified)
                 let regen_100_mult = if stage > 100 { 1.15 } else { 1.0 };
                 let regen = if stage > 0 { (s - 1.0) * 0.09 } else { 0.0 } * regen_100_mult * f
-                    * if is_boss { 3.0 } else { 1.0 };
+                    * if is_boss { 2.0 } else { 1.0 };
                 
-                // Speed: (3.80 - stage * 0.005) * boss(2.0x)
-                let speed = (3.80 - s * 0.005) * if is_boss { 2.0 } else { 1.0 };
+                // Speed: (3.80 - stage * 0.005) * boss(2.85x) (APK verified)
+                let speed = (3.80 - s * 0.005) * if is_boss { 2.85 } else { 1.0 };
                 
                 (hp, power, regen, special_chance, special_damage, actual_dr, evade, effect, speed)
             }
@@ -389,7 +389,7 @@ impl Enemy {
     }
     
     /// Get attack damage with possible crit - CIFI enrage mechanics
-    pub fn get_attack_damage(&self, rng: &mut impl Rng) -> (f64, bool) {
+    pub fn get_attack_damage(&self, rng: &mut FastRng) -> (f64, bool) {
         // At 200+ enrage stacks, damage is tripled and always crits
         let power = if self.enrage_stacks > 200 {
             self.base_power * 3.0
@@ -403,7 +403,7 @@ impl Enemy {
             self.special_chance
         };
         
-        if rng.gen::<f64>() < crit_chance {
+        if rng.f64() < crit_chance {
             (power * self.special_damage, true)
         } else {
             (power, false)

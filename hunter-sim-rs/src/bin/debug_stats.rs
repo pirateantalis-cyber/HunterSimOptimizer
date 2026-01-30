@@ -8,10 +8,37 @@ use std::env;
 fn main() {
     let args: Vec<String> = env::args().collect();
     
+    // Parse command line arguments
+    let mut config_path: Option<String> = None;
+    let mut stage = 200;  // default
+    let mut hunter_filter: Option<HunterType> = None;
+    
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--stage" if i + 1 < args.len() => {
+                stage = args[i + 1].parse().unwrap_or(200);
+                i += 2;
+            }
+            "--hunter" if i + 1 < args.len() => {
+                hunter_filter = match args[i + 1].to_lowercase().as_str() {
+                    "borge" => Some(HunterType::Borge),
+                    "ozzy" => Some(HunterType::Ozzy),
+                    "knox" => Some(HunterType::Knox),
+                    _ => None,
+                };
+                i += 2;
+            }
+            path => {
+                config_path = Some(path.to_string());
+                i += 1;
+            }
+        }
+    }
+    
     // If config path provided, print hunter stats
-    if args.len() > 1 {
-        let config_path = &args[1];
-        match BuildConfig::from_file(config_path) {
+    if let Some(path) = config_path {
+        match BuildConfig::from_file(&path) {
             Ok(config) => {
                 let hunter = Hunter::from_config(&config);
                 println!("\n=== RUST {:?} HUNTER STATS ===", hunter.hunter_type);
@@ -34,9 +61,18 @@ fn main() {
         }
     }
     
-    let stage = 200;
+    // Determine which hunters to test
+    let hunters_to_test: Vec<(&str, HunterType)> = if let Some(ht) = hunter_filter {
+        vec![(match ht {
+            HunterType::Borge => "BORGE",
+            HunterType::Ozzy => "OZZY",
+            HunterType::Knox => "KNOX",
+        }, ht)]
+    } else {
+        vec![("BORGE", HunterType::Borge), ("OZZY", HunterType::Ozzy), ("KNOX", HunterType::Knox)]
+    };
     
-    for (name, hunter_type) in [("BORGE", HunterType::Borge), ("OZZY", HunterType::Ozzy)] {
+    for (name, hunter_type) in hunters_to_test {
         println!("\n=== RUST {} @ STAGE {} ===", name, stage);
         
         // Regular enemy

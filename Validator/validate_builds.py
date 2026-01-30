@@ -41,6 +41,65 @@ except ImportError:
 # GitHub API config
 GITHUB_API_URL = "https://api.github.com/repos/pirateantalis-cyber/HunterSimOptimizer/issues"
 CACHE_FILE = Path(__file__).parent / "cached_issues.json"
+GLOBAL_BONUSES_FILE = Path(__file__).parent.parent / "hunter-sim" / "IRL Builds" / "global_bonuses.json"
+
+# Load global bonuses if available
+GLOBAL_BONUSES = {}
+if GLOBAL_BONUSES_FILE.exists():
+    try:
+        with open(GLOBAL_BONUSES_FILE, 'r') as f:
+            GLOBAL_BONUSES = json.load(f)
+        print(f"  📦 Loaded global bonuses from {GLOBAL_BONUSES_FILE.name}")
+    except Exception as e:
+        print(f"  ⚠️ Failed to load global bonuses: {e}")
+
+
+def merge_global_bonuses(config: Dict) -> Dict:
+    """Merge global bonuses into a build config."""
+    if not GLOBAL_BONUSES:
+        return config
+    
+    merged = config.copy()
+    
+    # Merge bonuses (global bonuses as defaults, config overrides)
+    merged_bonuses = {}
+    for key in ['shard_milestone', 'diamond_loot', 'cm46', 'cm47', 'cm48', 'cm51', 
+                'iap_travpack', 'ultima_multiplier', 'gaiden_card', 'iridian_card',
+                'research81', 'scavenger', 'scavenger2']:
+        if key in GLOBAL_BONUSES:
+            merged_bonuses[key] = GLOBAL_BONUSES[key]
+    # Override with config-specific bonuses
+    merged_bonuses.update(config.get('bonuses', {}))
+    merged['bonuses'] = merged_bonuses
+    
+    # Merge relics (add global relics if not present)
+    merged_relics = config.get('relics', {}).copy()
+    if 'relic7' in GLOBAL_BONUSES or 'r7' in GLOBAL_BONUSES:
+        if 'r7' not in merged_relics and 'manifestation_core_titan' not in merged_relics:
+            merged_relics['r7'] = GLOBAL_BONUSES.get('relic7', GLOBAL_BONUSES.get('r7', 0))
+    if 'relic_r4' in GLOBAL_BONUSES:
+        if 'r4' not in merged_relics:
+            merged_relics['r4'] = GLOBAL_BONUSES['relic_r4']
+    if 'relic_r19' in GLOBAL_BONUSES:
+        if 'r19' not in merged_relics:
+            merged_relics['r19'] = GLOBAL_BONUSES['relic_r19']
+    merged['relics'] = merged_relics
+    
+    # Merge gems based on hunter type
+    merged_gems = config.get('gems', {}).copy()
+    hunter = config.get('hunter', '')
+    if hunter == 'Borge' and 'gem_loot_borge' in GLOBAL_BONUSES:
+        if 'attraction_loot_borge' not in merged_gems:
+            merged_gems['attraction_loot_borge'] = GLOBAL_BONUSES['gem_loot_borge']
+    if hunter == 'Ozzy' and 'gem_loot_ozzy' in GLOBAL_BONUSES:
+        if 'attraction_loot_ozzy' not in merged_gems:
+            merged_gems['attraction_loot_ozzy'] = GLOBAL_BONUSES['gem_loot_ozzy']
+    if 'gem_attraction_node3' in GLOBAL_BONUSES:
+        if 'attraction_node_#3' not in merged_gems:
+            merged_gems['attraction_node_#3'] = GLOBAL_BONUSES['gem_attraction_node3']
+    merged['gems'] = merged_gems
+    
+    return merged
 
 
 @dataclass
@@ -346,6 +405,9 @@ def simulate_rust(config: Dict, num_sims: int = 100) -> Optional[SimData]:
     if not RUST_AVAILABLE:
         return None
     
+    # Merge global bonuses into config
+    config = merge_global_bonuses(config)
+    
     try:
         rust_cfg = {
             'hunter': config.get('hunter', 'Borge'),
@@ -398,6 +460,9 @@ def simulate_python(config: Dict, num_sims: int = 100) -> Optional[SimData]:
     """Run simulation using Python backend."""
     if not PYTHON_AVAILABLE:
         return None
+    
+    # Merge global bonuses into config
+    config = merge_global_bonuses(config)
     
     try:
         hunter_name = config.get('hunter', 'Borge')
@@ -461,7 +526,9 @@ def simulate_python(config: Dict, num_sims: int = 100) -> Optional[SimData]:
             knox_extra_salvo_damage_avg=sum(extra_salvo_dmg) / n,
         )
     except Exception as e:
+        import traceback
         print(f"    ⚠️ Python simulation failed: {e}")
+        traceback.print_exc()
         return None
 
 

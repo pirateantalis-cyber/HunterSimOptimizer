@@ -26,7 +26,6 @@ datas = [
     # Include hunter-sim module files
     ('hunter-sim/hunters.py', '.'),
     ('hunter-sim/sim.py', '.'),
-    ('hunter-sim/gui.py', '.'),
     ('hunter-sim/units.py', '.'),
     ('hunter-sim/run_optimization.py', '.'),
     ('hunter-sim/sim_worker.py', '.'),

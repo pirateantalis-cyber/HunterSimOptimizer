@@ -95,6 +95,11 @@ pub struct Hunter {
     pub has_trample: bool,
     pub has_decay: bool,
     
+    // Catch-up gem values (for power/speed bonuses in early stages)
+    pub attraction_catchup: i32,
+    pub attraction_gem: i32,
+    pub catching_up: bool,  // True for stages 0-99, false after stage 100
+    
     // Loot and XP multipliers
     pub loot_mult: f64,
     pub xp_mult: f64,
@@ -104,6 +109,7 @@ pub struct Hunter {
     pub current_stage: i32,
     pub revive_count: i32,
     pub max_revives: i32,
+    pub max_stage: i32,
     pub hundred_souls_stacks: i32,  // Knox
     pub decay_stacks: i32,  // Ozzy crippling shots
 }
@@ -224,7 +230,8 @@ impl Hunter {
         let lifesteal = c.get_attr("book_of_baal") as f64 * 0.0111;
         
         // Loot and XP multipliers - use comprehensive calculation from config
-        let loot_mult = c.calculate_loot_multiplier(HunterType::Borge);
+        let base_loot_mult = c.calculate_loot_multiplier(HunterType::Borge, effect_chance);
+        let loot_mult = base_loot_mult;
         let xp_mult = c.calculate_xp_multiplier(HunterType::Borge);
         
         // Death is my companion revives
@@ -294,12 +301,16 @@ impl Hunter {
             empowered_block_regen: 0,
             has_trample: *c.mods.get("trample").unwrap_or(&false),
             has_decay: false,
+            attraction_catchup: c.get_gem("attraction_catch-up").max(c.get_gem("attraction_catch_up")),
+            attraction_gem: c.get_gem("attraction_gem"),
+            catching_up: true,  // Python starts with catching_up=True
             loot_mult,
             xp_mult,
             result: SimResult::default(),
             current_stage: 0,  // Python starts at stage 0
             revive_count: 0,
             max_revives,
+            max_stage: 300,
             hundred_souls_stacks: 0,
             decay_stacks: 0,
         }
@@ -405,9 +416,10 @@ impl Hunter {
         
         // Speed - WASM: (4 - speed_stat * 0.02 - thousand_needles * 0.06 - i36 * 0.03) * cat_speed_mult
         // Note: cat_speed_mult is MULTIPLICATIVE, not additive!
+        // IRL CALIBRATION: Coefficient adjusted from 0.02 to 0.0418 to match 1.74 sec in-game
         let thousand_needles_lvl = c.get_talent("thousand_needles");
         let speed = (4.0 
-            - c.get_stat("speed") as f64 * 0.02
+            - c.get_stat("speed") as f64 * 0.0418
             - c.get_inscr("i36") as f64 * 0.03
             - thousand_needles_lvl as f64 * 0.06)
             * cat_speed_mult;  // WASM: multiplicative, not additive
@@ -416,9 +428,8 @@ impl Hunter {
         let lifesteal = c.get_attr("shimmering_scorpion") as f64 * 0.033;
         
         // Loot multiplier - use comprehensive calculation from config
-        // blessings_of_the_scarab adds +5% loot per level (additive to base)
-        let base_loot_mult = c.calculate_loot_multiplier(HunterType::Ozzy);
-        let loot_mult = base_loot_mult * (1.0 + blessings_of_the_scarab as f64 * 0.05);
+        let base_loot_mult = c.calculate_loot_multiplier(HunterType::Ozzy, effect_chance);
+        let loot_mult = base_loot_mult;
         
         // XP multiplier
         let xp_mult = c.calculate_xp_multiplier(HunterType::Ozzy);
@@ -491,12 +502,16 @@ impl Hunter {
             empowered_block_regen: 0,
             has_trample: false,
             has_decay: *c.mods.get("decay").unwrap_or(&false),
+            attraction_catchup: c.get_gem("attraction_catch-up").max(c.get_gem("attraction_catch_up")),
+            attraction_gem: c.get_gem("attraction_gem"),
+            catching_up: true,  // Python starts with catching_up=True
             loot_mult,
             xp_mult,
             result: SimResult::default(),
             current_stage: 0,  // Python starts at stage 0
             revive_count: 0,
             max_revives,
+            max_stage: 210,
             hundred_souls_stacks: 0,
             decay_stacks: 0,
         }
@@ -551,7 +566,9 @@ impl Hunter {
             + c.get_attr("shield_of_poseidon") as f64 * 0.1;
         
         // Speed (reload time)
-        let speed = 4.0 - c.get_stat("reload_time") as f64 * 0.02;
+        // IRL CALIBRATION: Base adjusted from 4.0 to 8.0, coeff from 0.02 to 0.08
+        // to match 6.40 sec in-game with reload_time_stat=20
+        let speed = 8.0 - c.get_stat("reload_time") as f64 * 0.08;
         
         // Projectiles per salvo (base 3 + upgrades)
         // Python: self.salvo_projectiles = 3 + self.base_stats.get("projectiles_per_salvo", 0)
@@ -562,7 +579,8 @@ impl Hunter {
         let special_damage = 1.0 + c.get_talent("finishing_move") as f64 * 0.2;
         
         // Loot and XP multipliers - use comprehensive calculation from config
-        let loot_mult = c.calculate_loot_multiplier(HunterType::Knox);
+        let base_loot_mult = c.calculate_loot_multiplier(HunterType::Knox, effect_chance);
+        let loot_mult = base_loot_mult;
         let xp_mult = c.calculate_xp_multiplier(HunterType::Knox);
         
         // Revives
@@ -632,12 +650,16 @@ impl Hunter {
             empowered_block_regen: 0,
             has_trample: false,
             has_decay: false,
+            attraction_catchup: c.get_gem("attraction_catch-up").max(c.get_gem("attraction_catch_up")),
+            attraction_gem: c.get_gem("attraction_gem"),
+            catching_up: true,  // Python starts with catching_up=True
             loot_mult,
             xp_mult,
             result: SimResult::default(),
             current_stage: 0,  // Python starts at stage 0
             revive_count: 0,
             max_revives,
+            max_stage: 100,
             hundred_souls_stacks: 0,
             decay_stacks: 0,
         }
@@ -647,6 +669,7 @@ impl Hunter {
     pub fn reset(&mut self) {
         self.hp = self.max_hp;
         self.current_stage = 0;  // Python starts at stage 0
+        self.catching_up = true;  // Reset to catching_up
         self.revive_count = 0;
         self.charge = 0.0;
         self.hundred_souls_stacks = 0;
@@ -683,6 +706,31 @@ impl Hunter {
         }
     }
     
+    /// Calculate catch-up multiplier for power/speed bonus
+    /// Python: (1.08 ** attraction_catch-up) ** (1 + (attraction_gem * 0.1) - 0.1)
+    fn get_catchup_mult(&self) -> f64 {
+        if !self.catching_up || self.attraction_catchup == 0 {
+            return 1.0;
+        }
+        let base = 1.08_f64.powi(self.attraction_catchup);
+        let exponent = 1.0 + (self.attraction_gem as f64 * 0.1) - 0.1;
+        base.powf(exponent)
+    }
+    
+    /// Get effective power, accounting for Born for Battle and catch-up bonus
+    /// Python: self._power * (1 + missing_hp_pct * born_for_battle * 0.001) * catchup_mult
+    pub fn get_power(&self) -> f64 {
+        let missing_hp_pct = if self.max_hp > 0.0 {
+            ((self.max_hp - self.hp) / self.max_hp) * 100.0
+        } else {
+            0.0
+        };
+        
+        self.power 
+            * (1.0 + missing_hp_pct * self.born_for_battle as f64 * 0.001)
+            * self.get_catchup_mult()
+    }
+    
     /// Get speed - IDENTICAL to Python's @property speed getter
     /// Python:
     ///   current_speed = (self._speed * (1 - atlas * 0.04)) if is_boss_stage else self._speed
@@ -700,8 +748,11 @@ impl Hunter {
             self.speed
         };
         
-        // TODO: catching_up logic not implemented yet
-        // current_speed /= (1.08 ** self.gems["attraction_catch-up"]) ** ...
+        // Catch-up speed bonus: divide by catchup_mult (faster attacks)
+        let catchup_mult = self.get_catchup_mult();
+        if catchup_mult > 1.0 {
+            current_speed /= catchup_mult;
+        }
         
         // Fires of War - subtract and CONSUME
         if self.fires_of_war_buff > 0.0 {
@@ -777,23 +828,40 @@ impl Hunter {
         }
     }
     
-    /// Calculate loot for the current stage using WASM formulas
+    /// Calculate loot for the current stage using Python formulas
     /// Returns (mat1, mat2, mat3, xp)
     pub fn calculate_loot(&self) -> (f64, f64, f64, f64) {
         let stage = self.current_stage as f64;
         let mult = self.loot_mult;
         
-        // WASM-based per-resource loot (constants from WASM analysis)
-        // MUST MATCH Python exactly:
-        // Mat1: stage * 0.3 * avg(1.686) / divisor(1.4558) = stage * 0.347
-        // Mat2: stage * 0.3 * avg(1.6) / divisor(1.4558) = stage * 0.330
-        // Mat3: stage * 0.3 * avg(1.2) / divisor(1.4558) = stage * 0.247
-        let mat1 = stage * 0.347 * mult;
-        let mat2 = stage * 0.330 * mult;
-        let mat3 = stage * 0.247 * mult;
+        // Hunter-specific stage loot multiplier and base values
+        // MUST MATCH Python exactly!
+        let (stage_loot_mult, base_common, base_uncommon, base_rare, base_xp): (f64, f64, f64, f64, f64) = match self.hunter_type {
+            HunterType::Borge => (1.051, 395.0, 339.0, 256.0, 1640000000000.0),
+            HunterType::Ozzy => (1.059, 0.21, 0.18, 0.14, 96600000000.0),
+            HunterType::Knox => (1.074, 0.061, 0.053, 0.04, 728.0),
+        };
         
-        // XP calculation: stage * 0.1 * avg(1.1) / divisor(1.4558) = stage * 0.0755
-        let xp = stage * 0.0755 * mult * self.xp_mult;
+        // Geometric series: sum of (mult^0 + mult^1 + ... + mult^(stage-1))
+        // Formula: (mult^stage - 1) / (mult - 1)
+        let geom_sum = if stage_loot_mult > 1.0 {
+            (stage_loot_mult.powf(stage) - 1.0) / (stage_loot_mult - 1.0)
+        } else {
+            stage
+        };
+        
+        // Loot: Each stage has 10 enemies
+        let enemies_per_stage = 10.0_f64;
+        let total_enemy_factor = geom_sum;
+        
+        // Final loot = BASE × GeomSum × LootMultiplier
+        let mat1 = base_common * total_enemy_factor * mult;
+        let mat2 = base_uncommon * total_enemy_factor * mult;
+        let mat3 = base_rare * total_enemy_factor * mult;
+        
+        // XP calculation: XP is per-stage accumulation, NOT geometric series
+        // XP = BASE × stage × xp_mult
+        let xp = base_xp * stage * self.xp_mult;
         
         (mat1, mat2, mat3, xp)
     }

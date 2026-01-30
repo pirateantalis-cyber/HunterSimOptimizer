@@ -1,4 +1,5 @@
 import logging
+import random
 import statistics
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -371,7 +372,12 @@ class Simulation():
         if self.current_stage % 100 == 0 and self.current_stage > 0:
             self.enemies = [Boss(f'B{self.current_stage:>3}{1:>3}', hunter, self.current_stage, self)]
         else:
-            self.enemies = [Enemy(f'E{self.current_stage:>3}{i+1:>3}', hunter, self.current_stage, self) for i in range(10)]
+            # 10 enemies per stage: 1 always XP, 9 randomly assigned to resources
+            loot_distribution = ['xp']
+            for _ in range(9):
+                loot_distribution.append(random.choice(['common', 'uncommon', 'rare']))
+            random.shuffle(loot_distribution)  # Randomize order
+            self.enemies = [Enemy(f'E{self.current_stage:>3}{i+1:>3}', hunter, self.current_stage, self, loot_distribution[i]) for i in range(10)]
 
     def refresh_enemies(self) -> None:
         """Remove dead enemies from the list.
@@ -385,6 +391,8 @@ class Simulation():
             defaultdict: Results of the simulation.
         """
         self.simulate_combat(self.hunter)
+        # Use calculate_final_loot for proper geometric series calculation
+        self.hunter.calculate_final_loot()
         return self.hunter.get_results() | {'elapsed_time': self.elapsed_time}
 
     def simulate_combat(self, hunter: Hunter) -> None:
@@ -442,7 +450,8 @@ class Simulation():
                 if hunter.is_dead():
                     return
             self.complete_stage()
-        raise ValueError('Hunter is dead, no return triggered')
+        # Hunter reached max stage or died
+        return
 
 
 def main():

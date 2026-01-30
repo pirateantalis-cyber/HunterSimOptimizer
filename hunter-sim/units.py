@@ -91,17 +91,19 @@ def knox_scaling(stage: int) -> float:
 
 class Enemy:
     ### CREATION
-    def __init__(self, name: str, hunter: Hunter, stage: int, sim) -> None:
+    def __init__(self, name: str, hunter: Hunter, stage: int, sim, loot_type: str = 'common') -> None:
         """Creates an Enemy instance.
 
         Args:
             name (str): Name of the enemy. Usually `E{stage}{number}`.
             hunter (Hunter): The hunter that this enemy is fighting.
             stage (int): The stage of the enemy, for stat selection.
+            loot_type (str): Type of loot this enemy drops ('xp', 'common', 'uncommon', 'rare').
             sim (Simulation): The simulation that this enemy is a part of.
         """
         self.__create__(name=name, **self.fetch_stats(hunter, stage))
         self.sim = sim
+        self.loot_type = loot_type
         self.on_create(hunter)
 
     def fetch_stats(self, hunter: Hunter, stage: int) -> dict:
@@ -352,7 +354,7 @@ class Enemy:
         self.sim.queue = [(p1, p2, u) for p1, p2, u in self.sim.queue if u not in ['enemy', 'enemy_special']]
         heapify(self.sim.queue)
         self.sim.hunter.total_kills += 1
-        self.sim.hunter.on_kill()
+        self.sim.hunter.on_kill(loot_type=self.loot_type)
 
     def kill(self) -> None:
         """Kills the unit.
@@ -393,7 +395,8 @@ class Boss(Enemy):
             stage (int): The stage of the boss, for stat selection.
             sim (Simulation): The simulation that this enemy is a part of.
         """
-        super(Boss, self).__init__(name, hunter, stage, sim)
+        # Bosses drop 'boss' loot type (special handling)
+        super(Boss, self).__init__(name, hunter, stage, sim, loot_type='boss')
         self.base_power: float = self.power  # Store base power for enrage calculation
         self.enrage_stacks: int = 0
         self.harden_ticks_left: int = 0 # Exoscarab secondary attack mechanic
@@ -418,7 +421,7 @@ class Boss(Enemy):
         enemy_stats = Enemy.fetch_stats(self, hunter, stage)
         
         if isinstance(hunter, Borge):
-            # CIFI formula: Borge boss multipliers
+            # CIFI formula: Borge boss multipliers (verified from APK extraction)
             # HP: 90x enemy HP, Power: 3.63x enemy power
             base_speed = 4.53 - stage * 0.006
             base_speed2 = base_speed * 1.8  # Secondary attack is slower
@@ -426,12 +429,12 @@ class Boss(Enemy):
             result = {
                 'hp': enemy_stats['hp'] * 90,
                 'power': enemy_stats['power'] * 3.63,
-                'regen': enemy_stats['regen'] * 2.5,  # Boss regen multiplier
-                'special_chance': min(enemy_stats['special_chance'] + 0.08, 0.25),  # Capped at 25%
-                'special_damage': min(enemy_stats['special_damage'] + 0.5, 2.5),  # Capped at 250%
+                'regen': enemy_stats['regen'] * 1.92,  # APK: BossExtraHpRegen = 1.92 (was 2.5)
+                'special_chance': min(enemy_stats['special_chance'] + 0.04, 0.25),  # APK: +4% (was +8%)
+                'special_damage': min(enemy_stats['special_damage'] + 0.25, 2.5),  # APK: +0.25 (was +0.5)
                 'damage_reduction': min(0.05 + stage * 0.0004, 0.25),
                 'evade_chance': 0.004 if stage > 100 else 0,
-                'speed': base_speed * 2.1,  # Boss attacks slower
+                'speed': base_speed * 2.42,  # APK: BossExtraAtkSpeedSlower = 2.42 (was 2.1)
                 'enrage_effect': base_speed / 200,  # Speed reduction per stack
                 'enrage_effect2': 0,
             }
@@ -451,13 +454,13 @@ class Boss(Enemy):
             
             result = {
                 'hp': enemy_stats['hp'] * 48,
-                'power': enemy_stats['power'] * 3.0,  # WASM: select_if(3.0, 1.0, is_boss)
-                'regen': enemy_stats['regen'] * 6,  # Ozzy boss has high regen
-                'special_chance': min(enemy_stats['special_chance'] + 0.1, 0.25),  # WASM: +0.1 for boss
+                'power': enemy_stats['power'] * 3.0,  # APK: BossExtraAtkPower = 3.0
+                'regen': enemy_stats['regen'] * 6,  # APK: BossExtraHpRegen = 6.0
+                'special_chance': min(enemy_stats['special_chance'] + 0.13, 0.25),  # APK: +13% (was +10%)
                 'special_damage': min(enemy_stats['special_damage'], 2.5),  # Already capped
                 'damage_reduction': min(0.05 + stage * 0.0004, 0.25),
                 'evade_chance': 0.01 if stage > 100 else 0,
-                'speed': base_speed * 2.45,  # WASM: select_if(2.45, 1.0, is_boss)
+                'speed': base_speed * 2.45,  # APK: BossExtraAtkSpeedSlower = 2.45
                 'enrage_effect': base_speed / 200,
                 'enrage_effect2': 0,
             }
@@ -479,13 +482,13 @@ class Boss(Enemy):
             
             result = {
                 'hp': enemy_stats['hp'] * 120,
-                'power': enemy_stats['power'] * 4.0,
-                'regen': enemy_stats['regen'] * 3,
-                'special_chance': min(enemy_stats['special_chance'] + 0.06, 0.25),
-                'special_damage': min(enemy_stats['special_damage'] + 0.4, 2.5),
+                'power': enemy_stats['power'] * 4.0,  # APK: BossExtraAtkPower = 4.0
+                'regen': enemy_stats['regen'] * 2.0,  # APK: BossExtraHpRegen = 2.0 (was 3.0)
+                'special_chance': min(enemy_stats['special_chance'] + 0.13, 0.25),  # APK: +13% (was +6%)
+                'special_damage': min(enemy_stats['special_damage'], 2.5),  # APK: +0% (was +0.4)
                 'damage_reduction': min(0.05 + stage * 0.0004, 0.25),
                 'evade_chance': 0.006 if stage > 100 else 0,
-                'speed': base_speed * 2.0,
+                'speed': base_speed * 2.85,  # APK: BossExtraAtkSpeedSlower = 2.85 (was 2.0)
                 'enrage_effect': base_speed / 200,
                 'enrage_effect2': 0,
             }

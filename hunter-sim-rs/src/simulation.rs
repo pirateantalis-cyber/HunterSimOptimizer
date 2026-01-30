@@ -4,11 +4,39 @@ use crate::config::{BuildConfig, HunterType};
 use crate::enemy::{Enemy, SecondaryAttackType};
 use crate::hunter::Hunter;
 use crate::stats::{AggregatedStats, SimResult};
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::collections::BinaryHeap;
 use std::cmp::Ordering;
+
+/// Fast RNG wrapper for better performance
+#[derive(Clone)]
+pub struct FastRng {
+    inner: fastrand::Rng,
+}
+
+impl FastRng {
+    #[inline(always)]
+    pub fn new(seed: u64) -> Self {
+        Self {
+            inner: fastrand::Rng::with_seed(seed),
+        }
+    }
+
+    #[inline(always)]
+    pub fn f64(&mut self) -> f64 {
+        self.inner.f64()
+    }
+
+    #[inline(always)]
+    pub fn u32(&mut self) -> u32 {
+        self.inner.u32(..)
+    }
+
+    #[inline(always)]
+    pub fn gen_range(&mut self, low: u32, high: u32) -> u32 {
+        self.inner.u32(low..high)
+    }
+}
 
 /// Event in the simulation queue
 /// Python: (time, priority, action) tuple in heapq
@@ -54,7 +82,13 @@ enum Action {
 
 /// Run a single simulation - IDENTICAL to Python's Simulation.run()
 pub fn run_simulation(config: &BuildConfig) -> SimResult {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = FastRng::new(rand::random::<u64>());
+    run_simulation_with_rng(config, &mut rng)
+}
+
+/// Run a single simulation with a specific seed
+pub fn run_simulation_with_seed(config: &BuildConfig, seed: u64) -> SimResult {
+    let mut rng = FastRng::new(seed);
     run_simulation_with_rng(config, &mut rng)
 }
 
@@ -63,9 +97,30 @@ fn round3(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0
 }
 
+/// Early termination check for obviously bad runs
+#[inline(always)]
+fn can_terminate(hunter: &Hunter, elapsed_time: f64) -> bool {
+    // Terminate if dead
+    if hunter.is_dead() {
+        return true;
+    }
+    
+    // Terminate if out of revives and current stage is too low for time remaining
+    // Rough estimate: need at least 10 stages per minute of remaining time
+    let time_remaining_hours = (3600.0 - elapsed_time) / 3600.0; // Convert to hours
+    let estimated_max_stages = hunter.current_stage as f64 + time_remaining_hours * 600.0; // 600 stages/hour is very optimistic
+    
+    // If we can't reach stage 100 even with best case, terminate
+    if estimated_max_stages < 100.0 && hunter.max_revives == 0 {
+        return true;
+    }
+    
+    false
+}
+
 /// Run a simulation with a specific RNG
 /// This mirrors Python's Simulation.simulate_combat() EXACTLY
-pub fn run_simulation_with_rng(config: &BuildConfig, rng: &mut impl Rng) -> SimResult {
+pub fn run_simulation_with_rng(config: &BuildConfig, rng: &mut FastRng) -> SimResult {
     let mut hunter = Hunter::from_config(config);
     
     // Python: self.elapsed_time: int = 0
@@ -96,7 +151,7 @@ pub fn run_simulation_with_rng(config: &BuildConfig, rng: &mut impl Rng) -> SimR
     let debug = std::env::var("DEBUG_SIM").is_ok();
     
     // Python: while not hunter.is_dead():
-    'main_loop: while !hunter.is_dead() {
+    'main_loop: while !can_terminate(&hunter, elapsed_time as f64) {
         let stage = hunter.current_stage;
         let is_boss = stage % 100 == 0 && stage > 0;
         
@@ -245,12 +300,14 @@ pub fn run_simulation_with_rng(config: &BuildConfig, rng: &mut impl Rng) -> SimR
             }
             
             // Apply pending trample kills (mark additional enemies as dead)
-            // Note: Loot for these kills is handled by the main on_kill() which runs once
-            // Python also handles loot in on_kill(), called via enemy.kill() -> on_death()
+            // Each trampled enemy generates loot via on_kill(), matching Python's behavior
+            // Python calls enemy.kill() for each which triggers on_death() -> on_kill()
             for i in 1..=pending_trample_kills {
                 if enemy_idx + i < enemies.len() {
                     enemies[enemy_idx + i].hp = 0.0;
                     hunter.result.kills += 1;
+                    // Call on_kill for each trampled enemy (generates loot)
+                    on_kill(&mut hunter, rng, false);  // Trample only works on non-boss enemies
                 }
             }
             
@@ -280,20 +337,67 @@ pub fn run_simulation_with_rng(config: &BuildConfig, rng: &mut impl Rng) -> SimR
             on_kill(&mut hunter, rng, is_boss);
             hunter.result.kills += 1;
             
-            enemy_idx += 1;
+            // Skip enemies that were killed by trample
+            enemy_idx += 1 + pending_trample_kills;
         }
         
         // Python: self.complete_stage()
         // Stage completion effects (Knox Calypso's Advantage, etc.)
         on_stage_complete(&mut hunter, rng, is_boss);
-        // Note: Loot is calculated per kill in on_kill(), not per stage
         hunter.current_stage += 1;
+        
+        if hunter.current_stage >= hunter.max_stage {
+            hunter.hp = 0.0;
+            hunter.revive_count = hunter.max_revives;  // Prevent revive at max_stage
+        }
         
         // Safety limit
         if hunter.current_stage > 1000 {
             break;
         }
     }
+    
+    // === CALCULATE FINAL LOOT USING GEOMETRIC SERIES FORMULA (after all stages complete) ===
+    // Loot: BASE × GeomSum × EnemiesPerStage × LootMultiplier
+    let final_stage = hunter.current_stage as f64;
+    let enemies_per_stage = 10.0;
+    
+    // Hunter-specific StageLootMultiplier (from APK: game_dump.cs)
+    let stage_loot_mult = match hunter.hunter_type {
+        crate::config::HunterType::Borge => 1.051_f64,
+        crate::config::HunterType::Ozzy => 1.059_f64,
+        crate::config::HunterType::Knox => 1.074_f64,
+    };
+    
+    // Geometric series: sum of (mult^0 + mult^1 + ... + mult^(stage-1))
+    // Formula: (mult^stage - 1) / (mult - 1)
+    let geom_sum = if stage_loot_mult > 1.0 {
+        (stage_loot_mult.powf(final_stage) - 1.0) / (stage_loot_mult - 1.0)
+    } else {
+        final_stage
+    };
+    
+    // Total enemy factor: geometric sum × enemies per stage
+    let total_enemy_factor = geom_sum * enemies_per_stage;
+    
+    // Per-hunter base loot values (per-enemy per-stage at stage 1, from IRL data)
+    let (base_common, base_uncommon, base_rare, base_xp) = match hunter.hunter_type {
+        crate::config::HunterType::Borge => (30.74, 26.44, 19.92, 1640000000000.0),
+        crate::config::HunterType::Ozzy => (11.1, 9.56, 7.2, 96600000000.0),
+        crate::config::HunterType::Knox => (0.00348, 0.00302, 0.00228, 728.0),
+    };
+    
+    // Loot multiplier including all static bonuses
+    let loot_mult = hunter.loot_mult;
+    
+    // Final loot = BASE × GeomSum × EnemiesPerStage × LootMultiplier
+    hunter.result.loot_common = base_common * total_enemy_factor * loot_mult;
+    hunter.result.loot_uncommon = base_uncommon * total_enemy_factor * loot_mult;
+    hunter.result.loot_rare = base_rare * total_enemy_factor * loot_mult;
+    hunter.result.total_loot = hunter.result.loot_common + hunter.result.loot_uncommon + hunter.result.loot_rare;
+    
+    // XP: BASE × Stages × XP_Multiplier (no enemies_per_stage multiplier)
+    hunter.result.total_xp = base_xp * final_stage * hunter.xp_mult;
     
     // Finalize
     hunter.result.final_stage = hunter.current_stage;
@@ -350,7 +454,7 @@ fn apply_stun(hunter: &mut Hunter, queue: &mut BinaryHeap<Event>, _is_boss: bool
 }
 
 /// Apply spawn effects - IDENTICAL to Python's hunter.apply_pog(), apply_ood(), etc.
-fn apply_spawn_effects(hunter: &mut Hunter, enemy: &mut Enemy, _rng: &mut impl Rng) {
+fn apply_spawn_effects(hunter: &mut Hunter, enemy: &mut Enemy, _rng: &mut FastRng) {
     let is_boss = enemy.is_boss;
     let stage_effect = if is_boss { 0.5 } else { 1.0 };
     
@@ -384,10 +488,11 @@ fn apply_spawn_effects(hunter: &mut Hunter, enemy: &mut Enemy, _rng: &mut impl R
 
 /// Hunter attack - mirrors Python's Borge.attack() / Ozzy.attack() / Knox.attack()
 /// Returns number of additional enemies killed by trample (caller handles marking them dead)
+#[inline(always)]
 fn hunter_attack(
     hunter: &mut Hunter, 
     enemy: &mut Enemy, 
-    rng: &mut impl Rng, 
+    rng: &mut FastRng, 
     _elapsed_time: f64,
 ) -> usize {
     let is_boss = enemy.is_boss;
@@ -397,15 +502,16 @@ fn hunter_attack(
     let effective_effect_chance = hunter.get_effective_effect_chance(is_boss);
     
     // Calculate damage based on hunter type
-    let damage = match hunter.hunter_type {
+    // Borge returns (damage, trample_kills), others return (damage, 0)
+    let (damage, trample_kills) = match hunter.hunter_type {
         HunterType::Borge => {
             borge_attack(hunter, enemy, rng, effective_power, effective_effect_chance, is_boss)
         }
         HunterType::Ozzy => {
-            ozzy_attack(hunter, enemy, rng, effective_power, effective_effect_chance, is_boss)
+            (ozzy_attack(hunter, enemy, rng, effective_power, effective_effect_chance, is_boss), 0)
         }
         HunterType::Knox => {
-            knox_attack(hunter, enemy, rng, effective_power, effective_effect_chance, is_boss)
+            (knox_attack(hunter, enemy, rng, effective_power, effective_effect_chance, is_boss), 0)
         }
     };
     
@@ -420,7 +526,7 @@ fn hunter_attack(
         }
         
         // Life of the Hunt
-        if hunter.life_of_the_hunt > 0 && rng.gen::<f64>() < effective_effect_chance {
+        if hunter.life_of_the_hunt > 0 && rng.f64() < effective_effect_chance {
             let loth_heal = damage * hunter.life_of_the_hunt as f64 * 0.06;
             hunter.hp = (hunter.hp + loth_heal).min(hunter.max_hp);
             hunter.result.life_of_the_hunt_healing += loth_heal;
@@ -428,7 +534,7 @@ fn hunter_attack(
         }
         
         // Impeccable Impacts (stun)
-        if hunter.impeccable_impacts > 0 && rng.gen::<f64>() < effective_effect_chance {
+        if hunter.impeccable_impacts > 0 && rng.f64() < effective_effect_chance {
             let stun_effect = if is_boss { 0.5 } else { 1.0 };
             let stun_duration = hunter.impeccable_impacts as f64 * 0.1 * stun_effect;
             hunter.pending_stun_duration = stun_duration;
@@ -436,26 +542,27 @@ fn hunter_attack(
         }
         
         // Fires of War
-        if hunter.fires_of_war > 0 && rng.gen::<f64>() < effective_effect_chance {
+        if hunter.fires_of_war > 0 && rng.f64() < effective_effect_chance {
             hunter.fires_of_war_buff = hunter.fires_of_war as f64 * 0.1;
             hunter.result.effect_procs += 1;
         }
     }
     
-    0  // Trample handled inside borge_attack now
+    trample_kills  // Return trample kills for Borge, 0 for others
 }
 
 /// Borge attack - mirrors Python's Borge.attack()
+/// Returns (damage, trample_kills) where trample_kills is the number of ADDITIONAL enemies killed
 fn borge_attack(
     hunter: &mut Hunter, 
     enemy: &mut Enemy, 
-    rng: &mut impl Rng, 
+    rng: &mut FastRng, 
     effective_power: f64, 
     _effective_effect_chance: f64,
     is_boss: bool,
-) -> f64 {
+) -> (f64, usize) {
     // Python: if random.random() < self.special_chance: damage = self.power * self.special_damage
-    let damage = if rng.gen::<f64>() < hunter.special_chance {
+    let damage = if rng.f64() < hunter.special_chance {
         let crit_dmg = effective_power * hunter.special_damage;
         hunter.result.crits += 1;
         hunter.result.extra_damage_from_crits += crit_dmg - effective_power;
@@ -469,11 +576,17 @@ fn borge_attack(
     hunter.result.attacks += 1;
     
     // Check for trample (Borge mod)
+    // Python: trample_power = min(int(damage / enemies[0].max_hp), 10)
+    // Returns the number of ADDITIONAL enemies killed (not counting current target)
+    let mut trample_kills: usize = 0;
     if hunter.has_trample && !is_boss && damage > enemy.max_hp {
-        let trample_power = (damage / enemy.max_hp) as i32;
+        let trample_power = ((damage / enemy.max_hp) as usize).min(10);
         if trample_power > 1 {
             enemy.hp = 0.0;
-            hunter.result.trample_kills += trample_power;
+            // Python counts current_target + extras, but we return only extras to skip
+            // trample_power - 1 because current enemy is already being processed
+            trample_kills = trample_power - 1;
+            hunter.result.trample_kills += trample_kills as i32;
         } else {
             enemy.take_damage(damage);
         }
@@ -481,7 +594,7 @@ fn borge_attack(
         enemy.take_damage(damage);
     }
     
-    damage
+    (damage, trample_kills)
 }
 
 /// Ozzy attack - mirrors Python's Ozzy.attack()
@@ -490,7 +603,7 @@ fn borge_attack(
 fn ozzy_attack(
     hunter: &mut Hunter, 
     enemy: &mut Enemy, 
-    rng: &mut impl Rng, 
+    rng: &mut FastRng, 
     effective_power: f64, 
     effective_effect_chance: f64,
     is_boss: bool,
@@ -500,7 +613,7 @@ fn ozzy_attack(
     hunter.result.attacks += 1;
     
     // Python: Trickster's Boon at half effect_chance gives evade charge
-    if hunter.tricksters_boon > 0 && rng.gen::<f64>() < effective_effect_chance / 2.0 {
+    if hunter.tricksters_boon > 0 && rng.f64() < effective_effect_chance / 2.0 {
         hunter.trickster_charges += 1;
         hunter.result.effect_procs += 1;
     }
@@ -510,12 +623,12 @@ fn ozzy_attack(
     let mut echo_triggered = false;
     
     // Python: if random.random() < self.special_chance: trigger multistrike
-    if rng.gen::<f64>() < hunter.special_chance {
+    if rng.f64() < hunter.special_chance {
         multistrike_triggered = true;
     }
     
     // Python: Thousand Needles stun (only on main attack)
-    if hunter.thousand_needles > 0 && rng.gen::<f64>() < effective_effect_chance {
+    if hunter.thousand_needles > 0 && rng.f64() < effective_effect_chance {
         let stun_effect = if is_boss { 0.5 } else { 1.0 };
         let stun_duration = hunter.thousand_needles as f64 * 0.05 * stun_effect;
         hunter.pending_stun_duration = stun_duration;
@@ -523,7 +636,7 @@ fn ozzy_attack(
     }
     
     // Python: Echo Bullets at half effect chance
-    if hunter.echo_bullets > 0 && rng.gen::<f64>() < effective_effect_chance / 2.0 {
+    if hunter.echo_bullets > 0 && rng.f64() < effective_effect_chance / 2.0 {
         echo_triggered = true;
         hunter.result.effect_procs += 1;
     }
@@ -536,7 +649,7 @@ fn ozzy_attack(
     
     // === OMEN OF DECAY MULTIPLIER ===
     // Python: if self.talents["omen_of_decay"] and random.random() < (self.effect_chance / 2):
-    let omen_multiplier = if hunter.omen_of_decay > 0 && rng.gen::<f64>() < effective_effect_chance / 2.0 {
+    let omen_multiplier = if hunter.omen_of_decay > 0 && rng.f64() < effective_effect_chance / 2.0 {
         hunter.result.effect_procs += 1;
         1.0 + (hunter.omen_of_decay as f64 * 0.03)
     } else {
@@ -564,7 +677,7 @@ fn ozzy_attack(
     }
     
     // Crippling Shots proc for NEXT attack (main attack can proc)
-    if hunter.crippling_shots > 0 && rng.gen::<f64>() < effective_effect_chance {
+    if hunter.crippling_shots > 0 && rng.f64() < effective_effect_chance {
         hunter.decay_stacks += hunter.crippling_shots;
         hunter.result.effect_procs += 1;
     }
@@ -591,7 +704,7 @@ fn ozzy_attack(
         }
         
         // Crippling Shots proc (multistrike can proc)
-        if hunter.crippling_shots > 0 && rng.gen::<f64>() < effective_effect_chance {
+        if hunter.crippling_shots > 0 && rng.f64() < effective_effect_chance {
             hunter.decay_stacks += hunter.crippling_shots;
             hunter.result.effect_procs += 1;
         }
@@ -615,7 +728,7 @@ fn ozzy_attack(
         }
         
         // Crippling Shots proc (echo can proc)
-        if hunter.crippling_shots > 0 && rng.gen::<f64>() < effective_effect_chance {
+        if hunter.crippling_shots > 0 && rng.f64() < effective_effect_chance {
             hunter.decay_stacks += hunter.crippling_shots;
             hunter.result.effect_procs += 1;
         }
@@ -629,7 +742,7 @@ fn ozzy_attack(
 fn knox_attack(
     hunter: &mut Hunter, 
     enemy: &mut Enemy, 
-    rng: &mut impl Rng, 
+    rng: &mut FastRng, 
     effective_power: f64, 
     effective_effect_chance: f64,
     _is_boss: bool,
@@ -642,7 +755,7 @@ fn knox_attack(
     // Python: ghost_chance = self.talents["ghost_bullets"] * 0.0667
     if hunter.ghost_bullets > 0 {
         let ghost_chance = hunter.ghost_bullets as f64 * 0.0667;
-        if rng.gen::<f64>() < ghost_chance {
+        if rng.f64() < ghost_chance {
             num_projectiles += 1;
             hunter.result.ghost_bullets += 1;  // Track ghost bullet procs
         }
@@ -652,13 +765,14 @@ fn knox_attack(
     let mut total_damage = 0.0;
     
     for i in 0..num_projectiles {
-        // Each projectile deals a portion of total power
-        // Python: bullet_damage = self.power / self.salvo_projectiles
-        let mut bullet_damage = effective_power / base_salvo;
+        // Each projectile deals FULL attack power (not split!)
+        // This is how Knox can clear stages quickly with enough bullets
+        // Python: bullet_damage = self.power (FULL damage per bullet)
+        let mut bullet_damage = effective_power;
         
         // Check for charge (Knox's crit equivalent)
         // Python: if random.random() < self.charge_chance: bullet_damage *= (1 + self.charge_gained)
-        if rng.gen::<f64>() < hunter.charge_chance {
+        if rng.f64() < hunter.charge_chance {
             bullet_damage *= 1.0 + hunter.charge_gained;
             hunter.result.crits += 1;  // Track charges as crits
         }
@@ -667,7 +781,7 @@ fn knox_attack(
         // Python: if i == num_projectiles - 1 and self.talents["finishing_move"] > 0:
         //     if random.random() < (self.effect_chance * 2): bullet_damage *= self.special_damage
         if i == num_projectiles - 1 && hunter.finishing_move > 0 {
-            if rng.gen::<f64>() < effective_effect_chance * 2.0 {
+            if rng.f64() < effective_effect_chance * 2.0 {
                 bullet_damage *= hunter.special_damage;
                 hunter.result.effect_procs += 1;
             }
@@ -703,9 +817,10 @@ fn knox_attack(
 }
 
 /// Enemy attack - mirrors Python's Enemy.attack()
-fn enemy_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng) {
+#[inline(always)]
+fn enemy_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut FastRng) {
     // Python: if random.random() < self.special_chance: damage = self.power * self.special_damage
-    let (damage, is_crit) = if rng.gen::<f64>() < enemy.special_chance {
+    let (damage, is_crit) = if rng.f64() < enemy.special_chance {
         (enemy.power * enemy.special_damage, true)
     } else {
         (enemy.power, false)
@@ -716,7 +831,7 @@ fn enemy_attack(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng) {
 }
 
 /// Enemy special attack - mirrors Python's Boss.attack_special()
-fn enemy_attack_special(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl Rng) {
+fn enemy_attack_special(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut FastRng) {
     match enemy.secondary_type {
         SecondaryAttackType::Gothmorgor => {
             // Gothmorgor: attack + enrage
@@ -732,7 +847,7 @@ fn enemy_attack_special(hunter: &mut Hunter, enemy: &mut Enemy, rng: &mut impl R
 }
 
 /// Hunter receives damage - mirrors Python's Borge/Ozzy/Knox.receive_damage()
-fn hunter_receive_damage(hunter: &mut Hunter, attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut impl Rng) {
+fn hunter_receive_damage(hunter: &mut Hunter, attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut FastRng) {
     match hunter.hunter_type {
         HunterType::Borge => borge_receive_damage(hunter, attacker, damage, is_crit, rng),
         HunterType::Ozzy => ozzy_receive_damage(hunter, attacker, damage, is_crit, rng),
@@ -741,9 +856,9 @@ fn hunter_receive_damage(hunter: &mut Hunter, attacker: &mut Enemy, damage: f64,
 }
 
 /// Borge receive damage - mirrors Python's Borge.receive_damage()
-fn borge_receive_damage(hunter: &mut Hunter, attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut impl Rng) {
+fn borge_receive_damage(hunter: &mut Hunter, attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut FastRng) {
     // Python: if random.random() < self.evade_chance: return
-    if rng.gen::<f64>() < hunter.evade_chance {
+    if rng.f64() < hunter.evade_chance {
         hunter.result.evades += 1;
         return;
     }
@@ -787,7 +902,7 @@ fn borge_receive_damage(hunter: &mut Hunter, attacker: &mut Enemy, damage: f64, 
 }
 
 /// Ozzy receive damage - mirrors Python's Ozzy.receive_damage()
-fn ozzy_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut impl Rng) {
+fn ozzy_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, is_crit: bool, rng: &mut FastRng) {
     // Python Step 1: Check trickster charges FIRST
     if hunter.trickster_charges > 0 {
         hunter.trickster_charges -= 1;
@@ -796,7 +911,7 @@ fn ozzy_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, 
     }
     
     // Python Step 2: Check normal evade
-    if rng.gen::<f64>() < hunter.evade_chance {
+    if rng.f64() < hunter.evade_chance {
         hunter.result.evades += 1;
         return;
     }
@@ -814,7 +929,7 @@ fn ozzy_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, 
     
     // Python Step 4: Dance of Dashes - on crit, chance to gain trickster charge
     if is_crit && hunter.dance_of_dashes > 0 {
-        if rng.gen::<f64>() < hunter.dance_of_dashes as f64 * 0.05 {
+        if rng.f64() < hunter.dance_of_dashes as f64 * 0.05 {
             hunter.trickster_charges += 1;
             hunter.result.effect_procs += 1;
         }
@@ -827,12 +942,12 @@ fn ozzy_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, 
 }
 
 /// Knox receive damage - mirrors Python's Knox.receive_damage()
-fn knox_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, _is_crit: bool, rng: &mut impl Rng) {
+fn knox_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, _is_crit: bool, rng: &mut FastRng) {
     let mut final_damage = damage;
     
     // Check for block first
     // Python: if random.random() < self.block_chance: blocked_amount = damage * 0.5
-    if rng.gen::<f64>() < hunter.block_chance {
+    if rng.f64() < hunter.block_chance {
         let blocked = damage * 0.5;
         final_damage -= blocked;
         // Track blocked damage (we could add a field for this)
@@ -856,41 +971,23 @@ fn knox_receive_damage(hunter: &mut Hunter, _attacker: &mut Enemy, damage: f64, 
 }
 
 /// On kill effects - mirrors Python's Hunter.on_kill()
-fn on_kill(hunter: &mut Hunter, rng: &mut impl Rng, is_boss: bool) {
+fn on_kill(hunter: &mut Hunter, rng: &mut FastRng, is_boss: bool) {
     let effective_effect_chance = hunter.get_effective_effect_chance(is_boss);
     
     // DEBUG: Track how many times on_kill is called
     hunter.result.on_kill_calls += 1;
     
-    // === LOOT CALCULATION (per kill, matching Python's on_kill) ===
-    let stage = hunter.current_stage as f64;
-    let mut loot_mult = hunter.loot_mult;
-    
-    // Call Me Lucky Loot proc (not on bosses)
-    // Python: if (stage % 100 != 0 and stage > 0) and random.random() < self.effect_chance:
-    //     if self.talents["call_me_lucky_loot"] > 0: loot_mult *= 1 + (cmll * 0.2)
+    // Call Me Lucky Loot proc (not on bosses) - independent RNG, separate from other effect procs
+    // Each talent/ability has its own effect_chance roll, so Lucky Loot gets its own counter
     if !is_boss && hunter.call_me_lucky_loot > 0 {
-        if rng.gen::<f64>() < effective_effect_chance {
-            loot_mult *= 1.0 + hunter.call_me_lucky_loot as f64 * 0.2;
-            hunter.result.effect_procs += 1;
+        if rng.f64() < effective_effect_chance {
+            hunter.result.lucky_loot_procs += 1;
         }
     }
     
-    // WASM-based per-resource loot (constants from WASM analysis)
-    let mat1 = stage * 0.347 * loot_mult;
-    let mat2 = stage * 0.330 * loot_mult;
-    let mat3 = stage * 0.247 * loot_mult;
-    let xp = stage * 0.0755 * loot_mult * hunter.xp_mult;
-    
-    hunter.result.loot_common += mat1;
-    hunter.result.loot_uncommon += mat2;
-    hunter.result.loot_rare += mat3;
-    hunter.result.total_xp += xp;
-    hunter.result.total_loot += mat1 + mat2 + mat3;
-    
     // Unfair Advantage - Python: if random.random() < effect_chance and UA:
     //   heal = max_hp * 0.02 * UA_level
-    if hunter.unfair_advantage > 0 && rng.gen::<f64>() < effective_effect_chance {
+    if hunter.unfair_advantage > 0 && rng.f64() < effective_effect_chance {
         let heal = hunter.max_hp * 0.02 * hunter.unfair_advantage as f64;
         hunter.hp = (hunter.hp + heal).min(hunter.max_hp);
         hunter.result.unfair_advantage_healing += heal;
@@ -901,14 +998,16 @@ fn on_kill(hunter: &mut Hunter, rng: &mut impl Rng, is_boss: bool) {
             hunter.empowered_regen += 5;
         }
     }
+    
+    // Unfair Advantage healing is processed in on_kill()
 }
 
 /// On stage complete - mirrors Python's Simulation.complete_stage()
-fn on_stage_complete(hunter: &mut Hunter, rng: &mut impl Rng, is_boss: bool) {
+fn on_stage_complete(hunter: &mut Hunter, rng: &mut FastRng, is_boss: bool) {
     let effective_effect_chance = hunter.get_effective_effect_chance(is_boss);
     
     // Calypso's Advantage (Knox) - chance to gain Hundred Souls stack
-    if hunter.calypsos_advantage > 0 && rng.gen::<f64>() < effective_effect_chance * 2.5 {
+    if hunter.calypsos_advantage > 0 && rng.f64() < effective_effect_chance * 2.5 {
         let max_stacks = 100 + hunter.soul_amplification * 10;
         if hunter.hundred_souls_stacks < max_stacks {
             hunter.hundred_souls_stacks += 1;
@@ -921,13 +1020,13 @@ fn on_stage_complete(hunter: &mut Hunter, rng: &mut impl Rng, is_boss: bool) {
 pub fn run_simulations_parallel(config: &BuildConfig, count: usize) -> Vec<SimResult> {
     (0..count)
         .into_par_iter()
-        .map(|_| run_simulation(config))
+        .map(|i| run_simulation_with_seed(config, i as u64))
         .collect()
 }
 
 /// Run multiple simulations sequentially
 pub fn run_simulations_sequential(config: &BuildConfig, count: usize) -> Vec<SimResult> {
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = FastRng::new(rand::random::<u64>());
     (0..count)
         .map(|_| run_simulation_with_rng(config, &mut rng))
         .collect()

@@ -1,6 +1,8 @@
 //! CLI entry point for Hunter Simulator
+#![recursion_limit = "256"]
 
 use clap::{Parser, ValueEnum};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rust_sim::{
     config::BuildConfig,
     hunter::Hunter,
@@ -22,9 +24,9 @@ enum OutputFormat {
 #[command(version = "1.0")]
 #[command(about = "High-performance Hunter Simulator for CIFI idle game", long_about = None)]
 struct Args {
-    /// Path to the build configuration file (YAML or JSON)
+    /// Path to the build configuration file (YAML or JSON) or JSON array of configs
     #[arg(short, long)]
-    config: PathBuf,
+    configs: PathBuf,
 
     /// Number of simulations to run
     #[arg(short, long, default_value = "100")]
@@ -58,18 +60,37 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    // Load config
-    let config = match BuildConfig::from_file(&args.config) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error loading config: {}", e);
-            std::process::exit(1);
+    // Load configs
+    let configs: Vec<BuildConfig> = {
+        let content = match std::fs::read_to_string(&args.configs) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error reading config file: {}", e);
+                std::process::exit(1);
+            }
+        };
+        if content.trim_start().starts_with('[') {
+            match serde_json::from_str(&content) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error parsing config array: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            match BuildConfig::from_file(&args.configs) {
+                Ok(c) => vec![c],
+                Err(e) => {
+                    eprintln!("Error loading config: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
     };
 
     // Debug: print computed hunter stats
     if args.debug_stats {
-        let hunter = Hunter::from_config(&config);
+        let hunter = Hunter::from_config(&configs[0]);
         println!("============================================================");
         println!("RUST {:?} STATS", hunter.hunter_type);
         println!("============================================================");
@@ -83,6 +104,13 @@ fn main() {
         println!("Special Damage:{:.4}", hunter.special_damage);
         println!("Speed:         {:.4}", hunter.speed);
         println!("Lifesteal:     {:.4} ({:.2}%)", hunter.lifesteal, hunter.lifesteal * 100.0);
+        println!("Loot Mult:     {:.4}", hunter.loot_mult);
+        println!("XP Mult:       {:.4}", hunter.xp_mult);
+        println!();
+        println!("KNOX-SPECIFIC:");
+        println!("Charge Chance: {:.4} ({:.2}%)", hunter.charge_chance, hunter.charge_chance * 100.0);
+        println!("Charge Gained: {:.4}", hunter.charge_gained);
+        println!("Salvo:         {}", hunter.salvo_projectiles);
         println!();
         println!("BORGE-SPECIFIC:");
         println!("Minotaur DR:   {:.4} ({:.2}%)", hunter.minotaur_dr, hunter.minotaur_dr * 100.0);
@@ -95,7 +123,7 @@ fn main() {
 
     // Debug: print enemy/boss stats for a stage
     if let Some(stage) = args.debug_enemy_stage {
-        let hunter_type = config.get_hunter_type();
+        let hunter_type = configs[0].get_hunter_type();
         
         println!("============================================================");
         println!("RUST STAGE {} {:?} ENEMY/BOSS STATS", stage, hunter_type);
@@ -130,42 +158,50 @@ fn main() {
 
     // Run simulations
     let start = Instant::now();
-    let stats = run_and_aggregate(&config, args.num_sims, args.parallel);
+    let stats_vec: Vec<AggregatedStats> = configs.par_iter().map(|config| run_and_aggregate(config, args.num_sims, args.parallel)).collect();
     let elapsed = start.elapsed();
 
     // Output results
     match args.output {
         OutputFormat::Text => {
-            println!("=== Hunter Simulation Results ===");
-            println!("Simulations: {}", args.num_sims);
-            println!();
-            println!("Average Final Stage: {:.2} ± {:.2}", stats.avg_stage, stats.std_stage);
-            println!("Stage Range: {} - {}", stats.min_stage, stats.max_stage);
-            println!();
-            println!("Average Elapsed Time: {:.2}s", stats.avg_time);
-            println!("Average Total Loot: {:.0}", stats.avg_loot);
-            println!();
-            println!("--- Combat Stats ---");
-            println!("Avg Damage Dealt: {:.0}", stats.avg_damage);
-            println!("Avg Damage Taken: {:.0}", stats.avg_damage_taken);
-            println!("Avg Damage Mitigated: {:.0}", stats.avg_mitigated);
-            println!("Avg Lifesteal: {:.0}", stats.avg_lifesteal);
-            println!();
-            println!("Avg Attacks: {:.0}", stats.avg_attacks);
-            println!("Avg Crits: {:.0}", stats.avg_crits);
-            println!("Avg Kills: {:.0}", stats.avg_kills);
-            println!("Avg Evades: {:.0}", stats.avg_evades);
-            println!("Avg Trickster Evades: {:.0}", stats.avg_trickster_evades);
-            println!("Avg Enemy Attacks: {:.0}", stats.avg_enemy_attacks);
-            println!("Avg Effect Procs: {:.0}", stats.avg_effect_procs);
-            println!("Avg Stun Duration: {:.2}s", stats.avg_stun_duration);
-            
-            if args.timing {
+            if configs.len() > 1 {
+                println!("=== Hunter Simulation Results ({} configs) ===", configs.len());
+                println!("Total Simulations: {}", args.num_sims * configs.len());
+                println!("Total Time: {:.3}s", elapsed.as_secs_f64());
+                println!("Simulations/sec: {:.0}", (args.num_sims * configs.len()) as f64 / elapsed.as_secs_f64());
+            } else {
+                let stats = &stats_vec[0];
+                println!("=== Hunter Simulation Results ===");
+                println!("Simulations: {}", args.num_sims);
                 println!();
-                println!("--- Performance ---");
-                println!("Total time: {:.3}s", elapsed.as_secs_f64());
-                println!("Per simulation: {:.3}ms", elapsed.as_secs_f64() * 1000.0 / args.num_sims as f64);
-                println!("Simulations/sec: {:.0}", args.num_sims as f64 / elapsed.as_secs_f64());
+                println!("Average Final Stage: {:.2} ± {:.2}", stats.avg_stage, stats.std_stage);
+                println!("Stage Range: {} - {}", stats.min_stage, stats.max_stage);
+                println!();
+                println!("Average Elapsed Time: {:.2}s", stats.avg_time);
+                println!("Average Total Loot: {:.0}", stats.avg_loot);
+                println!();
+                println!("--- Combat Stats ---");
+                println!("Avg Damage Dealt: {:.0}", stats.avg_damage);
+                println!("Avg Damage Taken: {:.0}", stats.avg_damage_taken);
+                println!("Avg Damage Mitigated: {:.0}", stats.avg_mitigated);
+                println!("Avg Lifesteal: {:.0}", stats.avg_lifesteal);
+                println!();
+                println!("Avg Attacks: {:.0}", stats.avg_attacks);
+                println!("Avg Crits: {:.0}", stats.avg_crits);
+                println!("Avg Kills: {:.0}", stats.avg_kills);
+                println!("Avg Evades: {:.0}", stats.avg_evades);
+                println!("Avg Trickster Evades: {:.0}", stats.avg_trickster_evades);
+                println!("Avg Enemy Attacks: {:.0}", stats.avg_enemy_attacks);
+                println!("Avg Effect Procs: {:.0}", stats.avg_effect_procs);
+                println!("Avg Stun Duration: {:.2}s", stats.avg_stun_duration);
+                
+                if args.timing {
+                    println!();
+                    println!("--- Performance ---");
+                    println!("Total time: {:.3}s", elapsed.as_secs_f64());
+                    println!("Per simulation: {:.3}ms", elapsed.as_secs_f64() * 1000.0 / args.num_sims as f64);
+                    println!("Simulations/sec: {:.0}", args.num_sims as f64 / elapsed.as_secs_f64());
+                }
             }
         }
         OutputFormat::Json => {
@@ -173,49 +209,57 @@ fn main() {
                 "simulations": args.num_sims,
                 "parallel": args.parallel,
                 "elapsed_seconds": elapsed.as_secs_f64(),
-                "stats": {
-                    "avg_stage": stats.avg_stage,
-                    "std_stage": stats.std_stage,
-                    "min_stage": stats.min_stage,
-                    "max_stage": stats.max_stage,
-                    "avg_time": stats.avg_time,
-                    "avg_loot": stats.avg_loot,
-                    "avg_loot_per_hour": stats.avg_loot_per_hour,
-                    "avg_loot_common": stats.avg_loot_common,
-                    "avg_loot_uncommon": stats.avg_loot_uncommon,
-                    "avg_loot_rare": stats.avg_loot_rare,
-                    "avg_xp": stats.avg_xp,
-                    "avg_damage": stats.avg_damage,
-                    "avg_damage_taken": stats.avg_damage_taken,
-                    "avg_mitigated": stats.avg_mitigated,
-                    "avg_lifesteal": stats.avg_lifesteal,
-                    "avg_attacks": stats.avg_attacks,
-                    "avg_crits": stats.avg_crits,
-                    "avg_kills": stats.avg_kills,
-                    "avg_evades": stats.avg_evades,
-                    "avg_enemy_attacks": stats.avg_enemy_attacks,
-                    "avg_effect_procs": stats.avg_effect_procs,
-                    "avg_stun_duration": stats.avg_stun_duration,
-                    "avg_regen": stats.avg_regen,
-                    "avg_loth_healing": stats.avg_loth_healing,
-                    "avg_ua_healing": stats.avg_ua_healing,
-                    "avg_trample_kills": stats.avg_trample_kills,
-                    // Hunter-specific stats
-                    "avg_extra_from_crits": stats.avg_extra_from_crits,  // Borge
-                    "avg_helltouch": stats.avg_helltouch,                // Borge
-                    "avg_multistrikes": stats.avg_multistrikes,          // Ozzy
-                    "avg_ms_extra_damage": stats.avg_ms_extra_damage,    // Ozzy
-                    "avg_ghost_bullets": stats.avg_ghost_bullets,        // Knox
-                    "avg_extra_salvo_damage": stats.avg_extra_salvo_damage, // Knox
-                    // Debug stats
-                    "avg_on_kill_calls": stats.avg_on_kill_calls,
-                    "survival_rate": stats.survival_rate,
-                    "boss1_survival": stats.boss1_survival,
-                    "boss2_survival": stats.boss2_survival,
-                    "boss3_survival": stats.boss3_survival,
-                    "boss4_survival": stats.boss4_survival,
-                    "boss5_survival": stats.boss5_survival,
-                }
+                "stats": stats_vec.into_iter().map(|stats| {
+                    serde_json::json!({
+                        "avg_stage": stats.avg_stage,
+                        "std_stage": stats.std_stage,
+                        "min_stage": stats.min_stage,
+                        "max_stage": stats.max_stage,
+                        "avg_time": stats.avg_time,
+                        "avg_loot": stats.avg_loot,
+                        "avg_loot_per_hour": stats.avg_loot_per_hour,
+                        "min_loot_common": stats.min_loot_common,
+                        "max_loot_common": stats.max_loot_common,
+                        "avg_loot_common": stats.avg_loot_common,
+                        "min_loot_uncommon": stats.min_loot_uncommon,
+                        "max_loot_uncommon": stats.max_loot_uncommon,
+                        "avg_loot_uncommon": stats.avg_loot_uncommon,
+                        "min_loot_rare": stats.min_loot_rare,
+                        "max_loot_rare": stats.max_loot_rare,
+                        "avg_loot_rare": stats.avg_loot_rare,
+                        "avg_xp": stats.avg_xp,
+                        "avg_damage": stats.avg_damage,
+                        "avg_damage_taken": stats.avg_damage_taken,
+                        "avg_mitigated": stats.avg_mitigated,
+                        "avg_lifesteal": stats.avg_lifesteal,
+                        "avg_attacks": stats.avg_attacks,
+                        "avg_crits": stats.avg_crits,
+                        "avg_kills": stats.avg_kills,
+                        "avg_evades": stats.avg_evades,
+                        "avg_enemy_attacks": stats.avg_enemy_attacks,
+                        "avg_effect_procs": stats.avg_effect_procs,
+                        "avg_stun_duration": stats.avg_stun_duration,
+                        "avg_regen": stats.avg_regen,
+                        "avg_loth_healing": stats.avg_loth_healing,
+                        "avg_ua_healing": stats.avg_ua_healing,
+                        "avg_trample_kills": stats.avg_trample_kills,
+                        // Hunter-specific stats
+                        "avg_extra_from_crits": stats.avg_extra_from_crits,  // Borge
+                        "avg_helltouch": stats.avg_helltouch,                // Borge
+                        "avg_multistrikes": stats.avg_multistrikes,          // Ozzy
+                        "avg_ms_extra_damage": stats.avg_ms_extra_damage,    // Ozzy
+                        "avg_ghost_bullets": stats.avg_ghost_bullets,        // Knox
+                        "avg_extra_salvo_damage": stats.avg_extra_salvo_damage, // Knox
+                        // Debug stats
+                        "avg_on_kill_calls": stats.avg_on_kill_calls,
+                        "survival_rate": stats.survival_rate,
+                        "boss1_survival": stats.boss1_survival,
+                        "boss2_survival": stats.boss2_survival,
+                        "boss3_survival": stats.boss3_survival,
+                        "boss4_survival": stats.boss4_survival,
+                        "boss5_survival": stats.boss5_survival,
+                    })
+                }).collect::<Vec<_>>()
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }

@@ -170,8 +170,9 @@ impl BuildConfig {
     
     /// Calculate the complete loot multiplier from all sources.
     /// This matches the WASM calculation which multiplies all bonuses together.
-    pub fn calculate_loot_multiplier(&self, hunter_type: HunterType) -> f64 {
+    pub fn calculate_loot_multiplier(&self, hunter_type: HunterType, effect_chance: f64) -> f64 {
         let mut mult = 1.0;
+        let debug = std::env::var("DEBUG_LOOT").is_ok();
         
         // === TIMELESS MASTERY (Attribute) ===
         // Different bonus per hunter: Borge +14%, Ozzy +16%, Knox +14% per level
@@ -183,7 +184,7 @@ impl BuildConfig {
                 HunterType::Knox => 0.14,
             };
             mult *= 1.0 + (timeless as f64 * rate);
-            
+            if debug { eprintln!("After timeless_mastery({}): {:.4}", timeless, mult); }
         }
         
         // === SHARD MILESTONE #0 ===
@@ -191,7 +192,7 @@ impl BuildConfig {
         let shard_milestone = self.get_bonus_int("shard_milestone");
         if shard_milestone > 0 {
             mult *= 1.02_f64.powi(shard_milestone);
-            
+            if debug { eprintln!("After shard_milestone({}): {:.4}", shard_milestone, mult); }
         }
         
         // === RELIC #7 (Manifestation Core: Titan) ===
@@ -199,7 +200,7 @@ impl BuildConfig {
         let relic7 = self.get_relic("r7").max(self.get_relic("manifestation_core_titan"));
         if relic7 > 0 {
             mult *= 1.05_f64.powi(relic7);
-            
+            if debug { eprintln!("After r7({}): {:.4}", relic7, mult); }
         }
         
         // === RESEARCH #81 ===
@@ -227,28 +228,28 @@ impl BuildConfig {
                 let i14 = self.get_inscr("i14");
                 if i14 > 0 { 
                     mult *= 1.1_f64.powi(i14); 
-                    
+                    if debug { eprintln!("After i14({}): {:.4}", i14, mult); }
                 }
                 
                 // i44: 1.08^level (max 10)
                 let i44 = self.get_inscr("i44");
                 if i44 > 0 { 
                     mult *= 1.08_f64.powi(i44); 
-                    
+                    if debug { eprintln!("After i44({}): {:.4}", i44, mult); }
                 }
                 
                 // i60: special multi-power (+3% per level to loot)
                 let i60 = self.get_inscr("i60");
                 if i60 > 0 { 
                     mult *= 1.0 + (i60 as f64 * 0.03); 
-                    
+                    if debug { eprintln!("After i60({}): {:.4}", i60, mult); }
                 }
                 
                 // i80: 1.1^level (max 10)
                 let i80 = self.get_inscr("i80");
                 if i80 > 0 { 
                     mult *= 1.1_f64.powi(i80); 
-                    
+                    if debug { eprintln!("After i80({}): {:.4}", i80, mult); }
                 }
             }
             HunterType::Ozzy => {
@@ -280,46 +281,86 @@ impl BuildConfig {
         if hunter_type == HunterType::Borge {
             let wrench_level = self.get_gadget("wrench").max(self.get_gadget("wrench_of_gore"));
             mult *= gadget_loot(wrench_level);
-            
+            if debug && wrench_level > 0 { eprintln!("After wrench({}): {:.4}", wrench_level, mult); }
         }
         // Zaptron (Ozzy loot) - supports both 'zaptron' and 'zaptron_533' keys
         if hunter_type == HunterType::Ozzy {
             let zaptron_level = self.get_gadget("zaptron").max(self.get_gadget("zaptron_533"));
             mult *= gadget_loot(zaptron_level);
-            
+            if debug && zaptron_level > 0 { eprintln!("After zaptron({}): {:.4}", zaptron_level, mult); }
+        }
+        // Trident (Knox loot) - APK: KnoxLootGadget / Gadget19
+        if hunter_type == HunterType::Knox {
+            let trident_level = self.get_gadget("trident").max(self.get_gadget("gadget19")).max(self.get_gadget("trident_of_tides"));
+            mult *= gadget_loot(trident_level);
+            if debug && trident_level > 0 { eprintln!("After trident({}): {:.4}", trident_level, mult); }
         }
         // Anchor (all hunters) - supports both 'anchor' and 'titan_anchor' keys
-        let anchor_level = self.get_gadget("anchor").max(self.get_gadget("titan_anchor"));
+        let anchor_level = self.get_gadget("anchor").max(self.get_gadget("anchor_of_ages"));
         mult *= gadget_loot(anchor_level);
-        
+        if debug && anchor_level > 0 { eprintln!("After anchor({}): {:.4}", anchor_level, mult); }
         
         // === LOOP MODS ===
         // Scavenger's Advantage: 1.05^level (max 25) - Borge
         if hunter_type == HunterType::Borge {
             let scavenger = self.get_bonus_int("scavenger");
-            if scavenger > 0 { mult *= 1.05_f64.powi(scavenger.min(25)); }
+            if scavenger > 0 { 
+                mult *= 1.05_f64.powi(scavenger.min(25)); 
+                if debug { eprintln!("After scavenger({}): {:.4}", scavenger, mult); }
+            }
+            
+            // LMOuro1: Base Hunt Loot Rewards Bonus (Borge)
+            // APK: LMOuro1Bonus1Exponent - multiplicative bonus per level
+            // Formula: exponent^level where exponent ≈ 1.03 (similar to scavenger)
+            let lm_ouro1 = self.get_bonus_int("lm_ouro1");
+            if lm_ouro1 > 0 { 
+                mult *= 1.03_f64.powi(lm_ouro1); 
+                if debug { eprintln!("After lm_ouro1({}): {:.4}", lm_ouro1, mult); }
+            }
+            
+            // LMOuro11 Bonus2: Boon Eternity - Loot Rewards component (Borge)
+            // APK: LMOuro11Bonus2Exponent - the second bonus is loot (Cells/Loot/Damage)
+            // This is a prestige-tier loop mod, likely stronger multiplier
+            let lm_ouro11 = self.get_bonus_int("lm_ouro11");
+            if lm_ouro11 > 0 { 
+                mult *= 1.05_f64.powi(lm_ouro11); 
+                if debug { eprintln!("After lm_ouro11({}): {:.4}", lm_ouro11, mult); }
+            }
         }
         // Scavenger's Advantage 2: 1.05^level (max 25) - Ozzy
         if hunter_type == HunterType::Ozzy {
             let scavenger2 = self.get_bonus_int("scavenger2");
-            if scavenger2 > 0 { mult *= 1.05_f64.powi(scavenger2.min(25)); }
+            if scavenger2 > 0 { 
+                mult *= 1.05_f64.powi(scavenger2.min(25)); 
+                if debug { eprintln!("After scavenger2({}): {:.4}", scavenger2, mult); }
+            }
+            
+            // LMOuro18: Base Hunt Loot Rewards Bonus (Ozzy)
+            // APK: LMOuro18Bonus18Exponent - multiplicative bonus per level
+            let lm_ouro18 = self.get_bonus_int("lm_ouro18");
+            if lm_ouro18 > 0 { 
+                mult *= 1.03_f64.powi(lm_ouro18); 
+                if debug { eprintln!("After lm_ouro18({}): {:.4}", lm_ouro18, mult); }
+            }
         }
         
         // === CONSTRUCTION MILESTONES (CMs) ===
         // These are boolean - either unlocked or not
-        if self.get_bonus_bool("cm46") { mult *= 1.03; }
-        if self.get_bonus_bool("cm47") { mult *= 1.02; }
-        if self.get_bonus_bool("cm48") { mult *= 1.07; }
-        if self.get_bonus_bool("cm51") { mult *= 1.05; }
+        if self.get_bonus_bool("cm46") { mult *= 1.03; if debug { eprintln!("After cm46: {:.4}", mult); } }
+        if self.get_bonus_bool("cm47") { mult *= 1.02; if debug { eprintln!("After cm47: {:.4}", mult); } }
+        if self.get_bonus_bool("cm48") { mult *= 1.07; if debug { eprintln!("After cm48: {:.4}", mult); } }
+        if self.get_bonus_bool("cm51") { mult *= 1.05; if debug { eprintln!("After cm51: {:.4}", mult); } }
         
         // === DIAMOND CARDS ===
         // Gaiden Card: 1.05 loot (Borge)
         if hunter_type == HunterType::Borge && self.get_bonus_bool("gaiden_card") {
             mult *= 1.05;
+            if debug { eprintln!("After gaiden_card: {:.4}", mult); }
         }
         // Iridian Card: 1.05 loot (Ozzy)
         if hunter_type == HunterType::Ozzy && self.get_bonus_bool("iridian_card") {
             mult *= 1.05;
+            if debug { eprintln!("After iridian_card: {:.4}", mult); }
         }
         
         // === DIAMOND SPECIALS ===
@@ -327,12 +368,14 @@ impl BuildConfig {
         let diamond_loot = self.get_bonus_int("diamond_loot");
         if diamond_loot > 0 {
             mult *= 1.0 + (diamond_loot as f64 * 0.025);
+            if debug { eprintln!("After diamond_loot({}): {:.4}", diamond_loot, mult); }
         }
         
         // === IAP ===
         // Traversal Pack: 1.25x loot
         if self.get_bonus_bool("iap_travpack") {
             mult *= 1.25;
+            if debug { eprintln!("After iap_travpack: {:.4}", mult); }
         }
         
         // === ULTIMA ===
@@ -340,6 +383,7 @@ impl BuildConfig {
         let ultima = self.get_bonus_float("ultima_multiplier");
         if ultima > 0.0 {
             mult *= ultima;
+            if debug { eprintln!("After ultima({}): {:.4}", ultima, mult); }
         }
         
         // === GEM NODES (Attraction Gem) ===
@@ -355,6 +399,7 @@ impl BuildConfig {
                 .max(self.get_bonus_int("attraction_lootBorge"));
             if loot_borge > 0 { 
                 mult *= 1.07_f64.powi(loot_borge.min(50)); 
+                if debug { eprintln!("After attraction_loot_borge({}): {:.4}", loot_borge, mult); }
             }
         }
         if hunter_type == HunterType::Ozzy {
@@ -366,15 +411,58 @@ impl BuildConfig {
                 .max(self.get_bonus_int("attraction_lootOzzy"));
             if loot_ozzy > 0 { 
                 mult *= 1.07_f64.powi(loot_ozzy.min(50)); 
+                if debug { eprintln!("After attraction_loot_ozzy({}): {:.4}", loot_ozzy, mult); }
+            }
+        }
+        // APK: AttractionKnoxLootBonusCalc = 1.07^level
+        if hunter_type == HunterType::Knox {
+            let loot_knox = self.get_gem("attraction_loot_knox")
+                .max(self.get_gem("attraction_lootKnox"))
+                .max(self.get_gem("lootKnox"))
+                .max(self.get_bonus_int("attraction_loot_knox"))
+                .max(self.get_bonus_int("attraction_lootKnox"));
+            if loot_knox > 0 { 
+                mult *= 1.07_f64.powi(loot_knox.min(50)); 
+                if debug { eprintln!("After attraction_loot_knox({}): {:.4}", loot_knox, mult); }
             }
         }
         
+        // === ATTRACTION NODE #3 (Gem Bonus) ===
+        // All hunters: 1 + 0.25 × level
+        let gem_node_3 = self.get_gem("attraction_node_#3")
+            .max(self.get_gem("attraction_node_3"))
+            .max(self.get_bonus_int("gem_attraction_node3"));
+        if gem_node_3 > 0 {
+            mult *= 1.0 + 0.25 * gem_node_3 as f64;
+            if debug { eprintln!("After attraction_node_#3({}): {:.4}", gem_node_3, mult); }
+        }
+        
+        // === PRESENCE OF GOD (Talent) ===
+        // All hunters: 1 + 0.2 × level × effect_chance
+        let pog_level = self.get_talent("presence_of_god");
+        if pog_level > 0 {
+            mult *= 1.0 + pog_level as f64 * 0.2 * effect_chance;
+            if debug { eprintln!("After presence_of_god({}): {:.4}", pog_level, mult); }
+        }
+        
+        // === BLESSINGS OF THE SCARAB (Ozzy attribute) ===
+        // Ozzy only: +5% loot per level
+        if hunter_type == HunterType::Ozzy {
+            let scarab = self.get_attr("blessings_of_the_scarab");
+            if scarab > 0 {
+                mult *= 1.0 + scarab as f64 * 0.05;
+                if debug { eprintln!("After blessings_of_the_scarab({}): {:.4}", scarab, mult); }
+            }
+        }
+        
+        if debug { eprintln!("Final loot_mult: {:.4}", mult); }
         mult
     }
     
     /// Calculate comprehensive XP multiplier from all sources
     pub fn calculate_xp_multiplier(&self, hunter_type: HunterType) -> f64 {
         let mut mult = 1.0;
+        let debug = std::env::var("DEBUG_XP").is_ok();
         
         // === RELIC #19 (Book of Mephisto) - Borge only ===
         // 2^level (max 8 levels) = up to 256x XP
@@ -382,17 +470,47 @@ impl BuildConfig {
             let r19 = self.get_relic("r19").max(self.get_relic("book_of_mephisto"));
             if r19 > 0 {
                 mult *= 2.0_f64.powi(r19.min(8));
+                if debug { eprintln!("After r19({}): {:.4}", r19, mult); }
+            }
+            
+            // POM3: HuntersAttributes XP bonus (Borge) = +10% per level
+            // APK: POM3XpBonus with POM3XpBonusExponent
+            let pom3 = self.get_bonus_int("pom3");
+            if pom3 > 0 {
+                mult *= 1.0 + (pom3 as f64 * 0.10);
+                if debug { eprintln!("After pom3({}): {:.4}", pom3, mult); }
             }
         }
         
         // === INSCRYPTION i33 (Ozzy) ===
-        // +75% XP per level
+        // +75% XP per level (max 8 levels)
         if hunter_type == HunterType::Ozzy {
             let i33 = self.get_inscr("i33");
             if i33 > 0 {
-                mult *= 1.75_f64.powi(i33);
+                mult *= 1.75_f64.powi(i33.min(8));
+                if debug { eprintln!("After i33({}): {:.4}", i33, mult); }
+            }
+            
+            // POI3: HuntersAttributes XP bonus (Ozzy) = +15% per level
+            // APK: POI3XpBonus with POI3XpBonusExponent
+            let poi3 = self.get_bonus_int("poi3");
+            if poi3 > 0 {
+                mult *= 1.0 + (poi3 as f64 * 0.15);
+                if debug { eprintln!("After poi3({}): {:.4}", poi3, mult); }
             }
         }
         
+        // === POK3 (Knox) ===
+        // HuntersAttributes XP bonus = +15% per level
+        // APK: POK3XpBonus with POK3XpBonusExponent
+        if hunter_type == HunterType::Knox {
+            let pok3 = self.get_bonus_int("pok3");
+            if pok3 > 0 {
+                mult *= 1.0 + (pok3 as f64 * 0.15);
+                if debug { eprintln!("After pok3({}): {:.4}", pok3, mult); }
+            }
+        }
+        
+        if debug { eprintln!("Final xp_mult: {:.4}", mult); }
         mult
     }}

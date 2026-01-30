@@ -27,6 +27,7 @@ pub struct SimResult {
     pub lifesteal: f64,
     pub mitigated_damage: f64,
     pub effect_procs: i32,
+    pub lucky_loot_procs: i32,  // Separate counter for Lucky Loot (independent RNG)
     pub stun_duration_inflicted: f64,
     // Hunter-specific stats
     pub helltouch_barrier: f64,
@@ -55,6 +56,15 @@ pub struct AggregatedStats {
     pub avg_time: f64,
     pub avg_loot: f64,
     pub avg_loot_per_hour: f64,
+    pub min_loot_common: f64,
+    pub max_loot_common: f64,
+    pub avg_loot_common: f64,
+    pub min_loot_uncommon: f64,
+    pub max_loot_uncommon: f64,
+    pub avg_loot_uncommon: f64,
+    pub min_loot_rare: f64,
+    pub max_loot_rare: f64,
+    pub avg_loot_rare: f64,
     pub avg_damage: f64,
     pub avg_damage_taken: f64,
     pub avg_mitigated: f64,
@@ -78,10 +88,6 @@ pub struct AggregatedStats {
     pub boss3_survival: f64,  // % that reached stage > 300
     pub boss4_survival: f64,  // % that reached stage > 400
     pub boss5_survival: f64,  // % that reached stage > 500
-    // Per-resource loot averages (WASM formulas)
-    pub avg_loot_common: f64,
-    pub avg_loot_uncommon: f64,
-    pub avg_loot_rare: f64,
     pub avg_xp: f64,
     // Hunter-specific aggregated stats
     pub avg_extra_from_crits: f64,    // Borge: extra damage from crits
@@ -104,6 +110,9 @@ impl AggregatedStats {
         let stages: Vec<i32> = results.iter().map(|r| r.final_stage).collect();
         let times: Vec<f64> = results.iter().map(|r| r.elapsed_time).collect();
         let loots: Vec<f64> = results.iter().map(|r| r.total_loot).collect();
+        let loots_common: Vec<f64> = results.iter().map(|r| r.loot_common).collect();
+        let loots_uncommon: Vec<f64> = results.iter().map(|r| r.loot_uncommon).collect();
+        let loots_rare: Vec<f64> = results.iter().map(|r| r.loot_rare).collect();
         
         // Calculate average stage
         let avg_stage = stages.iter().sum::<i32>() as f64 / n;
@@ -144,6 +153,15 @@ impl AggregatedStats {
             avg_time: times.iter().sum::<f64>() / n,
             avg_loot: loots.iter().sum::<f64>() / n,
             avg_loot_per_hour: loot_per_hours.iter().sum::<f64>() / n,
+            min_loot_common: if loots_common.is_empty() { 0.0 } else { loots_common.iter().fold(f64::INFINITY, |a, &b| a.min(b)) },
+            max_loot_common: if loots_common.is_empty() { 0.0 } else { loots_common.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b)) },
+            avg_loot_common: if loots_common.is_empty() { 0.0 } else { loots_common.iter().sum::<f64>() / n },
+            min_loot_uncommon: if loots_uncommon.is_empty() { 0.0 } else { loots_uncommon.iter().fold(f64::INFINITY, |a, &b| a.min(b)) },
+            max_loot_uncommon: if loots_uncommon.is_empty() { 0.0 } else { loots_uncommon.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b)) },
+            avg_loot_uncommon: if loots_uncommon.is_empty() { 0.0 } else { loots_uncommon.iter().sum::<f64>() / n },
+            min_loot_rare: if loots_rare.is_empty() { 0.0 } else { loots_rare.iter().fold(f64::INFINITY, |a, &b| a.min(b)) },
+            max_loot_rare: if loots_rare.is_empty() { 0.0 } else { loots_rare.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b)) },
+            avg_loot_rare: if loots_rare.is_empty() { 0.0 } else { loots_rare.iter().sum::<f64>() / n },
             avg_damage: results.iter().map(|r| r.damage).sum::<f64>() / n,
             avg_damage_taken: results.iter().map(|r| r.damage_taken).sum::<f64>() / n,
             avg_mitigated: results.iter().map(|r| r.mitigated_damage).sum::<f64>() / n,
@@ -166,9 +184,6 @@ impl AggregatedStats {
             boss3_survival: boss3_passed as f64 / n,
             boss4_survival: boss4_passed as f64 / n,
             boss5_survival: boss5_passed as f64 / n,
-            avg_loot_common: results.iter().map(|r| r.loot_common).sum::<f64>() / n,
-            avg_loot_uncommon: results.iter().map(|r| r.loot_uncommon).sum::<f64>() / n,
-            avg_loot_rare: results.iter().map(|r| r.loot_rare).sum::<f64>() / n,
             avg_xp: results.iter().map(|r| r.total_xp).sum::<f64>() / n,
             // Hunter-specific stats
             avg_extra_from_crits: results.iter().map(|r| r.extra_damage_from_crits).sum::<f64>() / n,

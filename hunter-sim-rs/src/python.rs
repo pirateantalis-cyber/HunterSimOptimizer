@@ -2,10 +2,12 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyAny};
+use numpy::{PyReadonlyArray2, PyArray1};
 use crate::config::{BuildConfig, HunterType, Meta};
-use crate::simulation::run_and_aggregate;
+use crate::simulation::{run_and_aggregate, FastRng};
 use crate::build_generator::{BuildGenerator, AttributeInfo, TalentInfo};
 use std::collections::HashMap;
+use rayon::prelude::*;
 
 /// Helper to convert PyDict to HashMap<String, i32>
 fn pydict_to_hashmap_i32_global(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<String, i32>> {
@@ -118,6 +120,15 @@ fn simulate(
     result_dict.set_item("max_stage", sim_result.max_stage)?;
     result_dict.set_item("min_stage", sim_result.min_stage)?;
     result_dict.set_item("avg_loot_per_hour", sim_result.avg_loot_per_hour)?;
+    result_dict.set_item("min_loot_common", sim_result.min_loot_common)?;
+    result_dict.set_item("max_loot_common", sim_result.max_loot_common)?;
+    result_dict.set_item("avg_loot_common", sim_result.avg_loot_common)?;
+    result_dict.set_item("min_loot_uncommon", sim_result.min_loot_uncommon)?;
+    result_dict.set_item("max_loot_uncommon", sim_result.max_loot_uncommon)?;
+    result_dict.set_item("avg_loot_uncommon", sim_result.avg_loot_uncommon)?;
+    result_dict.set_item("min_loot_rare", sim_result.min_loot_rare)?;
+    result_dict.set_item("max_loot_rare", sim_result.max_loot_rare)?;
+    result_dict.set_item("avg_loot_rare", sim_result.avg_loot_rare)?;
     result_dict.set_item("avg_damage", sim_result.avg_damage)?;
     result_dict.set_item("avg_kills", sim_result.avg_kills)?;
     result_dict.set_item("avg_time", sim_result.avg_time)?;
@@ -289,6 +300,119 @@ fn simulate_batch(py: Python<'_>, config_jsons: Vec<String>, num_sims: usize, pa
     Ok(json_results)
 }
 
+/// Python-callable batch evaluation function - evaluate multiple builds efficiently
+#[pyfunction]
+#[pyo3(signature = (config_jsons, sims_per_build, seed=42))]
+fn eval_builds(py: Python<'_>, config_jsons: Vec<String>, sims_per_build: usize, seed: u64) -> PyResult<Vec<f32>> {
+    // Parse all configs first (inside GIL)
+    let configs: Result<Vec<BuildConfig>, _> = config_jsons.iter()
+        .map(|json| serde_json::from_str(json))
+        .collect();
+    
+    let configs = configs.map_err(|e| 
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid config JSON: {}", e))
+    )?;
+    
+    // Release GIL and run all simulations in parallel with better batching
+    let results = py.allow_threads(|| {
+        configs.into_par_iter()
+            .enumerate()
+            .map(|(i, config)| {
+                let mut rng = FastRng::new(seed ^ (i as u64));
+                let mut total_score = 0.0;
+                for _ in 0..sims_per_build {
+                    let result = crate::simulation::run_simulation_with_rng(&config, &mut rng);
+                    // Use final_stage as the score (higher is better)
+                    total_score += result.final_stage as f32;
+                }
+                total_score / sims_per_build as f32
+            })
+            .collect::<Vec<f32>>()
+    });
+    
+    Ok(results)
+}
+
+/// Python-callable batch evaluation function using NumPy arrays for zero-copy performance
+#[pyfunction]
+#[pyo3(signature = (hunter_type, level, base_stats, talent_names, talent_values, attribute_names, attribute_values, sims_per_build, seed=42))]
+fn eval_builds_np(
+    py: Python<'_>,
+    hunter_type: u8,  // 0=Borge, 1=Ozzy, 2=Knox
+    level: i32,
+    base_stats: HashMap<String, i32>,
+    talent_names: Vec<String>,
+    talent_values: PyReadonlyArray2<u16>,  // Shape: (num_builds, num_talents)
+    attribute_names: Vec<String>,
+    attribute_values: PyReadonlyArray2<f64>,  // Shape: (num_builds, num_attributes)
+    sims_per_build: usize,
+    seed: u64
+) -> PyResult<Py<PyArray1<f32>>> {
+    let ht = match hunter_type {
+        0 => HunterType::Borge,
+        1 => HunterType::Ozzy,
+        2 => HunterType::Knox,
+        _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid hunter type")),
+    };
+
+    let t_array = talent_values.as_array();
+    let a_array = attribute_values.as_array();
+    
+    if t_array.nrows() != a_array.nrows() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Talent and attribute arrays must have same number of rows"));
+    }
+    
+    if talent_names.len() != t_array.ncols() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Talent names length must match talent array columns"));
+    }
+    
+    if attribute_names.len() != a_array.ncols() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Attribute names length must match attribute array columns"));
+    }
+
+    let num_builds = t_array.nrows();
+    let results = py.allow_threads(|| {
+        (0..num_builds).into_par_iter().map(|i| {
+            // Build config from arrays
+            let mut talents = HashMap::new();
+            for (j, name) in talent_names.iter().enumerate() {
+                talents.insert(name.clone(), t_array[[i, j]] as i32);
+            }
+            
+            let mut attributes = HashMap::new();
+            for (j, name) in attribute_names.iter().enumerate() {
+                attributes.insert(name.clone(), a_array[[i, j]] as i32);
+            }
+            
+            let config = BuildConfig {
+                meta: Some(Meta { hunter: ht, level }),
+                hunter: None,
+                level: None,
+                stats: base_stats.clone(),
+                talents,
+                attributes,
+                inscryptions: HashMap::new(),
+                mods: HashMap::new(),
+                relics: HashMap::new(),
+                gems: HashMap::new(),
+                gadgets: HashMap::new(),
+                bonuses: HashMap::new(),
+            };
+            
+            // Run simulations
+            let mut rng = FastRng::new(seed ^ (i as u64));
+            let mut total_score = 0.0;
+            for _ in 0..sims_per_build {
+                let result = crate::simulation::run_simulation_with_rng(&config, &mut rng);
+                total_score += result.final_stage as f32;
+            }
+            total_score / sims_per_build as f32
+        }).collect::<Vec<f32>>()
+    });
+    
+    Ok(PyArray1::from_vec(py, results).unbind())
+}
+
 /// Python-callable build generation function - generate multiple valid builds at once
 #[pyfunction]
 #[pyo3(signature = (level, talents, attributes, attribute_dependencies, attribute_point_gates, attribute_exclusions, count))]
@@ -378,6 +502,8 @@ fn rust_sim(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_json, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_from_file, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_builds, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_builds_np, m)?)?;
     m.add_function(wrap_pyfunction!(create_config, m)?)?;
     m.add_function(wrap_pyfunction!(get_thread_count, m)?)?;
     m.add_function(wrap_pyfunction!(get_available_cores, m)?)?;
