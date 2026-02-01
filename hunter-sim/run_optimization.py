@@ -1245,6 +1245,28 @@ def run_optimization(config_file, result_file):
         massive_mode = config.get('massive_mode', False)  # Ultra-aggressive for 100k+ builds
         ultra_mode = config.get('ultra_mode', False)  # Maximum speed for 1M+ builds
         max_batch_size = config.get('max_batch_size', 1000)  # Allow larger batches for massive scale
+        optimization_target = config.get('optimization_target', 'balanced')  # stage, loot, xp, or balanced
+        
+        # Define composite scoring function based on optimization target
+        def get_build_score(build_result):
+            """Calculate build score based on optimization target."""
+            if optimization_target == 'stage':
+                return build_result.get('max_stage', 0)
+            elif optimization_target == 'loot':
+                return build_result.get('avg_loot_per_hour', 0)
+            elif optimization_target == 'xp':
+                return build_result.get('avg_xp', 0)
+            else:  # balanced: 50% stage + 25% loot + 25% XP (normalized)
+                max_stage = build_result.get('max_stage', 0)
+                avg_loot = build_result.get('avg_loot_per_hour', 0)
+                avg_xp = build_result.get('avg_xp', 0)
+                # Normalize each metric to roughly 0-100 scale
+                stage_score = max_stage  # Already 0-300ish
+                loot_score = min(avg_loot / 1e9, 300)  # Cap at 1B loot = 300 points
+                xp_score = min(avg_xp / 1e12, 300)  # Cap at 1T XP = 300 points
+                return (stage_score * 0.5) + (loot_score * 0.25) + (xp_score * 0.25)
+        
+        print(f"[OPTIMIZER] Using optimization target: {optimization_target}", flush=True)
         
         # Run IRL baseline FIRST - use IRL config if available, else base_config
         baseline_config = irl_config if irl_config else base_config
@@ -1278,6 +1300,7 @@ def run_optimization(config_file, result_file):
         top_by_loot = []         # Min-heap of top 10 by avg_loot_per_hour
         top_by_damage = []       # Min-heap of top 10 by avg_damage
         top_by_xp = []           # Min-heap of top 10 by avg_xp
+        top_by_composite = []    # Min-heap of top 10 by composite score
         
         def add_to_top_10(heap, build_result, metric_key):
             """Generic function to add build to a top 10 heap by any metric"""
@@ -1287,18 +1310,27 @@ def run_optimization(config_file, result_file):
             elif metric_value > heap[0][0]:
                 heapq.heapreplace(heap, (metric_value, id(build_result), build_result))
         
+        def add_to_top_10_by_fn(heap, build_result, score_fn):
+            """Add to top 10 heap using a custom score function"""
+            score = score_fn(build_result)
+            if len(heap) < 10:
+                heapq.heappush(heap, (score, id(build_result), build_result))
+            elif score > heap[0][0]:
+                heapq.heapreplace(heap, (score, id(build_result), build_result))
+        
         def update_top_lists(build_result):
             """Update all top 10 lists - O(log 10) per metric"""
-            nonlocal top_by_max_stage, top_by_avg_stage, top_by_loot, top_by_damage, top_by_xp
+            nonlocal top_by_max_stage, top_by_avg_stage, top_by_loot, top_by_damage, top_by_xp, top_by_composite
             add_to_top_10(top_by_max_stage, build_result, 'max_stage')
             add_to_top_10(top_by_avg_stage, build_result, 'avg_stage')
             add_to_top_10(top_by_loot, build_result, 'avg_loot_per_hour')
             add_to_top_10(top_by_damage, build_result, 'avg_damage')
             add_to_top_10(top_by_xp, build_result, 'avg_xp')
+            add_to_top_10_by_fn(top_by_composite, build_result, get_build_score)
         
         def finalize_top_lists():
             """Extract sorted top 10 from heaps for final output"""
-            nonlocal top_by_max_stage, top_by_avg_stage, top_by_loot, top_by_damage, top_by_xp
+            nonlocal top_by_max_stage, top_by_avg_stage, top_by_loot, top_by_damage, top_by_xp, top_by_composite
             top_by_max_stage = sorted([item[2] for item in top_by_max_stage], 
                                      key=lambda b: b['max_stage'], reverse=True)
             top_by_avg_stage = sorted([item[2] for item in top_by_avg_stage],
@@ -1309,6 +1341,8 @@ def run_optimization(config_file, result_file):
                                   key=lambda b: b.get('avg_damage', 0), reverse=True)
             top_by_xp = sorted([item[2] for item in top_by_xp],
                               key=lambda b: b.get('avg_xp', 0), reverse=True)
+            top_by_composite = sorted([item[2] for item in top_by_composite],
+                                     key=lambda b: get_build_score(b), reverse=True)
         
         # Progressive evolution: dynamic curriculum based on level
         if use_progressive:
@@ -1407,8 +1441,8 @@ def run_optimization(config_file, result_file):
                 
                 print(f"Generation {generation}: promoting {num_promote} from previous, generating {num_generate} new", flush=True)
                 
-                # Get top performers from previous gen (sorted by max_stage)
-                top_builds = sorted(prev_gen_results, key=lambda r: r['max_stage'], reverse=True)[:num_promote]
+                # Get top performers from previous gen (sorted by optimization target)
+                top_builds = sorted(prev_gen_results, key=lambda r: get_build_score(r), reverse=True)[:num_promote]
             else:
                 # First generation - generate all fresh
                 num_generate = builds_per_gen
@@ -1832,6 +1866,8 @@ def run_optimization(config_file, result_file):
             'top_10_by_loot': top_by_loot,
             'top_10_by_damage': top_by_damage,
             'top_10_by_xp': top_by_xp,
+            'top_10_by_composite': top_by_composite,
+            'optimization_target': optimization_target,
             'generation_history': generation_history,
             'full_report': f"Tested {tested} builds in {elapsed:.1f}s ({sims_per_sec:.0f} sims/sec)\n"
                           f"Best Max Stage: {best_max['max_stage'] if best_max else 0}\n"

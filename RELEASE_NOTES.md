@@ -1,5 +1,27 @@
 # Release Notes
 
+## v2.2.0 - Balanced Optimization & In-Game Stats Verification
+
+### ✨ New Features
+
+#### 🎯 Optimization Target Selection
+- New dropdown in Control Page: **Optimize for Stage, Loot, XP, or Balanced**
+- **Balanced mode** (default): 50% stage weight + 25% loot + 25% XP
+- Promotes builds between tiers using composite score instead of just stage
+- Finds builds that sacrifice a few stages for massively more loot/XP
+
+#### 📊 In-Game Stats Verification
+- New section on each hunter's Build page: **"📊 In-Game Stats Verification"**
+- Enter your real in-game averages: Damage, Loot, XP, Time, Kills
+- Supports K, M, B, T, Qa suffixes (e.g., "15.2T" for 15.2 trillion)
+- Click **"🔍 Compare to Simulation"** to see how simulation matches reality
+- Shows percentage difference with color-coded feedback:
+  - ✅ Green: Within 5% - great match!
+  - 📈/📉 Yellow: Differences detected
+- Stats are saved with your build configuration
+
+---
+
 ## v2.1.9 - Bug Fixes & Talent Unlock Improvements
 
 ### 🐛 Bug Fixes

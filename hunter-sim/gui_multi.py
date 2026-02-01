@@ -940,6 +940,13 @@ class HunterTab:
         self.irl_max_stage = tk.IntVar(value=0)
         self.irl_baseline_result = None  # Stores sim result for user's current build
         
+        # In-game stats for verification (user enters their real stats)
+        self.irl_avg_damage = tk.StringVar(value="")
+        self.irl_avg_loot = tk.StringVar(value="")  # Total loot per run
+        self.irl_avg_xp = tk.StringVar(value="")
+        self.irl_avg_time = tk.StringVar(value="")  # Time per run in seconds
+        self.irl_avg_kills = tk.StringVar(value="")
+        
         # Generation history - tracks top 10 builds per tier during progressive evolution
         # Each entry: {'tier_pct': float, 'tier_idx': int, 'talent_pts': int, 'attr_pts': int, 'builds': list}
         self.generation_history: List[Dict] = []
@@ -1368,6 +1375,13 @@ class HunterTab:
             "hunter": self.hunter_name,
             "level": self.level.get(),
             "irl_max_stage": self.irl_max_stage.get(),
+            "irl_stats": {
+                "avg_damage": self.irl_avg_damage.get(),
+                "avg_loot": self.irl_avg_loot.get(),
+                "avg_xp": self.irl_avg_xp.get(),
+                "avg_time": self.irl_avg_time.get(),
+                "avg_kills": self.irl_avg_kills.get()
+            },
             "stats": {},
             "talents": {},
             "attributes": {},
@@ -1450,6 +1464,15 @@ class HunterTab:
                     self.irl_max_stage.set(irl_stage_val)
             except (ValueError, TypeError):
                 pass  # Keep current value
+        
+        # Load IRL stats for verification
+        irl_stats = config.get("irl_stats", {})
+        if irl_stats:
+            self.irl_avg_damage.set(irl_stats.get("avg_damage", ""))
+            self.irl_avg_loot.set(irl_stats.get("avg_loot", ""))
+            self.irl_avg_xp.set(irl_stats.get("avg_xp", ""))
+            self.irl_avg_time.set(irl_stats.get("avg_time", ""))
+            self.irl_avg_kills.set(irl_stats.get("avg_kills", ""))
         
         for key, value in config.get("stats", {}).items():
             if key in self.stat_entries:
@@ -1870,6 +1893,157 @@ class HunterTab:
         entry.bind('<FocusOut>', lambda e: self._auto_save_build())
         entry.pack(side=tk.LEFT)
         self.gadget_entries[gadget_key] = entry
+        
+        # ======== IN-GAME STATS VERIFICATION SECTION (spans both columns) ========
+        # Add after all the 2-column sections
+        max_row = max(left_row, right_row)
+        
+        irl_stats_container, irl_stats_frame = self._create_section_frame(
+            self.scrollable_frame, "📊 In-Game Stats Verification (Optional)", "✅", "#10b981"  # Emerald
+        )
+        irl_stats_container.grid(row=max_row, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+        
+        # Explanation text
+        explain_label = tk.Label(irl_stats_frame, 
+            text="Enter your real in-game averages to compare against simulation predictions. "
+                 "This helps verify the simulator matches your actual gameplay.",
+            fg="#9ca3af", bg=self.DARK_BG, font=('Arial', 9, 'italic'), wraplength=700, justify=tk.LEFT)
+        explain_label.pack(fill=tk.X, padx=10, pady=(5, 10))
+        
+        # Stats entry row
+        stats_row = tk.Frame(irl_stats_frame, bg=self.DARK_BG)
+        stats_row.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Avg Damage
+        dmg_frame = tk.Frame(stats_row, bg=self.DARK_BG)
+        dmg_frame.pack(side=tk.LEFT, padx=15)
+        tk.Label(dmg_frame, text="Avg Damage:", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
+        ttk.Entry(dmg_frame, textvariable=self.irl_avg_damage, width=12).pack(side=tk.LEFT, padx=3)
+        
+        # Avg Loot (total per run)
+        loot_frame = tk.Frame(stats_row, bg=self.DARK_BG)
+        loot_frame.pack(side=tk.LEFT, padx=15)
+        tk.Label(loot_frame, text="Avg Total Loot/Run:", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
+        ttk.Entry(loot_frame, textvariable=self.irl_avg_loot, width=12).pack(side=tk.LEFT, padx=3)
+        
+        # Avg XP
+        xp_frame = tk.Frame(stats_row, bg=self.DARK_BG)
+        xp_frame.pack(side=tk.LEFT, padx=15)
+        tk.Label(xp_frame, text="Avg XP/Run:", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
+        ttk.Entry(xp_frame, textvariable=self.irl_avg_xp, width=12).pack(side=tk.LEFT, padx=3)
+        
+        # Second row: Time and Kills
+        stats_row2 = tk.Frame(irl_stats_frame, bg=self.DARK_BG)
+        stats_row2.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Avg Time per run
+        time_frame = tk.Frame(stats_row2, bg=self.DARK_BG)
+        time_frame.pack(side=tk.LEFT, padx=15)
+        tk.Label(time_frame, text="Avg Time/Run (sec):", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
+        ttk.Entry(time_frame, textvariable=self.irl_avg_time, width=8).pack(side=tk.LEFT, padx=3)
+        
+        # Avg Kills
+        kills_frame = tk.Frame(stats_row2, bg=self.DARK_BG)
+        kills_frame.pack(side=tk.LEFT, padx=15)
+        tk.Label(kills_frame, text="Avg Kills/Run:", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
+        ttk.Entry(kills_frame, textvariable=self.irl_avg_kills, width=8).pack(side=tk.LEFT, padx=3)
+        
+        # Compare button and results area
+        compare_row = tk.Frame(irl_stats_frame, bg=self.DARK_BG)
+        compare_row.pack(fill=tk.X, padx=10, pady=10)
+        
+        compare_btn = tk.Button(compare_row, text="🔍 Compare to Simulation", 
+                               command=self._compare_irl_to_sim,
+                               bg=self.DARK_ACCENT, fg=self.DARK_TEXT,
+                               font=('Arial', 10), padx=10, pady=3)
+        compare_btn.pack(side=tk.LEFT)
+        
+        # Result label (will be updated when comparing)
+        self.irl_compare_result = tk.Label(compare_row, text="", 
+                                           fg="#9ca3af", bg=self.DARK_BG, 
+                                           font=('Arial', 10), justify=tk.LEFT)
+        self.irl_compare_result.pack(side=tk.LEFT, padx=20)
+    
+    def _compare_irl_to_sim(self):
+        """Compare user's in-game stats to simulation predictions."""
+        if not self.irl_baseline_result:
+            self.irl_compare_result.config(
+                text="⚠️ Run optimization first to get simulation baseline",
+                fg="#fbbf24"
+            )
+            return
+        
+        sim = self.irl_baseline_result
+        comparisons = []
+        
+        # Parse user inputs and compare
+        def parse_number(s):
+            """Parse number with K, M, B, T suffixes."""
+            if not s:
+                return None
+            s = s.strip().upper().replace(",", "")
+            multipliers = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12, "QA": 1e15}
+            for suffix, mult in multipliers.items():
+                if s.endswith(suffix):
+                    try:
+                        return float(s[:-len(suffix)]) * mult
+                    except ValueError:
+                        return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+        
+        def format_pct_diff(irl_val, sim_val, name):
+            if sim_val == 0:
+                return f"{name}: N/A"
+            pct = (irl_val / sim_val - 1) * 100
+            if abs(pct) < 5:
+                return f"✅ {name}: {pct:+.1f}%"
+            elif pct > 0:
+                return f"📈 {name}: {pct:+.1f}% (IRL higher)"
+            else:
+                return f"📉 {name}: {pct:+.1f}% (IRL lower)"
+        
+        # Compare each stat
+        irl_damage = parse_number(self.irl_avg_damage.get())
+        if irl_damage is not None and sim.avg_damage > 0:
+            comparisons.append(format_pct_diff(irl_damage, sim.avg_damage, "Damage"))
+        
+        irl_loot = parse_number(self.irl_avg_loot.get())
+        if irl_loot is not None:
+            # Compare to total loot (common + uncommon + rare)
+            sim_total_loot = sim.avg_loot_common + sim.avg_loot_uncommon + sim.avg_loot_rare
+            if sim_total_loot > 0:
+                comparisons.append(format_pct_diff(irl_loot, sim_total_loot, "Loot"))
+        
+        irl_xp = parse_number(self.irl_avg_xp.get())
+        if irl_xp is not None and sim.avg_xp > 0:
+            comparisons.append(format_pct_diff(irl_xp, sim.avg_xp, "XP"))
+        
+        irl_time = parse_number(self.irl_avg_time.get())
+        if irl_time is not None and sim.avg_elapsed_time > 0:
+            comparisons.append(format_pct_diff(irl_time, sim.avg_elapsed_time, "Time"))
+        
+        irl_kills = parse_number(self.irl_avg_kills.get())
+        if irl_kills is not None and sim.avg_kills > 0:
+            comparisons.append(format_pct_diff(irl_kills, sim.avg_kills, "Kills"))
+        
+        if comparisons:
+            result_text = "  |  ".join(comparisons)
+            # Determine overall color
+            if all("✅" in c for c in comparisons):
+                color = "#22c55e"  # Green - great match
+            elif any("📉" in c or "📈" in c for c in comparisons):
+                color = "#fbbf24"  # Yellow - some differences
+            else:
+                color = "#9ca3af"
+            self.irl_compare_result.config(text=result_text, fg=color)
+        else:
+            self.irl_compare_result.config(
+                text="Enter at least one stat to compare (supports K, M, B, T suffixes)",
+                fg="#9ca3af"
+            )
     
     def _get_inscryption_tooltips(self) -> Dict[str, str]:
         """Get tooltip descriptions for inscryptions."""
@@ -3226,6 +3400,11 @@ class HunterTab:
         
         # Write config
         try:
+            # Get optimization target from global settings
+            optimization_target = "balanced"
+            if hasattr(self.app, 'global_optimization_target'):
+                optimization_target = self.app.global_optimization_target.get()
+            
             with open(config_file, 'w') as f:
                 json.dump({
                     'hunter_name': self.hunter_name,
@@ -3233,7 +3412,8 @@ class HunterTab:
                     'base_config': self._thread_config,
                     'num_sims': self._thread_num_sims,
                     'builds_per_tier': self._thread_builds_per_tier,
-                    'use_progressive': self._thread_use_progressive
+                    'use_progressive': self._thread_use_progressive,
+                    'optimization_target': optimization_target
                 }, f)
         except Exception as e:
             self._log(f"❌ Failed to write config: {e}")
@@ -3370,6 +3550,11 @@ class HunterTab:
                 max_batch_size = 1000  # Standard batch size
                 mode_name = "STANDARD"
             
+            # Get optimization target from global settings
+            optimization_target = "balanced"
+            if hasattr(self.app, 'global_optimization_target'):
+                optimization_target = self.app.global_optimization_target.get()
+            
             opt_config = {
                 'hunter_name': self.hunter_name,
                 'level': self._thread_level,
@@ -3383,7 +3568,8 @@ class HunterTab:
                 'massive_mode': massive_mode,
                 'ultra_mode': ultra_mode,
                 'turbo_mode': turbo_mode,
-                'max_batch_size': max_batch_size
+                'max_batch_size': max_batch_size,
+                'optimization_target': optimization_target
             }
             
             self._log(f"🎯 Auto-selected {mode_name} mode for {builds_per_tier:,} builds per tier (batch size: {max_batch_size})")
@@ -6695,6 +6881,19 @@ class MultiHunterGUI:
         ttk.Checkbutton(row6, text="🧬 Use Evolutionary Optimizer (learns good/bad patterns)", 
                         variable=self.global_use_evolutionary).pack(side=tk.LEFT, padx=5)
         ttk.Label(row6, text="Recommended for high-level builds", 
+                 font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
+        
+        # Optimization target
+        row6b = ttk.Frame(settings_frame)
+        row6b.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(row6b, text="🎯 Optimize for:").pack(side=tk.LEFT, padx=5)
+        self.global_optimization_target = tk.StringVar(value="balanced")
+        target_combo = ttk.Combobox(row6b, textvariable=self.global_optimization_target, 
+                                    values=["stage", "loot", "xp", "balanced"], 
+                                    state="readonly", width=12)
+        target_combo.pack(side=tk.LEFT, padx=5)
+        ttk.Label(row6b, text="(balanced = 50% stage + 25% loot + 25% XP)", 
                  font=('Arial', 9, 'italic')).pack(side=tk.LEFT, padx=10)
         
         # Apply to all button
