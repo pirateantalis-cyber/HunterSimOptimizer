@@ -98,11 +98,11 @@ RUST_SIM_AVAILABLE = RUST_AVAILABLE
 class BuildGenerator:
     """Generates all valid talent/attribute combinations for a given hunter and level."""
     
-    def __init__(self, hunter_class, level: int, use_smart_sampling: bool = True):
+    def __init__(self, hunter_class, level: int, use_smart_sampling: bool = True, talent_points=None, attribute_points=None):
         self.hunter_class = hunter_class
         self.level = level
-        self.talent_points = level  # 1 talent point per level
-        self.attribute_points = level * 3  # 3 attribute points per level
+        self.talent_points = talent_points if talent_points is not None else level  # 1 talent point per level
+        self.attribute_points = attribute_points if attribute_points is not None else level * 3  # 3 attribute points per level
         self.costs = hunter_class.costs
         
         # Filter talents and attributes based on unlock level

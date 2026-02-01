@@ -634,6 +634,8 @@ def optimize_builds(hunter_name, level, base_config, irl_config, num_sims, build
         baseline_available = False
         _log(f"[INFO] Baseline builds not available, using standard generation\n")
     
+    elites = []  # For progressive optimization
+    
     for tier_idx, (point_multiplier, tier_name) in enumerate(tiers):
         is_final_tier = (tier_idx == len(tiers) - 1)
         talent_points = int(level * point_multiplier)
@@ -676,15 +678,15 @@ def optimize_builds(hunter_name, level, base_config, irl_config, num_sims, build
             _log(f"[BASELINE] Added balanced baseline: talents={baseline_build['talents']}, attrs={baseline_build['attributes']}\n")
         else:
             # Generate build combinations for this tier (original logic)
-            generator = BuildGenerator(hunter_class, level, use_smart_sampling=True)
+            generator = BuildGenerator(hunter_class, level, use_smart_sampling=True, talent_points=talent_points, attribute_points=attribute_points)
             talent_combos = generator.get_talent_combinations()
             attr_combos = generator.get_attribute_combinations(max_per_infinite=30)
             
-            # Scale down combinations for lower tiers
-            if point_multiplier < 1.0:
-                # For partial tiers, use fewer combinations but keep the pattern
-                talent_combos = talent_combos[:max(1, int(len(talent_combos) * point_multiplier * 2))]
-                attr_combos = attr_combos[:max(1, int(len(attr_combos) * point_multiplier * 2))]
+            # For progressive tiers, limit combinations to maintain builds_per_tier
+            # But don't scale down for partial points - generate full combinations for the tier's budget
+            max_combos = builds_per_gen // max(1, len(attr_combos)) if attr_combos else builds_per_gen
+            if len(talent_combos) > max_combos:
+                talent_combos = talent_combos[:max_combos]
             
             _log(f"[TIER] Talent combinations: {len(talent_combos)}, Attribute combinations: {len(attr_combos)}\n")
             
