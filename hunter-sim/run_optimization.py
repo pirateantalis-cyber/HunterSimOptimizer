@@ -238,6 +238,36 @@ def evaluate_builds_successive_halving(build_configs, base_sims=64, rounds=3, su
             break
             
         _log(f"[SH Round {round_num+1}] Evaluating {len(surviving_configs)} builds with {current_sims} sims each\n")
+        _log(f"[HALVING CHECK] Round {round_num+1} START: {len(surviving_configs)} builds (should halve each round)\n")
+        
+        # === UPDATE PROGRESS AT START OF ROUND ===
+        # This lets the GUI see the halving progression (5000 → 2500 → 1250 → ...)
+        if progress_file:
+            try:
+                if os.path.exists(progress_file):
+                    with open(progress_file, 'r') as f:
+                        progress_data = json.load(f)
+                    
+                    # Show halving round info
+                    if round_num == rounds - 1:
+                        round_label = "Final"
+                    else:
+                        round_label = f"R{round_num+1}/{rounds}"
+                    progress_data['tier'] = f"{tier_name} {round_label}"
+                    progress_data['builds_in_generation'] = len(surviving_configs)
+                    
+                    # Atomic write
+                    temp_progress = progress_file + '.tmp'
+                    with open(temp_progress, 'w') as f:
+                        json.dump(progress_data, f)
+                    os.replace(temp_progress, progress_file)
+                    _log(f"[ROUND START] Updated progress: {tier_name} {round_label}: {len(surviving_configs)} builds\n")
+                    
+                    # Small delay to ensure GUI can poll this update
+                    # GUI polls every 500ms, so 100ms should be enough to be visible
+                    time.sleep(0.1)
+            except Exception as e:
+                _log(f"[DEBUG] Round start progress update error: {e}\n")
         
         # Check similarity cache for very similar builds
         filtered_configs = []
@@ -271,7 +301,10 @@ def evaluate_builds_successive_halving(build_configs, base_sims=64, rounds=3, su
         if cache_hits > 0:
             _log(f"[CACHE] {cache_hits} builds served from similarity cache\n")
         
-        # Evaluate remaining builds
+        # Initialize batch_results for evaluated builds
+        batch_results = []
+        
+        # Evaluate remaining builds (those not in cache)
         if surviving_configs:
             # Evaluate builds that weren't in cache
             backend_name = "Rust" if use_rust else "Python"
@@ -316,78 +349,80 @@ def evaluate_builds_successive_halving(build_configs, base_sims=64, rounds=3, su
                         _log(f"[DEBUG] Updated total_sims to {total_sims}, sims_per_sec {progress_data['sims_per_sec']:.0f}\n")
                 except Exception as e:
                     _log(f"[DEBUG] Progress update error: {e}\n")
+        
+        # ALWAYS process results and combine with cached results (even if all cached)
+        config_scores = []
+        
+        # Process cached results
+        for config_json, result in cached_results:
+            if isinstance(result, str):
+                result = json.loads(result)
+            # Use composite score: 70% stage + 30% normalized loot
+            avg_stage = result.get('avg_stage', 0)
+            avg_loot = result.get('avg_loot_per_hour', 0)
             
-            # Process results and combine with cached results
-            config_scores = []
+            # Early termination: skip builds that are clearly suboptimal
+            # If we're in later rounds and this build is performing very poorly, don't waste time
+            if round_num >= 2:  # After first couple rounds
+                if 'best_score_so_far' in locals() and avg_stage < best_score_so_far * 0.3:  # Less than 30% of best
+                    continue  # Skip this build entirely
             
-            # Process cached results
-            for config_json, result in cached_results:
-                if isinstance(result, str):
-                    result = json.loads(result)
-                # Use composite score: 70% stage + 30% normalized loot
-                avg_stage = result.get('avg_stage', 0)
-                avg_loot = result.get('avg_loot_per_hour', 0)
-                
-                # Early termination: skip builds that are clearly suboptimal
-                # If we're in later rounds and this build is performing very poorly, don't waste time
-                if round_num >= 2:  # After first couple rounds
-                    if 'best_score_so_far' in locals() and avg_stage < best_score_so_far * 0.3:  # Less than 30% of best
-                        continue  # Skip this build entirely
-                
-                # Normalize loot to 0-1 scale (assuming max loot around 1e6 for normalization)
-                normalized_loot = min(avg_loot / 1e6, 1.0)  # Cap at 1.0
-                
-                score = (avg_stage * 0.7) + (normalized_loot * 300 * 0.3)  # 300 stages max for scaling
-                config_scores.append((config_json, score))
-                
-                # Track best score for early termination
-                if 'best_score_so_far' not in locals() or score > best_score_so_far:
-                    best_score_so_far = score
+            # Normalize loot to 0-1 scale (assuming max loot around 1e6 for normalization)
+            normalized_loot = min(avg_loot / 1e6, 1.0)  # Cap at 1.0
             
-            # Process evaluated results
-            for config_json, result in zip(surviving_configs, batch_results):
-                if isinstance(result, str):
-                    result = json.loads(result)
-                # Use composite score: 70% stage + 30% normalized loot
-                avg_stage = result.get('avg_stage', 0)
-                avg_loot = result.get('avg_loot_per_hour', 0)
-                
-                # Early termination: skip builds that are clearly suboptimal
-                # If we're in later rounds and this build is performing very poorly, don't waste time
-                if round_num >= 2:  # After first couple rounds
-                    if 'best_score_so_far' in locals() and avg_stage < best_score_so_far * 0.3:  # Less than 30% of best
-                        continue  # Skip this build entirely
-                
-                # Normalize loot to 0-1 scale (assuming max loot around 1e6 for normalization)
-                normalized_loot = min(avg_loot / 1e6, 1.0)  # Cap at 1.0
-                
-                score = (avg_stage * 0.7) + (normalized_loot * 300 * 0.3)  # 300 stages max for scaling
-                config_scores.append((config_json, score))
-                
-                # Store result in similarity cache for future similar builds
-                config = json.loads(config_json)
-                talents = config.get('talents', {})
-                attrs = config.get('attributes', {})
-                top_talents = sorted(talents.items(), key=lambda x: x[1], reverse=True)[:3]
-                top_attrs = sorted(attrs.items(), key=lambda x: x[1], reverse=True)[:3]
-                similarity_key = (tuple(top_talents), tuple(top_attrs))
-                if similarity_key not in similarity_cache:
-                    similarity_cache[similarity_key] = result.copy()
-                
-                # Track best score for early termination
-                if 'best_score_so_far' not in locals() or score > best_score_so_far:
-                    best_score_so_far = score
+            score = (avg_stage * 0.7) + (normalized_loot * 300 * 0.3)  # 300 stages max for scaling
+            config_scores.append((config_json, score))
+            
+            # Track best score for early termination
+            if 'best_score_so_far' not in locals() or score > best_score_so_far:
+                best_score_so_far = score
+        
+        # Process evaluated results
+        for config_json, result in zip(surviving_configs, batch_results):
+            if isinstance(result, str):
+                result = json.loads(result)
+            # Use composite score: 70% stage + 30% normalized loot
+            avg_stage = result.get('avg_stage', 0)
+            avg_loot = result.get('avg_loot_per_hour', 0)
+            
+            # Early termination: skip builds that are clearly suboptimal
+            # If we're in later rounds and this build is performing very poorly, don't waste time
+            if round_num >= 2:  # After first couple rounds
+                if 'best_score_so_far' in locals() and avg_stage < best_score_so_far * 0.3:  # Less than 30% of best
+                    continue  # Skip this build entirely
+            
+            # Normalize loot to 0-1 scale (assuming max loot around 1e6 for normalization)
+            normalized_loot = min(avg_loot / 1e6, 1.0)  # Cap at 1.0
+            
+            score = (avg_stage * 0.7) + (normalized_loot * 300 * 0.3)  # 300 stages max for scaling
+            config_scores.append((config_json, score))
+            
+            # Store result in similarity cache for future similar builds
+            config = json.loads(config_json)
+            talents = config.get('talents', {})
+            attrs = config.get('attributes', {})
+            top_talents = sorted(talents.items(), key=lambda x: x[1], reverse=True)[:3]
+            top_attrs = sorted(attrs.items(), key=lambda x: x[1], reverse=True)[:3]
+            similarity_key = (tuple(top_talents), tuple(top_attrs))
+            if similarity_key not in similarity_cache:
+                similarity_cache[similarity_key] = result.copy()
+            
+            # Track best score for early termination
+            if 'best_score_so_far' not in locals() or score > best_score_so_far:
+                best_score_so_far = score
         
         # Sort by score (descending) and keep top fraction
         config_scores.sort(key=lambda x: x[1], reverse=True)
         keep_count = max(1, int(len(config_scores) * survival_rate))
+        _log(f"[HALVING DEBUG] config_scores={len(config_scores)}, survival_rate={survival_rate}, keep_count={keep_count}\n")
         surviving_configs = [config for config, _ in config_scores[:keep_count]]
+        _log(f"[HALVING DEBUG] After halving: surviving_configs={len(surviving_configs)}\n")
         
         # Log round results
         best_score = config_scores[0][1] if config_scores else 0
         _log(f"🏆 Round {round_num+1} complete: {len(surviving_configs)} builds survive (top {survival_rate:.0%} of {len(config_scores)}) | Best: {best_score:.1f} stages\n")
         
-        # Update progress file to show round progress
+        # Update progress file to show round progress WITH the halved count
         if progress_file:
             try:
                 _log(f"[DEBUG] Updating progress for round {round_num+1}, surviving: {len(surviving_configs)}, file: {progress_file}\n")
@@ -396,8 +431,8 @@ def evaluate_builds_successive_halving(build_configs, base_sims=64, rounds=3, su
                     with open(progress_file, 'r') as f:
                         progress_data = json.load(f)
                     
-                    # Update with round info
-                    progress_data['tier'] = f"{tier_name} Round {round_num+1}"
+                    # Update with round info - use halved count in tier label for visibility
+                    progress_data['tier'] = f"{tier_name} R{round_num+1}→{len(surviving_configs)}"
                     progress_data['builds_in_generation'] = len(surviving_configs)
                     progress_data['progress_percent'] = progress_data.get('progress_percent', 0)  # Keep current
                     
@@ -407,7 +442,10 @@ def evaluate_builds_successive_halving(build_configs, base_sims=64, rounds=3, su
                         json.dump(progress_data, f)
                     os.replace(temp_progress, progress_file)
                     
-                    _log(f"[DEBUG] Progress updated: {progress_data['tier']}\n")
+                    # Small delay to ensure GUI can see this
+                    time.sleep(0.15)
+                    
+                    _log(f"[DEBUG] Progress updated: {progress_data['tier']}, builds={len(surviving_configs)}\n")
                 else:
                     _log(f"[DEBUG] Progress file not found: {progress_file}\n")
             except Exception as e:
@@ -677,43 +715,101 @@ def optimize_builds(hunter_name, level, base_config, irl_config, num_sims, build
             
             _log(f"[BASELINE] Added balanced baseline: talents={baseline_build['talents']}, attrs={baseline_build['attributes']}\n")
         else:
-            # Generate build combinations for this tier (original logic)
-            generator = BuildGenerator(hunter_class, level, use_smart_sampling=True, talent_points=talent_points, attribute_points=attribute_points)
-            talent_combos = generator.get_talent_combinations()
-            attr_combos = generator.get_attribute_combinations(max_per_infinite=30)
-            
-            # For progressive tiers, limit combinations to maintain builds_per_tier
-            # But don't scale down for partial points - generate full combinations for the tier's budget
-            max_combos = builds_per_gen // max(1, len(attr_combos)) if attr_combos else builds_per_gen
-            if len(talent_combos) > max_combos:
-                talent_combos = talent_combos[:max_combos]
-            
-            _log(f"[TIER] Talent combinations: {len(talent_combos)}, Attribute combinations: {len(attr_combos)}\n")
-            
-            for tal_combo in talent_combos:
-                for attr_combo in attr_combos:
-                    # Create build config
+            # Generate build combinations for this tier
+            if not elites:
+                # First tier: generate all valid combinations for the tier's points
+                # Pass actual_level=level so unlock_level checks use real character level (e.g., Legacy of Ultima at 70)
+                generator = BuildGenerator(hunter_class, level, use_smart_sampling=True, talent_points=talent_points, attribute_points=attribute_points, actual_level=level)
+                talent_combos = generator.get_talent_combinations()
+                attr_combos = generator.get_attribute_combinations(max_per_infinite=30)
+                
+                # Sample if too many combinations
+                total_combos = len(talent_combos) * len(attr_combos)
+                if total_combos > builds_per_gen:
+                    import random
+                    sample_ratio = builds_per_gen / total_combos
+                    talent_combos = random.sample(talent_combos, max(1, int(len(talent_combos) * sample_ratio)))
+                    attr_combos = random.sample(attr_combos, max(1, int(len(attr_combos) * sample_ratio)))
+                
+                _log(f"[TIER] First tier: {len(talent_combos)} talent combos x {len(attr_combos)} attr combos = {len(talent_combos)*len(attr_combos)} builds\n")
+                
+                for tal_combo in talent_combos:
+                    for attr_combo in attr_combos:
+                        build_config = {
+                            'talents': tal_combo,
+                            'attributes': attr_combo,
+                            'mods': {},
+                            'inscryptions': {},
+                            'relics': base_config.get('relics', {}),
+                            'gems': base_config.get('gems', {}),
+                            'bonuses': base_config.get('bonuses', {})
+                        }
+                        config_json = json.dumps(build_config)
+                        build_hash = hash(json.dumps(build_config, sort_keys=True))
+                        if build_hash in tested_builds:
+                            duplicates_skipped += 1
+                            continue
+                        tested_builds.add(build_hash)
+                        batch_configs.append(config_json)
+                        batch_metadata.append((tal_combo, attr_combo))
+            else:
+                # Subsequent tiers: extend elites + generate additional valid combinations
+                # Pass actual_level=level so unlock_level checks use real character level
+                generator = BuildGenerator(hunter_class, level, use_smart_sampling=True, talent_points=talent_points, attribute_points=attribute_points, actual_level=level)
+                # Extend elites
+                for elite_config in elites:
+                    elite = json.loads(elite_config)
+                    extended_talents, extended_attrs = extend_elite_pattern(
+                        elite['talents'], elite['attributes'], generator, talent_points, attribute_points
+                    )
                     build_config = {
-                        'talents': tal_combo,
-                        'attributes': attr_combo,
+                        'talents': extended_talents,
+                        'attributes': extended_attrs,
                         'mods': {},
                         'inscryptions': {},
                         'relics': base_config.get('relics', {}),
                         'gems': base_config.get('gems', {}),
                         'bonuses': base_config.get('bonuses', {})
                     }
-                    
-                    # Create hash for duplicate detection
-                    build_hash = hash(json.dumps(build_config, sort_keys=True))
-                    if build_hash in tested_builds:
-                        duplicates_skipped += 1
-                        continue
-                    tested_builds.add(build_hash)
-                    
-                    # Add to batch
                     config_json = json.dumps(build_config)
                     batch_configs.append(config_json)
-                    batch_metadata.append((tal_combo, attr_combo))
+                    batch_metadata.append((extended_talents, extended_attrs))
+                
+                # Generate additional valid combinations
+                num_additional = builds_per_gen - len(elites)
+                if num_additional > 0:
+                    talent_combos = generator.get_talent_combinations()
+                    attr_combos = generator.get_attribute_combinations(max_per_infinite=30)
+                    
+                    # Sample if too many
+                    total_combos = len(talent_combos) * len(attr_combos)
+                    if total_combos > num_additional:
+                        import random
+                        sample_ratio = num_additional / total_combos
+                        talent_combos = random.sample(talent_combos, max(1, int(len(talent_combos) * sample_ratio)))
+                        attr_combos = random.sample(attr_combos, max(1, int(len(attr_combos) * sample_ratio)))
+                    
+                    _log(f"[TIER] Extended {len(elites)} elites, adding {len(talent_combos)*len(attr_combos)} valid builds\n")
+                    
+                    for tal_combo in talent_combos:
+                        for attr_combo in attr_combos:
+                            build_config = {
+                                'talents': tal_combo,
+                                'attributes': attr_combo,
+                                'mods': {},
+                                'inscryptions': {},
+                                'relics': base_config.get('relics', {}),
+                                'gems': base_config.get('gems', {}),
+                                'bonuses': base_config.get('bonuses', {})
+                            }
+                            config_json = json.dumps(build_config)
+                            build_hash = hash(json.dumps(build_config, sort_keys=True))
+                            if build_hash in tested_builds:
+                                duplicates_skipped += 1
+                                continue
+                            tested_builds.add(build_hash)
+                            batch_configs.append(config_json)
+                            batch_metadata.append((tal_combo, attr_combo))
                 
                 # Process batch when full
                 if len(batch_configs) >= batch_size:
@@ -769,8 +865,8 @@ def optimize_builds(hunter_name, level, base_config, irl_config, num_sims, build
                                 rounds = 4
                                 survival_rate = 0.25
                             else:
-                                base_sims = 64
-                                rounds = 3
+                                base_sims = 16
+                                rounds = 6
                                 survival_rate = 0.5
                         
                         _log(f"[SH] {base_sims}→{base_sims*2}→{base_sims*4}→{base_sims*8}→{base_sims*16}→{base_sims*32}→{base_sims*64} sims, {rounds} rounds, {survival_rate:.0%} survival\n")
@@ -845,8 +941,9 @@ def optimize_builds(hunter_name, level, base_config, irl_config, num_sims, build
                 rounds = 4
                 survival_rate = 0.25
             else:
-                base_sims = 64
-                rounds = 3
+                # Standard mode: 6 rounds with lower base_sims for visible halving
+                base_sims = 16
+                rounds = 6
                 survival_rate = 0.5
             
             sh_results = evaluate_builds_successive_halving(
@@ -1240,20 +1337,28 @@ def run_optimization(config_file, result_file):
         progress_file = result_file.replace('_results.json', '_progress.json')
         
         # Write initial progress immediately so GUI knows we're alive
-        with open(progress_file, 'w') as f:
-            json.dump({
-                'generation': 0,
-                'total_generations': len(tiers),
-                'progress': 0,
-                'builds_tested': 0,
-                'builds_in_generation': 0,
-                'builds_per_gen': builds_per_gen,
-                'total_sims': 0,
-                'elapsed': 0,
-                'sims_per_sec': 0,
-                'tier': 'Starting...',
-                'best_stage': 0
-            }, f)
+        # Use atomic write to avoid partial reads
+        initial_progress = {
+            'generation': 0,
+            'total_generations': len(tiers),
+            'progress': 0,
+            'builds_tested': 0,
+            'builds_in_generation': 0,
+            'builds_per_gen': builds_per_gen,
+            'total_sims': 0,
+            'elapsed': 0,
+            'sims_per_sec': 0,
+            'tier': 'Initializing...',
+            'best_stage': 0,
+            'run_id': time.time()  # Unique ID to detect stale data
+        }
+        temp_progress = progress_file + '.tmp'
+        with open(temp_progress, 'w') as f:
+            json.dump(initial_progress, f)
+        os.replace(temp_progress, progress_file)
+        
+        # Small delay to ensure GUI sees the fresh progress file
+        time.sleep(0.2)
         
         for tier_fraction, tier_name in tiers:
             generation += 1
@@ -1273,10 +1378,8 @@ def run_optimization(config_file, result_file):
             _log(f"[DEBUG] Tier {tier_name}: level={level}, talent_pts={talent_points}, attr_pts={attribute_points}\n")
             
             
-            # Setup generator for this tier
-            generator = BuildGenerator(hunter_class, level)
-            generator.talent_points = talent_points
-            generator.attribute_points = attribute_points
+            # Setup generator for this tier - pass actual_level=level so unlock_level checks use real character level
+            generator = BuildGenerator(hunter_class, level, talent_points=talent_points, attribute_points=attribute_points, actual_level=level)
             generator._calculate_dynamic_attr_maxes()
             
             talents_list = list(generator.costs["talents"].keys())
@@ -1551,12 +1654,13 @@ def run_optimization(config_file, result_file):
                     _log(f"[FAST MODE] Aggressive successive halving: {base_sims}→{base_sims*2}→{base_sims*4}→{base_sims*8}→{base_sims*16} sims, {rounds} rounds, {survival_rate:.0%} survival\n")
                     _log(f"[FAST MODE] Total sims per build: ~{base_sims * (2**(rounds+1) - 1) // (2-1)} (estimated)\n")
                 else:
-                    # Standard mode: balanced accuracy/speed
-                    base_sims = 64
-                    rounds = 3
+                    # Standard mode: 6 rounds with lower base_sims for visible halving
+                    # 5000 → 2500 → 1250 → 625 → 312 → 156 builds
+                    base_sims = 16
+                    rounds = 6
                     survival_rate = 0.5
-                    _log(f"[STANDARD MODE] Balanced successive halving: {base_sims}→{base_sims*2}→{base_sims*4}→{base_sims*8} sims, {rounds} rounds, {survival_rate:.0%} survival\n")
-                    _log(f"[STANDARD MODE] Total sims per build: {base_sims * (2**(rounds+1) - 1) // (2-1)}\n")
+                    _log(f"[STANDARD MODE] Visible halving: {base_sims}→{base_sims*2}→{base_sims*4}→{base_sims*8}→{base_sims*16}→{base_sims*32} sims, {rounds} rounds, {survival_rate:.0%} survival\n")
+                    _log(f"[STANDARD MODE] Halving progression: 5000 → 2500 → 1250 → 625 → 312 → 156 builds\n")
                 
                 _log(f"[DEBUG] Calling evaluate_builds_successive_halving with progress_file={progress_file}\n")
                 sh_results = evaluate_builds_successive_halving(

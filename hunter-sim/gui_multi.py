@@ -98,18 +98,22 @@ RUST_SIM_AVAILABLE = RUST_AVAILABLE
 class BuildGenerator:
     """Generates all valid talent/attribute combinations for a given hunter and level."""
     
-    def __init__(self, hunter_class, level: int, use_smart_sampling: bool = True, talent_points=None, attribute_points=None):
+    def __init__(self, hunter_class, level: int, use_smart_sampling: bool = True, talent_points=None, attribute_points=None, actual_level=None):
         self.hunter_class = hunter_class
         self.level = level
+        # actual_level is the user's real hunter level (for unlock checks)
+        # level/talent_points/attribute_points are for the current tier's point budget
+        self.actual_level = actual_level if actual_level is not None else level
         self.talent_points = talent_points if talent_points is not None else level  # 1 talent point per level
         self.attribute_points = attribute_points if attribute_points is not None else level * 3  # 3 attribute points per level
         self.costs = hunter_class.costs
         
-        # Filter talents and attributes based on unlock level
+        # Filter talents and attributes based on unlock level (use ACTUAL level, not tier level)
+        # This ensures Legacy of Ultima is available at all tiers once the character reaches level 70
         self.costs["talents"] = {k: v for k, v in self.costs["talents"].items() 
-                                if v.get("unlock_level", 0) <= self.level}
+                                if v.get("unlock_level", 0) <= self.actual_level}
         self.costs["attributes"] = {k: v for k, v in self.costs["attributes"].items() 
-                                   if v.get("unlock_level", 0) <= self.level}
+                                   if v.get("unlock_level", 0) <= self.actual_level}
         
         self.use_smart_sampling = use_smart_sampling
         
@@ -3212,6 +3216,14 @@ class HunterTab:
         if self.result_file.exists():
             self.result_file.unlink()
         
+        # Delete old progress file if exists (prevents stale data from previous runs)
+        progress_file = Path(str(self.result_file).replace('_results.json', '_progress.json'))
+        if progress_file.exists():
+            try:
+                progress_file.unlink()
+            except Exception:
+                pass
+        
         # Write config
         try:
             with open(config_file, 'w') as f:
@@ -3286,9 +3298,9 @@ class HunterTab:
         self._log(f"   📈 Curriculum: {curriculum}")
         self._log(f"📈 Using progressive evolution with successive halving (baseline: {self._thread_num_sims} sims)")
         
-        # Start polling (same as subprocess mode)
+        # Start polling (200ms for responsive progress updates)
         self.poll_count = 0
-        self.frame.after(500, self._poll_subprocess)
+        self.frame.after(200, self._poll_subprocess)
     
     def _start_subprocess_optimization(self):
         """Start optimization as a subprocess (for running from source)."""
@@ -3305,6 +3317,15 @@ class HunterTab:
         # Delete old result file if exists
         if self.result_file.exists():
             self.result_file.unlink()
+        
+        # Delete old progress file if exists (prevents stale data from previous runs)
+        progress_file = Path(str(self.result_file).replace('_results.json', '_progress.json'))
+        if progress_file.exists():
+            try:
+                progress_file.unlink()
+                print(f"[DEBUG] Deleted old progress file: {progress_file}")
+            except Exception as e:
+                print(f"[DEBUG] Failed to delete old progress file: {e}")
         
         self._log(f"💾 Config: {config_file}")
         self._log(f"💾 Results: {self.result_file}")
@@ -3451,14 +3472,36 @@ class HunterTab:
             self._optimization_complete()
             return
         
-        # Start polling
+        # Start polling (200ms for responsive progress updates)
         self.poll_count = 0
-        self.frame.after(500, self._poll_subprocess)
+        self.frame.after(200, self._poll_subprocess)
     
     def _stop_optimization(self):
         """Stop optimization."""
         self.stop_event.set()
         self._log("⏹️ Stopping...")
+        
+        # Terminate subprocess if running
+        if hasattr(self, 'opt_process') and self.opt_process and self.opt_process.poll() is None:
+            try:
+                self.opt_process.terminate()
+                self._log("⏹️ Terminating subprocess...")
+                try:
+                    self.opt_process.wait(timeout=2)
+                    self._log("✅ Subprocess terminated")
+                except:
+                    # Force kill if terminate didn't work
+                    self.opt_process.kill()
+                    self._log("⚠️ Subprocess force killed")
+            except Exception as e:
+                self._log(f"⚠️ Error stopping subprocess: {e}")
+        
+        # Mark as not running and update UI
+        self.is_running = False
+        self.stop_btn.configure(state=tk.DISABLED)
+        self.run_btn.configure(state=tk.NORMAL)
+        self._log("⏹️ Optimization stopped")
+        
         # Clear the result queue to prevent stale results
         while not self.result_queue.empty():
             try:
@@ -3626,9 +3669,7 @@ class HunterTab:
             if elite_patterns:
                 self._log(f"   Building on {len(elite_patterns)} elite patterns from previous tier")
             
-            tier_generator = BuildGenerator(self.hunter_class, tier_level)
-            tier_generator.talent_points = tier_talent_points
-            tier_generator.attribute_points = tier_attr_points
+            tier_generator = BuildGenerator(self.hunter_class, tier_level, talent_points=tier_talent_points, attribute_points=tier_attr_points, actual_level=level)
             tier_generator._calculate_dynamic_attr_maxes()
             
             # Yield after generator creation
@@ -3856,7 +3897,7 @@ class HunterTab:
         # Yield before potentially slow build generation
         time.sleep(0.01)
         
-        generator = BuildGenerator(self.hunter_class, level)
+        generator = BuildGenerator(self.hunter_class, level, actual_level=level)
         # Use cached values from main thread
         num_sims = self._thread_num_sims
         max_builds = self._thread_builds_per_tier
@@ -4542,8 +4583,8 @@ class HunterTab:
                 self._log(f"❌ Process completed but no result file found at: {self.result_file}")
                 self._optimization_complete()
         else:
-            # Still running - keep polling
-            self.frame.after(500, self._poll_subprocess)
+            # Still running - keep polling (200ms for responsive progress updates)
+            self.frame.after(200, self._poll_subprocess)
     
     def _display_results(self, results):
         """Display optimization results in GUI"""
@@ -4643,7 +4684,7 @@ class HunterTab:
             pass
         
         if self.is_running:
-            self.frame.after(500, self._poll_results)
+            self.frame.after(200, self._poll_results)
     
     def _optimization_complete(self):
         """Handle optimization completion (called after results displayed or error occurred)."""
@@ -4879,9 +4920,9 @@ class HunterTab:
             compare_text.insert(tk.END, "  Loot:       ", "stat_name")
             sign = "+" if loot_gain_pct >= 0 else ""
             compare_text.insert(tk.END, f"{sign}{loot_gain_pct:.1f}% more loot per hour\n", "positive" if loot_gain_pct >= 0 else "negative")
-        compare_text.insert(tk.END, "  XP:         ", "stat_name")
-        sign = "+" if xp_gain_pct >= 0 else ""
-        compare_text.insert(tk.END, f"{sign}{xp_gain_pct:.1f}% more XP per run\n\n", "positive" if xp_gain_pct >= 0 else "negative")
+            compare_text.insert(tk.END, "  XP:         ", "stat_name")
+            sign = "+" if xp_gain_pct >= 0 else ""
+            compare_text.insert(tk.END, f"{sign}{xp_gain_pct:.1f}% more XP per run\n\n", "positive" if xp_gain_pct >= 0 else "negative")
         
         # Compare talents/attributes
         compare_text.insert(tk.END, "─" * 70 + "\n", "divider")
