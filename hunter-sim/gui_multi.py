@@ -942,10 +942,11 @@ class HunterTab:
         
         # In-game stats for verification (user enters their real stats)
         self.irl_avg_damage = tk.StringVar(value="")
-        self.irl_avg_loot = tk.StringVar(value="")  # Total loot per run
+        self.irl_avg_stage = tk.StringVar(value="")  # Average stage reached
         self.irl_avg_xp = tk.StringVar(value="")
-        self.irl_avg_time = tk.StringVar(value="")  # Time per run in seconds
-        self.irl_avg_kills = tk.StringVar(value="")
+        self.irl_avg_res1 = tk.StringVar(value="")  # Common resource
+        self.irl_avg_res2 = tk.StringVar(value="")  # Uncommon resource
+        self.irl_avg_res3 = tk.StringVar(value="")  # Rare resource
         
         # Generation history - tracks top 10 builds per tier during progressive evolution
         # Each entry: {'tier_pct': float, 'tier_idx': int, 'talent_pts': int, 'attr_pts': int, 'builds': list}
@@ -1377,10 +1378,11 @@ class HunterTab:
             "irl_max_stage": self.irl_max_stage.get(),
             "irl_stats": {
                 "avg_damage": self.irl_avg_damage.get(),
-                "avg_loot": self.irl_avg_loot.get(),
+                "avg_stage": self.irl_avg_stage.get(),
                 "avg_xp": self.irl_avg_xp.get(),
-                "avg_time": self.irl_avg_time.get(),
-                "avg_kills": self.irl_avg_kills.get()
+                "avg_res1": self.irl_avg_res1.get(),
+                "avg_res2": self.irl_avg_res2.get(),
+                "avg_res3": self.irl_avg_res3.get()
             },
             "stats": {},
             "talents": {},
@@ -1469,10 +1471,11 @@ class HunterTab:
         irl_stats = config.get("irl_stats", {})
         if irl_stats:
             self.irl_avg_damage.set(irl_stats.get("avg_damage", ""))
-            self.irl_avg_loot.set(irl_stats.get("avg_loot", ""))
+            self.irl_avg_stage.set(irl_stats.get("avg_stage", ""))
             self.irl_avg_xp.set(irl_stats.get("avg_xp", ""))
-            self.irl_avg_time.set(irl_stats.get("avg_time", ""))
-            self.irl_avg_kills.set(irl_stats.get("avg_kills", ""))
+            self.irl_avg_res1.set(irl_stats.get("avg_res1", ""))
+            self.irl_avg_res2.set(irl_stats.get("avg_res2", ""))
+            self.irl_avg_res3.set(irl_stats.get("avg_res3", ""))
         
         for key, value in config.get("stats", {}).items():
             if key in self.stat_entries:
@@ -1853,7 +1856,7 @@ class HunterTab:
         mods_container, mods_frame = self._create_section_frame(
             self.scrollable_frame, "Mods", "⚙️", "#64748b"  # Slate gray
         )
-        mods_container.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
+        mods_container.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=2)
         right_row += 1
         
         # Only populate if hunter has mods
@@ -1863,18 +1866,18 @@ class HunterTab:
                 label = mod_key.replace("_", " ").title()
                 cb = ttk.Checkbutton(mods_frame, text=label, variable=var,
                                      command=self._auto_save_build)
-                cb.grid(row=i // 2, column=i % 2, padx=10, pady=5, sticky="w")
+                cb.grid(row=i // 2, column=i % 2, padx=5, pady=1, sticky="w")
                 self.mod_vars[mod_key] = var
         else:
             # Show a message for hunters without mods
-            tk.Label(mods_frame, text="No mods available for this hunter",
-                    fg="#888888", bg=self.DARK_BG, font=('Arial', 9, 'italic')).pack(padx=10, pady=10)
+            tk.Label(mods_frame, text="No mods available",
+                    fg="#888888", bg=self.DARK_BG, font=('Arial', 8, 'italic')).pack(padx=5, pady=3)
         
         # Gadgets Section (RIGHT - after Mods/Attributes) - with colorful header
         gadgets_container, gadgets_frame = self._create_section_frame(
             self.scrollable_frame, "Gadget", "🔧", "#f59e0b"  # Amber
         )
-        gadgets_container.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=5)
+        gadgets_container.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=2)
         right_row += 1
         
         # Each hunter has exactly one gadget
@@ -1885,84 +1888,60 @@ class HunterTab:
         }
         gadget_key, gadget_label = hunter_gadgets[self.hunter_name]
         frame = tk.Frame(gadgets_frame, bg=self.DARK_BG)
-        frame.grid(row=0, column=0, padx=4, pady=2, sticky="w")
-        tk.Label(frame, text=f"{gadget_label}:", width=16, anchor="w",
-                fg="#fbbf24", bg=self.DARK_BG, font=('Arial', 9, 'bold')).pack(side=tk.LEFT)
+        frame.pack(anchor="w", padx=2, pady=1)
+        tk.Label(frame, text=f"{gadget_label}:", width=14, anchor="w",
+                fg="#fbbf24", bg=self.DARK_BG, font=('Arial', 8, 'bold')).pack(side=tk.LEFT)
         entry = ttk.Entry(frame, width=4)
         entry.insert(0, "0")
         entry.bind('<FocusOut>', lambda e: self._auto_save_build())
         entry.pack(side=tk.LEFT)
         self.gadget_entries[gadget_key] = entry
         
-        # ======== IN-GAME STATS VERIFICATION SECTION (spans both columns) ========
-        # Add after all the 2-column sections
-        max_row = max(left_row, right_row)
+        # ======== IN-GAME STATS VERIFICATION (RIGHT column, compact) ========
+        res_common, res_uncommon, res_rare = self._get_resource_names()
         
         irl_stats_container, irl_stats_frame = self._create_section_frame(
-            self.scrollable_frame, "📊 In-Game Stats Verification (Optional)", "✅", "#10b981"  # Emerald
+            self.scrollable_frame, "In-Game Averages", "📊", "#10b981"  # Emerald
         )
-        irl_stats_container.grid(row=max_row, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+        irl_stats_container.grid(row=right_row, column=1, sticky="nsew", padx=(5, 10), pady=2)
+        right_row += 1
         
-        # Explanation text
-        explain_label = tk.Label(irl_stats_frame, 
-            text="Enter your real in-game averages to compare against simulation predictions. "
-                 "This helps verify the simulator matches your actual gameplay.",
-            fg="#9ca3af", bg=self.DARK_BG, font=('Arial', 9, 'italic'), wraplength=700, justify=tk.LEFT)
-        explain_label.pack(fill=tk.X, padx=10, pady=(5, 10))
+        # Compact grid layout - 2 columns of stats
+        irl_grid = tk.Frame(irl_stats_frame, bg=self.DARK_BG)
+        irl_grid.pack(fill=tk.X, padx=2, pady=2)
         
-        # Stats entry row
-        stats_row = tk.Frame(irl_stats_frame, bg=self.DARK_BG)
-        stats_row.pack(fill=tk.X, padx=10, pady=5)
+        # Row 0: Damage, Stage
+        tk.Label(irl_grid, text="Damage:", fg=self.DARK_TEXT, bg=self.DARK_BG, font=('Arial', 8)).grid(row=0, column=0, sticky="e", padx=2)
+        ttk.Entry(irl_grid, textvariable=self.irl_avg_damage, width=10).grid(row=0, column=1, sticky="w", padx=2, pady=1)
+        tk.Label(irl_grid, text="Stage:", fg=self.DARK_TEXT, bg=self.DARK_BG, font=('Arial', 8)).grid(row=0, column=2, sticky="e", padx=2)
+        ttk.Entry(irl_grid, textvariable=self.irl_avg_stage, width=8).grid(row=0, column=3, sticky="w", padx=2, pady=1)
         
-        # Avg Damage
-        dmg_frame = tk.Frame(stats_row, bg=self.DARK_BG)
-        dmg_frame.pack(side=tk.LEFT, padx=15)
-        tk.Label(dmg_frame, text="Avg Damage:", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
-        ttk.Entry(dmg_frame, textvariable=self.irl_avg_damage, width=12).pack(side=tk.LEFT, padx=3)
+        # Row 1: XP, Res1
+        tk.Label(irl_grid, text="XP:", fg=self.DARK_TEXT, bg=self.DARK_BG, font=('Arial', 8)).grid(row=1, column=0, sticky="e", padx=2)
+        ttk.Entry(irl_grid, textvariable=self.irl_avg_xp, width=10).grid(row=1, column=1, sticky="w", padx=2, pady=1)
+        tk.Label(irl_grid, text=f"{res_common[:3]}:", fg="#22c55e", bg=self.DARK_BG, font=('Arial', 8)).grid(row=1, column=2, sticky="e", padx=2)
+        ttk.Entry(irl_grid, textvariable=self.irl_avg_res1, width=8).grid(row=1, column=3, sticky="w", padx=2, pady=1)
         
-        # Avg Loot (total per run)
-        loot_frame = tk.Frame(stats_row, bg=self.DARK_BG)
-        loot_frame.pack(side=tk.LEFT, padx=15)
-        tk.Label(loot_frame, text="Avg Total Loot/Run:", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
-        ttk.Entry(loot_frame, textvariable=self.irl_avg_loot, width=12).pack(side=tk.LEFT, padx=3)
+        # Row 2: Res2, Res3
+        tk.Label(irl_grid, text=f"{res_uncommon[:3]}:", fg="#3b82f6", bg=self.DARK_BG, font=('Arial', 8)).grid(row=2, column=0, sticky="e", padx=2)
+        ttk.Entry(irl_grid, textvariable=self.irl_avg_res2, width=10).grid(row=2, column=1, sticky="w", padx=2, pady=1)
+        tk.Label(irl_grid, text=f"{res_rare[:3]}:", fg="#f97316", bg=self.DARK_BG, font=('Arial', 8)).grid(row=2, column=2, sticky="e", padx=2)
+        ttk.Entry(irl_grid, textvariable=self.irl_avg_res3, width=8).grid(row=2, column=3, sticky="w", padx=2, pady=1)
         
-        # Avg XP
-        xp_frame = tk.Frame(stats_row, bg=self.DARK_BG)
-        xp_frame.pack(side=tk.LEFT, padx=15)
-        tk.Label(xp_frame, text="Avg XP/Run:", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
-        ttk.Entry(xp_frame, textvariable=self.irl_avg_xp, width=12).pack(side=tk.LEFT, padx=3)
-        
-        # Second row: Time and Kills
-        stats_row2 = tk.Frame(irl_stats_frame, bg=self.DARK_BG)
-        stats_row2.pack(fill=tk.X, padx=10, pady=5)
-        
-        # Avg Time per run
-        time_frame = tk.Frame(stats_row2, bg=self.DARK_BG)
-        time_frame.pack(side=tk.LEFT, padx=15)
-        tk.Label(time_frame, text="Avg Time/Run (sec):", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
-        ttk.Entry(time_frame, textvariable=self.irl_avg_time, width=8).pack(side=tk.LEFT, padx=3)
-        
-        # Avg Kills
-        kills_frame = tk.Frame(stats_row2, bg=self.DARK_BG)
-        kills_frame.pack(side=tk.LEFT, padx=15)
-        tk.Label(kills_frame, text="Avg Kills/Run:", fg=self.DARK_TEXT, bg=self.DARK_BG).pack(side=tk.LEFT)
-        ttk.Entry(kills_frame, textvariable=self.irl_avg_kills, width=8).pack(side=tk.LEFT, padx=3)
-        
-        # Compare button and results area
+        # Compare button row
         compare_row = tk.Frame(irl_stats_frame, bg=self.DARK_BG)
-        compare_row.pack(fill=tk.X, padx=10, pady=10)
+        compare_row.pack(fill=tk.X, padx=2, pady=2)
         
-        compare_btn = tk.Button(compare_row, text="🔍 Compare to Simulation", 
+        compare_btn = tk.Button(compare_row, text="🔍 Compare", 
                                command=self._compare_irl_to_sim,
                                bg=self.DARK_ACCENT, fg=self.DARK_TEXT,
-                               font=('Arial', 10), padx=10, pady=3)
+                               font=('Arial', 8), padx=5, pady=1)
         compare_btn.pack(side=tk.LEFT)
         
-        # Result label (will be updated when comparing)
-        self.irl_compare_result = tk.Label(compare_row, text="", 
-                                           fg="#9ca3af", bg=self.DARK_BG, 
-                                           font=('Arial', 10), justify=tk.LEFT)
-        self.irl_compare_result.pack(side=tk.LEFT, padx=20)
+        self.irl_compare_result = tk.Label(compare_row, text="(K/M/B/T ok)", 
+                                           fg="#6b7280", bg=self.DARK_BG, 
+                                           font=('Arial', 8, 'italic'))
+        self.irl_compare_result.pack(side=tk.LEFT, padx=5)
     
     def _compare_irl_to_sim(self):
         """Compare user's in-game stats to simulation predictions."""
@@ -2008,29 +1987,33 @@ class HunterTab:
         # Compare each stat
         irl_damage = parse_number(self.irl_avg_damage.get())
         if irl_damage is not None and sim.avg_damage > 0:
-            comparisons.append(format_pct_diff(irl_damage, sim.avg_damage, "Damage"))
+            comparisons.append(format_pct_diff(irl_damage, sim.avg_damage, "Dmg"))
         
-        irl_loot = parse_number(self.irl_avg_loot.get())
-        if irl_loot is not None:
-            # Compare to total loot (common + uncommon + rare)
-            sim_total_loot = sim.avg_loot_common + sim.avg_loot_uncommon + sim.avg_loot_rare
-            if sim_total_loot > 0:
-                comparisons.append(format_pct_diff(irl_loot, sim_total_loot, "Loot"))
+        irl_stage = parse_number(self.irl_avg_stage.get())
+        if irl_stage is not None and sim.avg_final_stage > 0:
+            comparisons.append(format_pct_diff(irl_stage, sim.avg_final_stage, "Stage"))
         
         irl_xp = parse_number(self.irl_avg_xp.get())
         if irl_xp is not None and sim.avg_xp > 0:
             comparisons.append(format_pct_diff(irl_xp, sim.avg_xp, "XP"))
         
-        irl_time = parse_number(self.irl_avg_time.get())
-        if irl_time is not None and sim.avg_elapsed_time > 0:
-            comparisons.append(format_pct_diff(irl_time, sim.avg_elapsed_time, "Time"))
+        irl_res1 = parse_number(self.irl_avg_res1.get())
+        if irl_res1 is not None and sim.avg_loot_common > 0:
+            comparisons.append(format_pct_diff(irl_res1, sim.avg_loot_common, "Res1"))
         
-        irl_kills = parse_number(self.irl_avg_kills.get())
-        if irl_kills is not None and sim.avg_kills > 0:
-            comparisons.append(format_pct_diff(irl_kills, sim.avg_kills, "Kills"))
+        irl_res2 = parse_number(self.irl_avg_res2.get())
+        if irl_res2 is not None and sim.avg_loot_uncommon > 0:
+            comparisons.append(format_pct_diff(irl_res2, sim.avg_loot_uncommon, "Res2"))
+        
+        irl_res3 = parse_number(self.irl_avg_res3.get())
+        if irl_res3 is not None and sim.avg_loot_rare > 0:
+            comparisons.append(format_pct_diff(irl_res3, sim.avg_loot_rare, "Res3"))
         
         if comparisons:
-            result_text = "  |  ".join(comparisons)
+            # Compact result - just show first 3 with wrapping
+            result_text = " | ".join(comparisons[:3])
+            if len(comparisons) > 3:
+                result_text += f" +{len(comparisons)-3} more"
             # Determine overall color
             if all("✅" in c for c in comparisons):
                 color = "#22c55e"  # Green - great match
@@ -2040,10 +2023,7 @@ class HunterTab:
                 color = "#9ca3af"
             self.irl_compare_result.config(text=result_text, fg=color)
         else:
-            self.irl_compare_result.config(
-                text="Enter at least one stat to compare (supports K, M, B, T suffixes)",
-                fg="#9ca3af"
-            )
+            self.irl_compare_result.config(text="(K/M/B/T ok)", fg="#6b7280")
     
     def _get_inscryption_tooltips(self) -> Dict[str, str]:
         """Get tooltip descriptions for inscryptions."""
