@@ -1,5 +1,43 @@
 # Release Notes
 
+## v2.1.9 - Bug Fixes & Talent Unlock Improvements
+
+### 🐛 Bug Fixes
+
+#### ⏹️ Stop Button Now Works
+- **Previous issue**: Stop button only set a flag but didn't terminate the subprocess
+- **Fix**: Now properly terminates the optimization subprocess with graceful shutdown
+- Works for both individual hunter tabs and "Stop All" on control page
+
+#### 📊 Comparison Page Complete
+- **Previous issue**: When your IRL build was 100% optimal, the comparison page truncated
+- **Root cause**: `xp_gain_pct` variable was undefined in the "already optimal" code path
+- **Fix**: XP display now correctly shows only when there are gains to display
+
+#### 🎯 Legacy of Ultima Unlock Fixed
+- **Previous issue**: At 5% tier (level 3.5 points), Legacy of Ultima wasn't available even for level 70+ characters
+- **Game rule**: Once unlocked at level 70, Legacy of Ultima is a normal talent available at all point budgets
+- **Fix**: `BuildGenerator` now uses `actual_level` parameter for unlock checks
+- **Result**: Level 70 Borge can now use Legacy of Ultima in all optimization tiers
+
+### 📈 Improvements
+
+#### Progress File Cleanup
+- Old progress files are now deleted when starting a new optimization
+- Prevents stale "5% Final: 2500" messages from previous runs showing at start
+- Uses atomic writes to prevent partial reads
+
+---
+
+## v2.1.8 - More Visible Successive Halving
+
+### ✨ Improvements
+- Increased successive halving rounds from 4 to 6 with lower base sims (16)
+- Better visibility of halving progression: 5000 → 2500 → 1250 → 625 → 312 → 156 → Final
+- Earlier rounds complete faster allowing you to see the progression
+
+---
+
 ## v2.1 - Accessibility & Formula Reverse-Engineering
 
 ### ✨ New Features
