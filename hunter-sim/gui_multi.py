@@ -3486,10 +3486,13 @@ class HunterTab:
             # Run baseline simulation on user's current IRL build first
             self._run_irl_baseline(base_config)
             
-            if self._thread_use_progressive and level >= 30:
-                self._run_progressive_evolution(level, base_config)
+            if self._thread_use_progressive:
+                # Use subprocess for progressive optimization (has successive halving)
+                # Fall through to subprocess call
+                pass
             else:
                 self._run_sampling_optimization(level, base_config)
+                return
                 
         except Exception as e:
             import traceback

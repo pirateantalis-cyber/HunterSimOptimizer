@@ -1504,7 +1504,7 @@ class Ozzy(Hunter):
             "legacy_of_ultima": { # The Legacy of Ultima: +1% HP/Power/Regen per point (WASM verified)
                 "cost": 1,
                 "max": 50,
-                "unlock_level": 75,
+                "unlock_level": 70,
             },
         },
         "attributes": {
@@ -2251,7 +2251,7 @@ class Knox(Hunter):
             "legacy_of_ultima": {  # The Legacy of Ultima: NO effect for Knox (WASM verified)
                 "cost": 1,
                 "max": 50,
-                "unlock_level": 75,
+                "unlock_level": 70,
             },
         },
         "attributes": {

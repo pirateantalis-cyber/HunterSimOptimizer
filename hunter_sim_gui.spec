@@ -21,14 +21,16 @@ if venv_site_packages.exists():
         rust_lib = str(file)
         break
 
+# If not found, try hardcoded path
+if not rust_lib:
+    hardcoded_path = Path('.venv/Lib/site-packages/rust_sim.cp313-win_amd64.pyd')
+    if hardcoded_path.exists():
+        rust_lib = str(hardcoded_path)
+
 datas = [
     ('builds/*.yaml', 'builds'),
-    # Include hunter-sim module files
-    ('hunter-sim/hunters.py', '.'),
-    ('hunter-sim/sim.py', '.'),
-    ('hunter-sim/units.py', '.'),
-    ('hunter-sim/run_optimization.py', '.'),
-    ('hunter-sim/sim_worker.py', '.'),
+    # Include entire hunter-sim module
+    ('hunter-sim', 'hunter-sim'),
     # Include hunter PNG portraits for battle arena
     ('hunter-sim/assets/borge.png', 'assets'),
     ('hunter-sim/assets/knox.png', 'assets'),
